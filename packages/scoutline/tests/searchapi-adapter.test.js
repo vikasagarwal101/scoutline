@@ -195,3 +195,59 @@ describe("searchapi search capability", () => {
     assert.strictEqual(new URL(calls[0].url).searchParams.get("gl"), "cn");
   });
 });
+
+// ---------------------------------------------------------------------------
+// SearchApi Quota + Diagnostics Capabilities (T3)
+// ---------------------------------------------------------------------------
+
+// Wire truth from FIXTURES.md — SearchApi.io GET /api/v1/me response shape.
+const SEARCHAPI_ME_RAW = {
+  account: { current_month_usage: 3200, monthly_allowance: 10000, remaining_credits: 6800 },
+  api_usage: { searches_this_hour: 120, hourly_rate_limit: 200000 },
+  subscription: {
+    period_start: "2026-08-01T00:00:00Z",
+    period_end: "2026-09-01T00:00:00Z",
+  },
+};
+
+describe("searchapi quota and diagnostics capabilities", () => {
+  it("quota.invoke maps remaining_credits to category searches", async () => {
+    const calls = [];
+    const fn = async (url, init) => {
+      calls.push({ url: String(url), headers: init.headers });
+      assert.strictEqual(String(url), "https://www.searchapi.io/api/v1/me");
+      return jsonRes(SEARCHAPI_ME_RAW);
+    };
+    const descriptor = createSearchApiDescriptor({ transport: { fetch: fn } });
+    const adapter = descriptor.create({ env: { SEARCHAPI_API_KEY: TEST_API_KEY } });
+    const q = await adapter.quota.invoke();
+    assert.strictEqual(q.provider, "searchapi");
+    assert.strictEqual(q.status, "ok");
+    assert.strictEqual(q.categories[0].name, "searches");
+    assert.strictEqual(q.categories[0].unit, "credits");
+    assert.strictEqual(q.categories[0].current.remaining, 6800);
+    assert.strictEqual(q.categories[0].current.limit, 10000);
+    assert.strictEqual(q.categories[0].current.used, 3200);
+    assert.strictEqual(q.categories[0].current.resetsAt, "2026-09-01T00:00:00.000Z");
+    assert.strictEqual(calls.length, 1);
+  });
+
+  it("diagnostics.invoke GETs /me; create() does not fetch", async () => {
+    let calls = 0;
+    const descriptor = createSearchApiDescriptor({
+      transport: {
+        fetch: async (url) => {
+          calls += 1;
+          assert.match(String(url), /\/api\/v1\/me$/);
+          return jsonRes(SEARCHAPI_ME_RAW);
+        },
+      },
+    });
+    const adapter = descriptor.create({ env: { SEARCHAPI_API_KEY: TEST_API_KEY } });
+    assert.strictEqual(calls, 0);
+    await adapter.diagnostics.invoke({ probe: true });
+    assert.strictEqual(calls, 1);
+    await adapter.diagnostics.invoke({ probe: false });
+    assert.strictEqual(calls, 1);
+  });
+});

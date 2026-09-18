@@ -1,11 +1,12 @@
 /**
  * SearchApi Provider Adapter.
  *
- * T2 wires the Search Capability. The descriptor advertises `"search"`
- * and `create()` returns an Adapter whose `search` Capability owns
+ * T2 wires the Search Capability; T3 adds the Quota and Diagnostics
+ * Capabilities (both backed by the non-destructive `GET /api/v1/me`
+ * probe). The descriptor advertises `"search"`, `"diagnostics"`, and
+ * `"quota"`, and `create()` returns an Adapter whose slots own
  * credentials, transport, Provider field mapping, and failure
- * normalization. The GET /api/v1/me quota probe and the
- * diagnostics/quota Capability slots arrive in T3.
+ * normalization.
  *
  * Engine routing (SPEC, locked): `topic:"news"` → `engine=google_news`;
  * every other topic (and no topic) → `engine=google`. Unlike the Z.AI/
@@ -50,6 +51,8 @@ import {
   type SearchApiSearchParams,
   type SearchApiTransportDeps,
 } from "./client.js";
+import { createSearchApiQuotaCapability } from "./quota.js";
+import { createSearchApiDiagnosticsCapability } from "./diagnostics.js";
 
 /** Dependencies the SearchApi Adapter accepts. */
 export interface SearchApiAdapterDependencies {
@@ -340,13 +343,13 @@ function createSearchApiSearchCapability(
 
 /**
  * Build the SearchApi Provider Descriptor. The descriptor advertises
- * the Search capability (T2); the Diagnostics and Quota capabilities
- * and the `/api/v1/me` quota transport arrive in T3 and widen this set
- * in lockstep with the matching Adapter slots. Construction is
- * side-effect-free; the transport is invoked per Capability call.
- * Tests pass `transport` (typically a fake-fetch wrapper); production
- * uses the no-argument factory which resolves to the global `fetch`
- * and timers inside the transport Module.
+ * Search, Diagnostics, and Quota; `create()` returns an Adapter whose
+ * slots own credentials, transport, Provider field mapping, and failure
+ * normalization. Construction is side-effect-free; the transport is
+ * invoked per Capability call. Tests pass `transport` (typically a
+ * fake-fetch wrapper); production uses the no-argument factory which
+ * resolves to the global `fetch` and timers inside the transport
+ * Module.
  */
 export function createSearchApiDescriptor(
   dependencies?: SearchApiAdapterDependencies,
@@ -363,11 +366,16 @@ export function createSearchApiDescriptor(
       return isSearchApiConfigured(env);
     },
     capabilities(): ReadonlySet<ProviderCapability> {
-      return new Set<ProviderCapability>(["search"]);
+      return new Set<ProviderCapability>(["search", "diagnostics", "quota"]);
     },
     create(context: ProviderContext): ProviderAdapter {
       const search = createSearchApiSearchCapability({ env: context.env, transport });
-      return { id: "searchapi" as ProviderId, search };
+      const quota = createSearchApiQuotaCapability({ env: context.env, transport });
+      const diagnostics = createSearchApiDiagnosticsCapability({
+        env: context.env,
+        transport,
+      });
+      return { id: "searchapi" as ProviderId, search, diagnostics, quota };
     },
     credentialEnvVars: ["SEARCHAPI_API_KEY"],
   };

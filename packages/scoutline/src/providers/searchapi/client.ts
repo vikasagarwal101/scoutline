@@ -41,6 +41,7 @@ const { version: VERSION } = pkg;
 
 const BASE_URL = "https://www.searchapi.io";
 const SEARCH_PATH = "/api/v1/search";
+const ME_PATH = "/api/v1/me";
 const DEFAULT_TIMEOUT_MS = 30000;
 
 const USER_AGENT = `scoutline/${VERSION}`;
@@ -143,18 +144,22 @@ function buildQueryString(params?: Readonly<Record<string, unknown>>): string {
 }
 
 /**
- * Perform ONE GET against the SearchApi.io `/api/v1/search` endpoint.
- * No retry; no response body in public errors. Returns the parsed JSON
- * body (raw; the Adapter post-processes into normalized search
- * sources).
+ * Shared GET plumbing for every SearchApi.io JSON endpoint. Performs
+ * ONE GET against `path` with the canonical Bearer/Accept/User-Agent
+ * headers, the injected timeout, the status map, and JSON parsing. No
+ * retry; no response body in public errors. Returns the parsed JSON
+ * body (raw; the Adapter post-processes into normalized shapes).
  *
- * `params` carries SearchApi-native API fields already mapped from
- * `SearchControls` by the Adapter (`engine`/`q`/`gl`/`time_period`).
+ * `params` carries SearchApi-native API fields already mapped by the
+ * Adapter (`engine`/`q`/`gl`/`time_period` for search). The API key is
+ * NEVER a query parameter — it travels only in the `Authorization:
+ * Bearer` header.
  */
-export async function fetchSearchApiSearch(
+async function getSearchApiJson(
   apiKey: string,
-  params: SearchApiSearchParams = {},
-  deps: SearchApiTransportDeps = {},
+  path: string,
+  params: Readonly<Record<string, unknown>> | undefined,
+  deps: SearchApiTransportDeps,
 ): Promise<unknown> {
   const f = deps.fetch ?? getGlobalFetch<ProviderQuotaFetch>();
   const setT = deps.setTimeout ?? setTimeout;
@@ -162,7 +167,7 @@ export async function fetchSearchApiSearch(
   const env = deps.env ?? process.env;
   const timeoutMs = resolveTimeoutMs(env);
 
-  const url = `${BASE_URL}${SEARCH_PATH}${buildQueryString({ ...(params ?? {}) })}`;
+  const url = `${BASE_URL}${path}${buildQueryString(params)}`;
   const controller = new AbortController();
   const timeoutId = setT(() => controller.abort(), timeoutMs);
   try {
@@ -204,4 +209,34 @@ export async function fetchSearchApiSearch(
     clearT(timeoutId);
     controller.abort();
   }
+}
+
+/**
+ * Perform ONE GET against the SearchApi.io `/api/v1/search` endpoint.
+ * No retry; no response body in public errors. Returns the parsed JSON
+ * body (raw; the Adapter post-processes into normalized search
+ * sources).
+ *
+ * `params` carries SearchApi-native API fields already mapped from
+ * `SearchControls` by the Adapter (`engine`/`q`/`gl`/`time_period`).
+ */
+export async function fetchSearchApiSearch(
+  apiKey: string,
+  params: SearchApiSearchParams = {},
+  deps: SearchApiTransportDeps = {},
+): Promise<unknown> {
+  return getSearchApiJson(apiKey, SEARCH_PATH, { ...(params ?? {}) }, deps);
+}
+
+/**
+ * Perform ONE GET against the SearchApi.io `/api/v1/me` endpoint — the
+ * account/subscription metadata probe used by the Quota and Diagnostics
+ * Capabilities. Non-destructive: `/me` is not a search, so it consumes
+ * no search credits. No retry; no response body in public errors.
+ */
+export async function fetchSearchApiMe(
+  apiKey: string,
+  deps: SearchApiTransportDeps = {},
+): Promise<unknown> {
+  return getSearchApiJson(apiKey, ME_PATH, undefined, deps);
 }

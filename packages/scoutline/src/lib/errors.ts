@@ -297,14 +297,25 @@ export class TimeoutError extends ZaiError {
    * `MINIMAX_TIMEOUT` env var instead of the default `Z_AI_TIMEOUT`
    * reference. Strict superset — existing 1-arg callers continue to
    * receive the default help text unchanged.
+   *
+   * #205: an additive options parameter lets the class carry
+   * `retryAfterMs`, so a Provider `Retry-After` parsed on 408/504
+   * reaches the shared executor (which honours it off any
+   * `ScoutlineError`) instead of being discarded. Strict superset —
+   * 1-arg and 2-arg call sites stay byte-identical.
    */
   readonly durationMs: number;
-  constructor(timeoutMs: number, help?: string) {
+  constructor(
+    timeoutMs: number,
+    help?: string,
+    options: Pick<ScoutlineErrorOptions, "retryAfterMs"> = {},
+  ) {
     super(
       `Request timed out after ${timeoutMs}ms`,
       "TIMEOUT_ERROR",
       undefined,
       help ?? "Try again or increase timeout with Z_AI_TIMEOUT env var",
+      options,
     );
     this.durationMs = timeoutMs;
   }

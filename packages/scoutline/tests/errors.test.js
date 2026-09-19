@@ -240,6 +240,29 @@ describe("Legacy subclasses (compat)", () => {
     assert.strictEqual(err.help, "Try again or increase timeout with MINIMAX_TIMEOUT env var");
   });
 
+  it("TimeoutError 2-arg form stays hint-free: retryAfterMs undefined (#205)", () => {
+    const err = new TimeoutError(30000, "Try again or increase timeout with MINIMAX_TIMEOUT env var");
+    assert.strictEqual(err.retryAfterMs, undefined, "the 2-arg form attaches no hint");
+    assert.ok(err.message.includes("30000"));
+    assert.strictEqual(err.durationMs, 30000);
+    assert.strictEqual(err.help, "Try again or increase timeout with MINIMAX_TIMEOUT env var");
+  });
+
+  it("TimeoutError 3-arg form carries retryAfterMs and stays TIMEOUT_ERROR (#205)", () => {
+    // #205: a Retry-After on 408/504 was parsed at the transport then
+    // discarded — TimeoutError could not accept it. The additive options
+    // parameter makes it a retry-hint carrier like ApiError/QuotaError;
+    // the shared executor honours the hint off ANY ScoutlineError.
+    const err = new TimeoutError(30000, "Try again or increase timeout with BRAVE_TIMEOUT env var", {
+      retryAfterMs: 2000,
+    });
+    assert.strictEqual(err.retryAfterMs, 2000);
+    assert.strictEqual(err.code, "TIMEOUT_ERROR");
+    assert.ok(err.message.includes("30000"), "message unchanged by the hint");
+    assert.strictEqual(err.durationMs, 30000);
+    assert.strictEqual(err.help, "Try again or increase timeout with BRAVE_TIMEOUT env var");
+  });
+
   it("FileError accepts an optional help hint", () => {
     const err = new FileError("File not found", "Check the path");
     assert.strictEqual(err.code, "FILE_ERROR");

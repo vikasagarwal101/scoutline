@@ -183,7 +183,7 @@ function mapStatusError(status: number, timeoutMs: number, errorBody?: string, t
     // 524 is Cloudflare's origin-timeout, the specific status Jina warns
     // about for non-streaming DeepSearch (8J.6). Classified as a timeout
     // rather than a generic API failure.
-    return new TimeoutError(timeoutMs, timeoutHelpText);
+    return new TimeoutError(timeoutMs, timeoutHelpText, hintOptions);
   }
   if (status === 429) {
     return new QuotaError(

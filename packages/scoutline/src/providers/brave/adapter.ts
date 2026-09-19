@@ -428,12 +428,14 @@ function normalizeBraveError(error: unknown): Error {
     return new TimeoutError(
       error.durationMs,
       "Try again or increase timeout with BRAVE_TIMEOUT env var",
+      retryHintOptionsFromError(error),
     );
   }
   // Every ApiError rewrap below forwards the inbound hint: a retryable
   // class that reaches the shared executor must still carry it (#186
-  // P3b). `AuthError` / `NetworkError` / `TimeoutError` take no options
-  // parameter — they are not retry-hint carriers by design.
+  // P3b). The TimeoutError rewrap above forwards it too (#205) — the
+  // class is now a retry-hint carrier; `AuthError` / `NetworkError`
+  // take no options parameter by design.
   const hintOptions = retryHintOptionsFromError(error);
   if (error instanceof ApiError) {
     const statusCode = inferStatusCode("", error.statusCode);

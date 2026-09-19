@@ -590,6 +590,23 @@ describe("executeProviderOperation — provider retry hint", () => {
     assert.deepStrictEqual(sleep.calls, [3000]);
   });
 
+  it("a retryable TimeoutError carrying retryAfterMs raises the floor (#205)", async () => {
+    // #205 parse→carry→floor chain: brave/jina 408/504 now land the
+    // parsed Retry-After on the TimeoutError; the executor honours it
+    // exactly like the ApiError cases above — max(policy, hint).
+    const sleep = makeSleep();
+    const random = makeRandom([0.4]);
+    await assert.rejects(
+      executeProviderOperation(
+        "search",
+        failing(() => new TimeoutError(30000, "Try again or increase timeout with BRAVE_TIMEOUT env var", { retryAfterMs: 3000 })),
+        { sleep, random },
+        policy(),
+      ),
+    );
+    assert.deepStrictEqual(sleep.calls, [3000]);
+  });
+
   it("keeps the policy backoff when the hint is smaller", async () => {
     const sleep = makeSleep();
     const random = makeRandom([0.4]);

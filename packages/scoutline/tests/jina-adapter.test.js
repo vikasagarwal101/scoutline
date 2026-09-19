@@ -1609,11 +1609,44 @@ describe("Jina retry-hint forwarding — the adapter rewrap keeps the parsed hin
     assert.equal(fourxx.statusCode, 400);
   });
 
+  it("a 504 with Retry-After: 2 surfaces retryAfterMs 2000 on the TimeoutError (#205)", async () => {
+    // #205: Jina's Cloudflare-fronted transport parses Retry-After; the
+    // 408/504/524 timeout branch must now carry it, not discard it.
+    const err = await thrown(
+      fetchJinaSearch(TEST_KEY, "q", { fetch: hintFetch(504, { "Retry-After": "2" }) }),
+    );
+    assert.ok(err instanceof TimeoutError, "the 504 class is unchanged");
+    assert.equal(err.retryAfterMs, 2000, "the parsed Retry-After lands on the timeout");
+    assert.equal(err.code, "TIMEOUT_ERROR");
+  });
+
+  it("a 524 with Retry-After: 2 surfaces retryAfterMs 2000 on the TimeoutError (#205)", async () => {
+    const err = await thrown(
+      fetchJinaSearch(TEST_KEY, "q", { fetch: hintFetch(524, { "Retry-After": "2" }) }),
+    );
+    assert.ok(err instanceof TimeoutError, "the 524 class is unchanged");
+    assert.equal(err.retryAfterMs, 2000);
+  });
+
   it("the 429 QuotaError keeps its class, terminal ruling, and informational hint", async () => {
     const adapter = adapterOver(hintFetch(429, { "Retry-After": "60" }));
     const err = await thrown(adapter.search.invoke({ query: "x" }));
     assert.ok(err instanceof QuotaError, "the honest 429 class is unchanged");
     assert.equal(err.retryAfterMs, 60000, "the hint still lands informationally");
     assert.equal(err.retryable, false, "the terminal ruling is untouched by the hint");
+  });
+
+  it("search.invoke: a 504 TimeoutError's hint survives the adapter rewrap (#205)", async () => {
+    // P3b pattern: the rewrap builds a FRESH TimeoutError, so without an
+    // explicit forward the parsed hint dies at that boundary. The curated
+    // help text is preserved alongside the hint.
+    const adapter = adapterOver(hintFetch(504, { "Retry-After": "2" }));
+    const err = await thrown(adapter.search.invoke({ query: "x" }));
+    assert.ok(err instanceof TimeoutError, "the rewrapped class is unchanged");
+    assert.equal(
+      err.retryAfterMs,
+      2000,
+      "the parsed hint must survive the TimeoutError rewrap (P3b)",
+    );
   });
 });

@@ -711,9 +711,21 @@ export function findUnknownStrictFlag(
  * pre-dispatch for every command (help/version bare short-circuits have
  * already returned) and owns the error envelope.
  */
-export function validateEnvDoors(env: NodeJS.ProcessEnv, command: string): void {
+export function validateEnvDoors(
+  env: NodeJS.ProcessEnv,
+  command: string,
+  explicitProvider?: string,
+): void {
   resolveFusionMode(env, undefined);
-  if (command !== "science" && env.SCOUTLINE_PROVIDER !== undefined) {
+  // PR #253 round 1: a present --provider flag (any value — id, comma
+  // list, or "all") wins the precedence chain, so SCOUTLINE_PROVIDER is
+  // a dead value on a pinned run and must not fail it. The flag's own
+  // value is validated downstream, where the consuming command reads it.
+  if (
+    command !== "science" &&
+    explicitProvider === undefined &&
+    env.SCOUTLINE_PROVIDER !== undefined
+  ) {
     parseProviderId(env.SCOUTLINE_PROVIDER);
   }
 }
@@ -5988,7 +6000,7 @@ export async function main(
   // returned above.
   if (!isCommandHelpInvocation(commandArgs)) {
     try {
-      validateEnvDoors(env, command);
+      validateEnvDoors(env, command, provider);
     } catch (error) {
       invocation.writeStderr(formatErrorOutput(error, outputMode, envSecrets));
       return getErrorExitCode(error);

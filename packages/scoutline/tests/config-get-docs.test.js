@@ -36,6 +36,39 @@ describe("docs/configuration.md: config get stored-key note (#245)", () => {
   });
 });
 
+describe("config get renders the stored key with an injected loader (PR #253 r1 hermeticity)", () => {
+  it("stored occurrence + SCOUTLINE_FUSION=rrf → config get outputs occurrence", async (t) => {
+    const dir = await mkdtemp(join(tmpdir(), "scoutline-cfgget2-"));
+    t.after(async () => {
+      await rm(dir, { recursive: true, force: true });
+    });
+    const configPath = join(dir, "config.json");
+    await writeFile(configPath, JSON.stringify({ version: 1, providers: {}, fusion: "occurrence" }));
+    const stdout = [];
+    const deps = hermeticMainDeps({
+      invocation: {
+        stdoutIsTTY: false,
+        stdinIsTTY: false,
+        environmentOutputMode: "data",
+        readStdin: async () => "",
+        writeStdout: (v) => stdout.push(v),
+        writeStderr: () => {},
+        runQuietly: async (op) => op(),
+        setExitCode: () => {},
+      },
+      env: { SCOUTLINE_CONFIG_DIR: dir, SCOUTLINE_FUSION: "rrf" },
+      // Isolated loader seam (the hermetic-main contract): main never
+      // falls through to the ambient config read.
+      loadScoutlineConfig: async () => JSON.parse(await readFile(configPath, "utf8")),
+    });
+    const status = await main(["config", "get", "fusion"], deps);
+    assert.strictEqual(status, 0);
+    const out = stdout.join("");
+    assert.match(out, /occurrence/);
+    assert.doesNotMatch(out, /"rrf"|fusion → rrf/);
+  });
+});
+
 describe("config get renders the stored value under an env override (#245 posture pin)", () => {
   it("stored rrf + SCOUTLINE_FUSION=occurrence → config get prints rrf, exit 0", async (t) => {
     const dir = await mkdtemp(join(tmpdir(), "scoutline-cfgget-"));

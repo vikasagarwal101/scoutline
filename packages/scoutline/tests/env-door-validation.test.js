@@ -108,6 +108,14 @@ describe("validateEnvDoors (pure)", () => {
     validateEnvDoors({ SCOUTLINE_PROVIDER: "tavily" }, "config");
   });
 
+  it("an explicit --provider flag wins: the dead env value is not validated (PR #253 r1)", () => {
+    // Precedence chain flag > env > config: a pinned run never reads
+    // SCOUTLINE_PROVIDER, so a bogus (dead) env value must not fail it.
+    validateEnvDoors({ SCOUTLINE_PROVIDER: "bogus" }, "config", "tavily");
+    validateEnvDoors({ SCOUTLINE_PROVIDER: "bogus" }, "search", "tavily,exa");
+    validateEnvDoors({ SCOUTLINE_PROVIDER: "bogus" }, "search", "all");
+  });
+
   it("SCOUTLINE_NO_FALLBACK accepts any value (boolean kill-switch)", () => {
     validateEnvDoors({ SCOUTLINE_NO_FALLBACK: "bogus" }, "config");
     validateEnvDoors({ SCOUTLINE_NO_FALLBACK: "" }, "quota");
@@ -161,6 +169,19 @@ describe("env-door validation through main() (#244)", () => {
     });
   });
 
+  it("an explicit --provider flag lets a bogus SCOUTLINE_PROVIDER env through (PR #253 r1)", async (t) => {
+    await withTempConfig(t, async (dir) => {
+      const { invocation, stderr } = makeInvocation();
+      const deps = hermeticMainDeps({
+        invocation,
+        env: { SCOUTLINE_CONFIG_DIR: dir, SCOUTLINE_PROVIDER: "bogus" },
+      });
+      const status = await main(["--provider", "tavily", "config", "get", "fanout"], deps);
+      assert.strictEqual(status, 0, "flag-pinned run must not fail on the dead env value");
+      assert.strictEqual(stderr(), "");
+    });
+  });
+
   it("valid doors never break early-return commands", async (t) => {
     await withTempConfig(t, async (dir) => {
       const { invocation } = makeInvocation();
@@ -178,26 +199,21 @@ describe("env-door validation through main() (#244)", () => {
     });
   });
 
-  it("science's env door keeps its own grammar (openalex not rejected pre-dispatch)", async (t) => {
+  it("science's env door keeps its own grammar (zero-network shape, PR #253 r1)", async (t) => {
     await withTempConfig(t, async (dir) => {
       const { invocation, stderr } = makeInvocation();
       const deps = hermeticMainDeps({
         invocation,
         env: { SCOUTLINE_CONFIG_DIR: dir, SCOUTLINE_PROVIDER: "openalex" },
       });
-      // science dispatch is credential-free and would go to the
-      // network; assert only that the PRE-DISPATCH door did not reject
-      // by checking a bogus *fusion* door still fires there (proves the
-      // pass runs for science) while openalex alone never produces the
-      // shared Unknown-provider envelope.
-      const status = await main(["science", "search", "q", "--no-cache"], deps).catch((e) => {
-        // A network/adapter failure is fine — it proves dispatch was
-        // REACHED (the door passed). Only the pre-dispatch envelope
-        // would carry "Unknown provider".
-        return "dispatched";
-      });
-      if (status === "dispatched") return;
-      assert.ok(status === 0 || status === 1);
+      // A parse-time-invalid --year fails BEFORE any supplier invoke
+      // (buildScienceControls validates the grammar pre-arms), so this
+      // reaches exactly one network-free failure. If the pre-dispatch
+      // door had rejected openalex, the envelope would be the shared
+      // Unknown-provider one instead of the --year error.
+      const status = await main(["science", "search", "q", "--year", "bogus"], deps);
+      assert.strictEqual(status, 1);
+      assert.match(stderr(), /--year/);
       assert.doesNotMatch(stderr(), /Unknown provider/);
     });
   });

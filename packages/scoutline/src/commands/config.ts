@@ -69,9 +69,7 @@ export interface ConfigUnsetDependencies {
 function formatRoutingLines(routing: Readonly<Record<string, readonly string[]>>): string {
   const capabilities = Object.keys(routing).sort();
   if (capabilities.length === 0) return "(routing table is empty)";
-  return capabilities
-    .map((cap) => `${cap} → ${(routing[cap] ?? []).join(", ")}`)
-    .join("\n");
+  return capabilities.map((cap) => `${cap} → ${(routing[cap] ?? []).join(", ")}`).join("\n");
 }
 
 /** Render one non-routing value: `key → value`. */
@@ -94,7 +92,8 @@ function valueAtPath(config: ScoutlineConfig, path: string): unknown {
   if (trimmed === "fusion") return config.fusion;
   if (trimmed === "journal") return config.journal;
   const providerMatch = /^providers\.([a-z0-9-]+)(?:\.[A-Za-z0-9-]+)*$/.exec(trimmed);
-  if (providerMatch?.[1]) return config.providers[providerMatch[1] as keyof typeof config.providers];
+  if (providerMatch?.[1])
+    return config.providers[providerMatch[1] as keyof typeof config.providers];
   return undefined;
 }
 
@@ -166,6 +165,11 @@ export async function configSetCommand(
   const key = resolveConfigKey(path);
   if (key?.setTrueNotice !== undefined && raw === true) {
     deps.notify?.(key.setTrueNotice(updated, deps.noticeContext));
+  }
+  // Value-agnostic set notice (fusion seed-24 D1): every successful set
+  // of a key that carries one announces the consequence on stderr.
+  if (key?.setNotice !== undefined) {
+    deps.notify?.(key.setNotice(updated));
   }
   return {
     kind: "data",

@@ -42,7 +42,10 @@ describe("fusion config key: set/get round-trip", () => {
         assert.strictEqual(stored.fusion, value);
 
         const io = makeInvocation();
-        const getStatus = await main(["config", "get", "fusion"], await baseDeps(io.invocation, dir));
+        const getStatus = await main(
+          ["config", "get", "fusion"],
+          await baseDeps(io.invocation, dir),
+        );
         assert.strictEqual(getStatus, 0);
         // data output mode: stdout carries the JSON value, text mode the
         // `fusion → <value>` presentation — the value must appear either way.
@@ -75,10 +78,12 @@ describe("fusion config key: strict enum validation", () => {
   it("config unset fusion removes the switch; absent switch fails", async (t) => {
     await withTempConfig(t, async (dir) => {
       const filePath = pathMod.join(dir, "config.json");
-      const { setConfigValue, unsetConfigValue, readConfig } = await import(
-        "../dist/lib/config-store.js"
+      const { setConfigValue, unsetConfigValue, readConfig } =
+        await import("../dist/lib/config-store.js");
+      assert.strictEqual(
+        (await setConfigValue("fusion", "occurrence", { filePath })).fusion,
+        "occurrence",
       );
-      assert.strictEqual((await setConfigValue("fusion", "occurrence", { filePath })).fusion, "occurrence");
       const updated = await unsetConfigValue("fusion", { filePath });
       assert.strictEqual(updated.fusion, undefined);
       await assert.rejects(
@@ -87,6 +92,28 @@ describe("fusion config key: strict enum validation", () => {
       );
     });
   });
+});
+
+// ---------------------------------------------------------------------------
+// DESIGN D1: the user-facing `config set fusion` notice names the ordering
+// consequence in one plain sentence (stderr; stdout stays data-only).
+// ---------------------------------------------------------------------------
+
+describe("fusion config key: set notice names the ranking consequence (D1)", () => {
+  for (const value of ["rrf", "occurrence"]) {
+    it(`config set fusion ${value} emits a stderr notice naming the new ordering`, async (t) => {
+      await withTempConfig(t, async (dir) => {
+        const { invocation, stdout, stderr } = makeInvocation();
+        const deps = await baseDeps(invocation, dir);
+        const status = await main(["config", "set", "fusion", value], deps);
+        assert.strictEqual(status, 0);
+        assert.match(stderr(), /rank/i);
+        assert.ok(stderr().includes(value), "notice names the active mode");
+        // stdout stays data-only — the notice never leaks into it.
+        assert.ok(!stdout().toLowerCase().includes("rank by"));
+      });
+    });
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -129,7 +156,10 @@ describe("resolveFusionMode precedence (pure, injected env+config)", () => {
 
   it("env empty string is treated as unset (not a ValidationError)", () => {
     assert.strictEqual(
-      resolveFusionMode({ SCOUTLINE_FUSION: "" }, { version: 1, providers: {}, fusion: "occurrence" }),
+      resolveFusionMode(
+        { SCOUTLINE_FUSION: "" },
+        { version: 1, providers: {}, fusion: "occurrence" },
+      ),
       "occurrence",
     );
   });

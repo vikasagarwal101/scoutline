@@ -395,7 +395,9 @@ function parseConfig(contents: string): ParsedConfig {
       ...(fusion !== undefined ? { fusion } : {}),
       providers,
       ...(parsed.hintShown !== undefined ? { hintShown: parsed.hintShown as boolean } : {}),
-    ...(parsed.agentRules !== undefined ? { agentRules: parsed.agentRules as Record<string, boolean> } : {}),
+      ...(parsed.agentRules !== undefined
+        ? { agentRules: parsed.agentRules as Record<string, boolean> }
+        : {}),
       ...(routing !== undefined ? { routing } : {}),
     },
     warnings,
@@ -420,7 +422,8 @@ function parseRoutingConfig(
     warnings.push({
       code: "UNKNOWN_CAPABILITY",
       capability: "routing",
-      message: 'Ignoring malformed "routing" in config.json (expected an object of capability -> provider lists).',
+      message:
+        'Ignoring malformed "routing" in config.json (expected an object of capability -> provider lists).',
     });
     return undefined;
   }
@@ -641,7 +644,6 @@ export async function writeConfig(
   }
 }
 
-
 // ---------------------------------------------------------------------------
 // Typed key registry (routing-table plan, Ticket 3) — the `config`
 // command family's seam. Adding a settings key = adding one row below;
@@ -691,6 +693,14 @@ export interface ConfigKeyDescriptor {
    * carries no such warning.
    */
   readonly setTrueNotice?: (config: ScoutlineConfig, context?: FanoutNoticeContext) => string;
+  /**
+   * Value-agnostic set notice (fusion seed-24 DESIGN D1): emitted on
+   * EVERY successful `config set` of the key, as a stderr notice naming
+   * the consequence plainly. Distinct from {@link setTrueNotice}, which
+   * is boolean-enable-specific (the fan-out cost warning). Absent on
+   * keys whose set carries no consequence worth announcing.
+   */
+  readonly setNotice?: (config: ScoutlineConfig) => string;
 }
 
 const KEY_FALLBACK_ENABLED: ConfigKeyDescriptor = {
@@ -786,6 +796,12 @@ const KEY_FUSION: ConfigKeyDescriptor = {
   settable: true,
   credential: false,
   describe: "rrf | occurrence — merged-search ranking algorithm (default rrf)",
+  // DESIGN D1: the set notice names the ordering consequence in one
+  // plain sentence (stderr; stdout stays data-only).
+  setNotice: (updated) =>
+    updated.fusion === "occurrence"
+      ? "Merged search results (fan-out and --merge) now rank by occurrence count — the legacy ordering, byte-identical to pre-fusion output."
+      : "Merged search results (fan-out and --merge) now rank by rrf fusion score — rank-aware ordering over every arm and sub-query (the default).",
 };
 
 const KEY_ROUTING_TABLE: ConfigKeyDescriptor = {
@@ -1033,10 +1049,7 @@ export async function setConfigValue(
     if (key === KEY_FALLBACK_ENABLED || key === KEY_FANOUT || key === KEY_JOURNAL) {
       const lowered = value.trim().toLowerCase();
       if (lowered !== "true" && lowered !== "false") {
-        throw new ValidationError(
-          `Invalid boolean "${value}".`,
-          "Use one of: true, false.",
-        );
+        throw new ValidationError(`Invalid boolean "${value}".`, "Use one of: true, false.");
       }
       next =
         key === KEY_FALLBACK_ENABLED
@@ -1095,10 +1108,7 @@ export async function unsetConfigValue(
     const trimmed = path.trim();
     if (trimmed === "routing") {
       if (current.routing === undefined) {
-        throw new ValidationError(
-          '"routing" is not set.',
-          "Nothing to unset.",
-        );
+        throw new ValidationError('"routing" is not set.', "Nothing to unset.");
       }
       const { routing: _drop, ...rest } = current;
       void _drop;
@@ -1109,10 +1119,7 @@ export async function unsetConfigValue(
         throw unknownCapabilityError(capability);
       }
       if (current.routing?.[capability] === undefined) {
-        throw new ValidationError(
-          `"routing.${capability}" is not set.`,
-          "Nothing to unset.",
-        );
+        throw new ValidationError(`"routing.${capability}" is not set.`, "Nothing to unset.");
       }
       const routing = { ...current.routing };
       delete routing[capability];

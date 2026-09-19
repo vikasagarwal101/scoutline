@@ -1836,6 +1836,9 @@ async function handleSearch(
             env: deps.env,
             query: dispatchQuery,
             searchOptions,
+            // Seed-24 T3: the resolved ranking mode (env > config >
+            // "rrf") — the executor's merge names it explicitly.
+            fusionMode: deps.fusionMode ?? "rrf",
             dependencies: {
               cache: deps.searchCache,
               sleep: deps.searchSleep,
@@ -1884,6 +1887,10 @@ async function handleSearch(
               cache: deps.searchCache,
               sleep: deps.searchSleep,
               random: deps.searchRandom,
+              // Seed-24 T3: the resolved ranking mode (env > config >
+              // "rrf") reaches the single-provider --merge seam too, so
+              // one merge implementation serves both paths.
+              fusionMode: deps.fusionMode ?? "rrf",
               // PB-T2 parity with the fan-out path above (usage-ledger
               // DESIGN D7): thread the configured consumption sink +
               // clock so every billable sub-query on the single-pin path

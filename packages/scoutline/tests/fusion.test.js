@@ -18,6 +18,7 @@ import * as pathMod from "node:path";
 
 import { main } from "../dist/index.js";
 import { resolveFusionMode } from "../dist/lib/config-store.js";
+import { mergeResults, search } from "../dist/commands/search.js";
 import { useTempConfigDir } from "./helpers/config-dir-pin.js";
 import { hermeticMainDeps, getHermeticArtifactsDir } from "./helpers/hermetic-main.js";
 
@@ -189,6 +190,410 @@ describe("AC-1: search rejects --fusion and --no-fusion at parse time", () => {
     });
   }
 });
+
+// ---------------------------------------------------------------------------
+// T3 — RRF core + fusionScore emission (DESIGN D2)
+//
+// HAND-COMPUTED FIXTURE (arithmetic independently re-verified against the
+// grid below; every tie the chain relies on is bit-exact in IEEE-754
+// doubles because 60, 62, 93, 122, 124 are exact and 1/(2^k) subtracts
+// exactly). RRF score = Σ 1/(60+rank) over every grid occurrence.
+//
+//   3 arms × 2 sub-queries (FormattedResult {rank,title,url,summary}):
+//   tavily q1 [A r1, Q r2, F r62]        q2 [A r1, F r62, U r1]
+//   exa    q1 [A r1, P r33, C r40, W r63] q2 [P r33, C r40, B r1, W r63]
+//   brave  q1 [B r2, C r40, X r5]         q2 [E r1, Y r5, Q r126]
+//
+//   raw → toFixed(3)   occurrences / bestPos / mergedFrom
+//   A {1,1,1}  3/61 = 0.049180327868852458 → "0.049"  occ3 bp1 [tavily,exa]
+//   B {1,2}    1/61+1/62 = 0.032522474881015340 → "0.033" occ2 bp1 [exa,brave]
+//   C {40,40,40} 3/100 = 0.030000000000000000 → "0.030" occ3 bp40 [exa,brave]
+//   Q {2,126}  1/62+1/186 = 0.021505376344086023 → "0.022" occ2 bp2 [tavily,brave]
+//   P {33,33}  2/93      = 0.021505376344086023 → "0.022" occ2 bp33 [exa]
+//   F {62,62}  2/122     = 0.016393442622950820 → "0.016" occ2 bp62 [tavily]
+//   U {1}      1/61      = 0.016393442622950820 → "0.016" occ1 bp1 [tavily]
+//   E {1}      1/61      = 0.016393442622950820 → "0.016" occ1 bp1 [brave]
+//   W {63,63}  2/123     = 0.016260162601626018 → "0.016" occ2 bp63 [exa]
+//   X {5}      1/65      = 0.015384615384615385 → "0.015" occ1 bp5 [brave]
+//   Y {5}      1/65      = 0.015384615384615385 → "0.015" occ1 bp5 [brave]
+//
+// RRF ORDER:      A, B, C, Q, P, F, U, E, W, X, Y
+// OCCURRENCE:     A, C, B, Q, P, F, W, U, E, X, Y
+// Every chain link is exercised:
+//   score decides      B > C            (0.0325 vs 0.0300)
+//   exact score tie → occ desc         F > U   (both 0.016393442622950820)
+//   score+occ tie → bestPos asc        Q > P   (both 0.021505376344086023)
+//   full tie → first-encounter         U > E ; X > Y  (stable sort, insertion order)
+// W is the rounding-boundary probe: W.toFixed(3) === F.toFixed(3), so sorting
+// on the ROUNDED value would tie W with F/U/E and lift W above E on occ desc.
+// Raw-double sorting keeps W below all three.
+//
+// NOTE (fixture correction, reported to the orchestrator): the plan's hand
+// table attributes U to [exa], but the grid above places U in tavily q2, so
+// the grid-derived provenance is [tavily]. Ordering is unaffected (U carries
+// no score/occ distinction), and the assertion below follows the GRID.
+// ---------------------------------------------------------------------------
+
+/** The hand-computed 3-arm × 2-sub-query grid (layout in the header). */
+function fusionGrid() {
+  const fr = (rank, title, url) => ({ rank, title, url, summary: "s" });
+  return [
+    {
+      provider: "tavily",
+      results: [
+        [
+          fr(1, "A", "https://e/shared-top"),
+          fr(2, "Q", "https://e/bp-tie-wins"),
+          fr(62, "F", "https://e/twin-late"),
+        ],
+        [
+          fr(1, "A", "https://e/shared-top"),
+          fr(62, "F", "https://e/twin-late"),
+          fr(1, "U", "https://e/round-winner"),
+        ],
+      ],
+    },
+    {
+      provider: "exa",
+      results: [
+        [
+          fr(1, "A", "https://e/shared-top"),
+          fr(33, "P", "https://e/bp-tie-loses"),
+          fr(40, "C", "https://e/deep-many"),
+          fr(63, "W", "https://e/round-loser"),
+        ],
+        [
+          fr(33, "P", "https://e/bp-tie-loses"),
+          fr(40, "C", "https://e/deep-many"),
+          fr(1, "B", "https://e/high-few"),
+          fr(63, "W", "https://e/round-loser"),
+        ],
+      ],
+    },
+    {
+      provider: "brave",
+      results: [
+        [
+          fr(2, "B", "https://e/high-few"),
+          fr(40, "C", "https://e/deep-many"),
+          fr(5, "X", "https://e/encounter-first"),
+        ],
+        [
+          fr(1, "E", "https://e/solo-early"),
+          fr(5, "Y", "https://e/encounter-second"),
+          fr(126, "Q", "https://e/bp-tie-wins"),
+        ],
+      ],
+    },
+  ];
+}
+
+const EXPECTED_RRF_URLS = [
+  "https://e/shared-top", // A
+  "https://e/high-few", // B
+  "https://e/deep-many", // C
+  "https://e/bp-tie-wins", // Q
+  "https://e/bp-tie-loses", // P
+  "https://e/twin-late", // F
+  "https://e/round-winner", // U
+  "https://e/solo-early", // E
+  "https://e/round-loser", // W
+  "https://e/encounter-first", // X
+  "https://e/encounter-second", // Y
+];
+
+const EXPECTED_RRF_SCORES = [
+  "0.049",
+  "0.033",
+  "0.030",
+  "0.022",
+  "0.022",
+  "0.016",
+  "0.016",
+  "0.016",
+  "0.016",
+  "0.015",
+  "0.015",
+];
+
+const EXPECTED_OCCURRENCE_URLS = [
+  "https://e/shared-top", // A occ3 bp1
+  "https://e/deep-many", // C occ3 bp40
+  "https://e/high-few", // B occ2 bp1
+  "https://e/bp-tie-wins", // Q occ2 bp2
+  "https://e/bp-tie-loses", // P occ2 bp33
+  "https://e/twin-late", // F occ2 bp62
+  "https://e/round-loser", // W occ2 bp63
+  "https://e/round-winner", // U occ1 bp1
+  "https://e/solo-early", // E occ1 bp1
+  "https://e/encounter-first", // X occ1 bp5
+  "https://e/encounter-second", // Y occ1 bp5
+];
+
+/** Per-URL occurrences + mergedFrom, keyed by the emitted url (grid-derived). */
+const EXPECTED_META = {
+  "https://e/shared-top": { occurrences: 3, mergedFrom: ["tavily", "exa"] },
+  "https://e/high-few": { occurrences: 2, mergedFrom: ["exa", "brave"] },
+  "https://e/deep-many": { occurrences: 3, mergedFrom: ["exa", "brave"] },
+  "https://e/bp-tie-wins": { occurrences: 2, mergedFrom: ["tavily", "brave"] },
+  "https://e/bp-tie-loses": { occurrences: 2, mergedFrom: ["exa"] },
+  "https://e/twin-late": { occurrences: 2, mergedFrom: ["tavily"] },
+  "https://e/round-winner": { occurrences: 1, mergedFrom: ["tavily"] },
+  "https://e/solo-early": { occurrences: 1, mergedFrom: ["brave"] },
+  "https://e/round-loser": { occurrences: 2, mergedFrom: ["exa"] },
+  "https://e/encounter-first": { occurrences: 1, mergedFrom: ["brave"] },
+  "https://e/encounter-second": { occurrences: 1, mergedFrom: ["brave"] },
+};
+
+describe("T3 mergeResults rrf: the hand-computed table", () => {
+  it("emits the exact rrf order, fusionScore strings, occurrences and mergedFrom", () => {
+    const merged = mergeResults(fusionGrid(), { mode: "rrf", emitMergedFrom: true });
+    assert.deepStrictEqual(
+      merged.map((r) => r.url),
+      EXPECTED_RRF_URLS,
+      "raw-double score desc → occurrences desc → bestPos asc → first-encounter",
+    );
+    assert.deepStrictEqual(
+      merged.map((r) => r.fusionScore),
+      EXPECTED_RRF_SCORES,
+      "fusionScore strings (exactly 3 decimals, locale-independent)",
+    );
+    for (const row of merged) {
+      const meta = EXPECTED_META[row.url];
+      assert.strictEqual(row.occurrences, meta.occurrences, `occurrences for ${row.url}`);
+      assert.deepStrictEqual(row.mergedFrom, meta.mergedFrom, `mergedFrom for ${row.url}`);
+      assert.ok(!Object.hasOwn(row, "bestPos"), "bestPos is internal and must never leak");
+    }
+  });
+
+  it("appends fusionScore after the existing fields (row 1 key order)", () => {
+    const merged = mergeResults(fusionGrid(), { mode: "rrf", emitMergedFrom: true });
+    assert.deepStrictEqual(Object.keys(merged[0]), [
+      "rank",
+      "title",
+      "url",
+      "summary",
+      "occurrences",
+      "mergedFrom",
+      "fusionScore",
+    ]);
+  });
+
+  it("occurrence mode: same grid, occ order, NO fusionScore key anywhere", () => {
+    const merged = mergeResults(fusionGrid(), { mode: "occurrence", emitMergedFrom: true });
+    assert.deepStrictEqual(merged.map((r) => r.url), EXPECTED_OCCURRENCE_URLS);
+    for (const row of merged) {
+      assert.ok(
+        !Object.hasOwn(row, "fusionScore"),
+        `occurrence mode emits no fusionScore (leaked on ${row.url})`,
+      );
+      assert.ok(!Object.hasOwn(row, "bestPos"), "bestPos is internal and must never leak");
+      const meta = EXPECTED_META[row.url];
+      assert.strictEqual(row.occurrences, meta.occurrences, `occurrences for ${row.url}`);
+      assert.deepStrictEqual(row.mergedFrom, meta.mergedFrom, `mergedFrom for ${row.url}`);
+    }
+  });
+});
+
+describe("T3 tiebreak chain: each link is pinned by an adjacent pair", () => {
+  it("score decides: B (1/61+1/62) outranks C (3/100)", () => {
+    const merged = mergeResults(fusionGrid(), { mode: "rrf", emitMergedFrom: true });
+    const urls = merged.map((r) => r.url);
+    assert.strictEqual(urls.indexOf("https://e/high-few") + 1, urls.indexOf("https://e/deep-many"));
+    assert.ok(urls.indexOf("https://e/high-few") < urls.indexOf("https://e/deep-many"));
+  });
+
+  it("exact score tie → occurrences desc: F (occ2) before U (occ1)", () => {
+    const merged = mergeResults(fusionGrid(), { mode: "rrf", emitMergedFrom: true });
+    const urls = merged.map((r) => r.url);
+    const f = urls.indexOf("https://e/twin-late");
+    const u = urls.indexOf("https://e/round-winner");
+    assert.ok(f < u, "F and U share the raw score; occurrences desc breaks it");
+    assert.strictEqual(merged[f].fusionScore, merged[u].fusionScore, "display tie");
+  });
+
+  it("score+occ tie → bestPos asc: Q (bp2) before P (bp33)", () => {
+    const merged = mergeResults(fusionGrid(), { mode: "rrf", emitMergedFrom: true });
+    const urls = merged.map((r) => r.url);
+    const q = urls.indexOf("https://e/bp-tie-wins");
+    const p = urls.indexOf("https://e/bp-tie-loses");
+    assert.strictEqual(q + 1, p, "Q and P are adjacent");
+    assert.strictEqual(merged[q].fusionScore, merged[p].fusionScore, "bit-exact raw tie");
+    assert.strictEqual(merged[q].occurrences, merged[p].occurrences, "same occurrence count");
+  });
+
+  it("full tie → first-encounter: U before E, X before Y", () => {
+    const merged = mergeResults(fusionGrid(), { mode: "rrf", emitMergedFrom: true });
+    const urls = merged.map((r) => r.url);
+    assert.ok(
+      urls.indexOf("https://e/round-winner") < urls.indexOf("https://e/solo-early"),
+      "U and E are full ties; exa q2 precedes brave q2",
+    );
+    assert.ok(
+      urls.indexOf("https://e/encounter-first") < urls.indexOf("https://e/encounter-second"),
+      "X and Y are full ties; X encountered first",
+    );
+  });
+
+  it("W is the rounding-boundary probe: same display string, lower raw score, stays last", () => {
+    const merged = mergeResults(fusionGrid(), { mode: "rrf", emitMergedFrom: true });
+    const urls = merged.map((r) => r.url);
+    const w = urls.indexOf("https://e/round-loser");
+    // W.toFixed(3) === F/U/E display string, so a rounded-value sort would
+    // lift W above E on occurrences desc. Raw-double sorting must not.
+    assert.strictEqual(merged[w].fusionScore, "0.016");
+    assert.ok(w > urls.indexOf("https://e/round-winner"), "W stays below U");
+    assert.ok(w > urls.indexOf("https://e/solo-early"), "W stays below E");
+  });
+});
+
+describe("T3 rrf determinism", () => {
+  it("two runs over the same grid serialize identically (rounding included)", () => {
+    const a = mergeResults(fusionGrid(), { mode: "rrf", emitMergedFrom: true });
+    const b = mergeResults(fusionGrid(), { mode: "rrf", emitMergedFrom: true });
+    assert.strictEqual(JSON.stringify(a), JSON.stringify(b));
+  });
+});
+
+describe("T3 mode is a required caller-supplied seam", () => {
+  it("an absent mode throws a plain Error (internal invariant, not ValidationError)", () => {
+    assert.throws(
+      () => mergeResults(fusionGrid()),
+      (error) => {
+        assert.strictEqual(error.name, "Error", "plain Error, never ValidationError");
+        assert.match(String(error.message), /mode/i);
+        return true;
+      },
+    );
+  });
+
+  it("an unknown mode string throws the same plain Error", () => {
+    assert.throws(
+      () => mergeResults(fusionGrid(), { mode: "bogus" }),
+      (error) => error.name === "Error" && /mode/i.test(String(error.message)),
+    );
+  });
+});
+
+describe("T3 fusionScore flows through --fields (search seam) and the single-provider merge", () => {
+  it("fields ['url','fusionScore'] projects exactly those two keys under rrf", async () => {
+    const { result } = await runFusionSearch(
+      "a|b",
+      { merge: true, fields: ["url", "fusionScore"] },
+      {
+        a: [fr("A1", "https://e/shared", "sa"), fr("A2", "https://e/only-a", "oa")],
+        b: [fr("B1", "https://e/shared", "sb")],
+      },
+      "rrf",
+    );
+    assert.ok(result.data.length > 0);
+    for (const row of result.data) {
+      assert.deepStrictEqual(Object.keys(row).sort(), ["fusionScore", "url"]);
+      assert.match(row.fusionScore, /^\d+\.\d{3}$/, "3-decimal string survives the projection");
+    }
+  });
+
+  it("without --fields the rrf rows carry fusionScore among the standard fields", async () => {
+    const { result } = await runFusionSearch(
+      "a|b",
+      { merge: true },
+      {
+        a: [fr("A1", "https://e/shared", "sa"), fr("A2", "https://e/only-a", "oa")],
+        b: [fr("B1", "https://e/shared", "sb")],
+      },
+      "rrf",
+    );
+    for (const row of result.data) {
+      assert.ok(Object.hasOwn(row, "fusionScore"), "rf rows carry fusionScore");
+      assert.match(row.fusionScore, /^\d+\.\d{3}$/);
+    }
+  });
+
+  it("single seam: the same search() merge under occurrence is unchanged (no fusionScore)", async () => {
+    const { result } = await runFusionSearch(
+      "a|b",
+      { merge: true },
+      {
+        a: [fr("A1", "https://e/shared", "shared A"), fr("A2", "https://e/only-a", "only A")],
+        b: [fr("B1", "https://e/shared", "shared B"), fr("B2", "https://e/only-b", "only B")],
+      },
+      "occurrence",
+    );
+    assert.deepStrictEqual(result.data, [
+      { rank: 1, title: "A1", url: "https://e/shared", summary: "shared A", occurrences: 2 },
+      { rank: 2, title: "A2", url: "https://e/only-a", summary: "only A", occurrences: 1 },
+      { rank: 3, title: "B2", url: "https://e/only-b", summary: "only B", occurrences: 1 },
+    ]);
+    assert.strictEqual(
+      JSON.stringify(result.data),
+      '[{"rank":1,"title":"A1","url":"https://e/shared","summary":"shared A","occurrences":2},' +
+        '{"rank":2,"title":"A2","url":"https://e/only-a","summary":"only A","occurrences":1},' +
+        '{"rank":3,"title":"B2","url":"https://e/only-b","summary":"only B","occurrences":1}]',
+      "byte-identical to today's single-path output shape",
+    );
+  });
+});
+
+// --- T3 local helpers (mirroring tests/search-fanout.test.js:332) ---------
+
+/** Shorthand for a single formatted result (search-fanout.test.js `src`). */
+function fr(title, url, summary) {
+  return { rank: 1, title, url, summary };
+}
+
+/** Build a fake SearchCapability returning scripted results per query. */
+function makeFakeCapability(resultsByQuery) {
+  const invokes = [];
+  const capability = {
+    validate() {},
+    cacheIdentity(request) {
+      return {
+        provider: "zai",
+        capability: "search",
+        credentialFingerprint: "fake-fingerprint",
+        request,
+        legacyCandidates: [],
+      };
+    },
+    async invoke(request) {
+      invokes.push(request);
+      return resultsByQuery[request.query] ?? [];
+    },
+  };
+  return { capability, invokes };
+}
+
+/** Drive the exported search() with an injected fusion mode. */
+async function runFusionSearch(query, options, resultsByQuery, fusionMode) {
+  const fake = makeFakeCapability(resultsByQuery);
+  const store = new Map();
+  const notices = [];
+  const context = {
+    stdinIsTTY: false,
+    readStdin: async () => "",
+    notice: (m) => notices.push(m),
+  };
+  const result = await search(
+    query,
+    options,
+    {
+      capability: fake.capability,
+      cache: {
+        async get(key) {
+          return store.has(key) ? store.get(key) : null;
+        },
+        async set(key, value) {
+          store.set(key, value);
+        },
+      },
+      sleep: async () => {},
+      random: () => 0.5,
+      fusionMode,
+    },
+    context,
+  );
+  return { result, fake, notices };
+}
 
 // ---------------------------------------------------------------------------
 // Local helpers (mirroring tests/config-command.test.js + search-fanout patterns)

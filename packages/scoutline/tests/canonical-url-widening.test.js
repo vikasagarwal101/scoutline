@@ -63,12 +63,12 @@ test("merge seam dedupes www/apex pairs but emits the first writer's URL verbati
       results: [[{ rank: 1, title: "E", url: "https://example.com/p", summary: "s2" }]],
     },
   ];
-  const merged = mergeResults(grid);
+  const merged = mergeResults(grid, { mode: "occurrence" });
   assert.equal(merged.length, 1);
   assert.equal(merged[0].url, "https://www.example.com/p");
   assert.equal(merged[0].occurrences, 2);
 
-  const reversed = mergeResults([...grid].reverse());
+  const reversed = mergeResults([...grid].reverse(), { mode: "occurrence" });
   assert.equal(reversed.length, 1);
   assert.equal(reversed[0].url, "https://example.com/p");
   assert.equal(reversed[0].occurrences, 2);

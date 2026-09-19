@@ -20,6 +20,7 @@ import type {
   SearchType,
 } from "../capabilities/search.js";
 import type { ResponseCache } from "../lib/cache.js";
+import type { FusionMode } from "../lib/config-store.js";
 import type { RetryPolicy } from "../lib/execution.js";
 import { executeSearch } from "../lib/execution.js";
 import { rejectSmuggledMaxChars, type LadderRule } from "../lib/output-budget.js";
@@ -75,6 +76,15 @@ export interface SearchExecutionDependencies {
   readonly consume?: ConsumptionSink;
   /** Timestamp source for consumption events; defaults to `Date.now`. */
   readonly now?: () => number;
+  /**
+   * Fusion ranking mode (seed-24 T3). Resolved ONCE at the handler seam
+   * via `resolveFusionMode` (env > config > default "rrf") and threaded
+   * here so the command never parses a flag or a config file itself.
+   * Omitted (tests and other direct callers) → "rrf", the standing
+   * default; the merge seam still requires an explicit value, so this
+   * default lives at the caller and never inside `mergeResults`.
+   */
+  readonly fusionMode?: FusionMode;
 }
 
 export interface FormattedResult {
@@ -193,6 +203,14 @@ export interface MergeGridArm {
 }
 
 export interface MergeResultsOptions {
+  /**
+   * Ranking algorithm. REQUIRED — the caller resolves it (production:
+   * `deps.fusionMode`, defaulting to "rrf" at the handler seam), so the
+   * seam cannot silently drift to a default inside the merge. A value
+   * that is neither mode throws a plain Error (internal invariant, not
+   * a user-facing ValidationError).
+   */
+  mode: FusionMode;
   /** Emit mergedFrom provenance on every result (fan-out active). */
   emitMergedFrom?: boolean;
   /** Post-merge --count cap. Each arm was already asked for this count. */
@@ -200,27 +218,58 @@ export interface MergeResultsOptions {
 }
 
 /**
- * Merge results from an (arm × sub-query) grid (DESIGN D3). Generalizes
- * the pre-fan-out sub-query merge with exactly one new key: dedupe by
- * `canonicalUrl(url)` (DESIGN D4) instead of the raw string. Ranking is
- * unchanged — (occurrence count desc, best position asc) — but
- * `occurrences` now counts across the whole arms × sub-queries grid.
+ * Reciprocal-rank-fusion constant (DESIGN D2). Fixed by the fusion
+ * contract — deliberately NOT a knob, a parameter, or a config value:
+ * the fusionScore for every row must stay comparable across runs,
+ * providers, and machines.
+ */
+const RRF_K = 60;
+
+/** A merge map row: emitted fields + the ranking bookkeeping. */
+type MergedRow = FormattedResult & {
+  occurrences: number;
+  bestPos: number;
+  mergedFrom: ProviderId[];
+  /** Raw RRF sum; only ever accumulated under mode "rrf". */
+  score: number;
+};
+
+/**
+ * Merge results from an (arm × sub-query) grid (DESIGN D3, D2). Generalizes
+ * the pre-fan-out sub-query merge with two new keys: dedupe by
+ * `canonicalUrl(url)` (DESIGN D4) instead of the raw string, and a
+ * caller-supplied ranking `mode`.
+ *
  * First-writer-wins: the earlier arm's title/summary/url win a collision
  * (arm order is the tiebreak priority). Every URL accumulates
  * `mergedFrom` (distinct providers, first-encounter order) when
  * `emitMergedFrom` is set, and the merged list is sliced to `count`
  * post-merge. The single-provider `--merge` path and the fan-out path
  * share this one implementation.
+ *
+ * Ranking:
+ *   - `"occurrence"` (legacy): occurrence count desc → best position asc,
+ *     over a stable sort. Byte-identical to the pre-fusion merge.
+ *   - `"rrf"`: raw reciprocal-rank score desc (`Σ 1/(RRF_K + rank)` over
+ *     every grid occurrence) → occurrences desc → bestPos asc →
+ *     first-encounter (the stable sort's insertion order). The sort runs
+ *     on the RAW double, never on the rounded display value: two rows
+ *     that round to the same `fusionScore` still order by their true
+ *     scores. Under this mode every row emits `fusionScore` (exactly
+ *     three decimals, locale-independent); under "occurrence" the key is
+ *     absent entirely.
+ *
+ * `bestPos` is internal bookkeeping in both modes and never emitted.
  */
-export function mergeResults(
-  grid: MergeGridArm[],
-  options: MergeResultsOptions = {},
-): FormattedResult[] {
-  const { emitMergedFrom = false, count } = options;
-  const map = new Map<
-    string,
-    FormattedResult & { occurrences: number; bestPos: number; mergedFrom: ProviderId[] }
-  >();
+export function mergeResults(grid: MergeGridArm[], options: MergeResultsOptions): FormattedResult[] {
+  const { mode, emitMergedFrom = false, count } = options ?? ({} as MergeResultsOptions);
+  if (mode !== "rrf" && mode !== "occurrence") {
+    throw new Error(
+      `mergeResults requires an explicit mode ("rrf" | "occurrence"); got ${JSON.stringify(mode)}.`,
+    );
+  }
+  const isRrf = mode === "rrf";
+  const map = new Map<string, MergedRow>();
   for (const arm of grid) {
     for (const results of arm.results) {
       for (const r of results) {
@@ -231,6 +280,10 @@ export function mergeResults(
         if (existing) {
           existing.occurrences += 1;
           existing.bestPos = Math.min(existing.bestPos, r.rank);
+          // Score accumulation shares the map-build loop; under
+          // "occurrence" it is never computed at all (the legacy path
+          // stays byte-identical and cheap).
+          if (isRrf) existing.score += 1 / (RRF_K + r.rank);
           if (emitMergedFrom && arm.provider && !existing.mergedFrom.includes(arm.provider)) {
             existing.mergedFrom.push(arm.provider);
           }
@@ -239,6 +292,7 @@ export function mergeResults(
             ...r,
             occurrences: 1,
             bestPos: r.rank,
+            score: isRrf ? 1 / (RRF_K + r.rank) : 0,
             mergedFrom: emitMergedFrom && arm.provider ? [arm.provider] : [],
           });
         }
@@ -246,26 +300,40 @@ export function mergeResults(
     }
   }
   let merged = Array.from(map.values());
-  merged.sort((a, b) => {
-    if (b.occurrences !== a.occurrences) return b.occurrences - a.occurrences;
-    return a.bestPos - b.bestPos;
-  });
+  if (isRrf) {
+    // Raw double first — occurrences and bestPos only break exact ties.
+    // The stable sort leaves full ties in insertion (first-encounter)
+    // order, so no explicit encounter index is needed.
+    merged.sort(
+      (a, b) => b.score - a.score || b.occurrences - a.occurrences || a.bestPos - b.bestPos,
+    );
+  } else {
+    merged.sort((a, b) => {
+      if (b.occurrences !== a.occurrences) return b.occurrences - a.occurrences;
+      return a.bestPos - b.bestPos;
+    });
+  }
   // Post-merge --count slice (each arm was already asked for this count).
   if (count !== undefined) {
     merged = merged.slice(0, Math.max(0, count));
   }
   return merged.map((r, i) => {
-    const { bestPos: _bp, ...rest } = r;
+    const { bestPos: _bp, score: _score, ...rest } = r;
     void _bp;
+    void _score;
     const rank = i + 1;
+    // fusionScore is appended AFTER the emitted fields (key-order pin)
+    // and only under rrf; a result row keeps the first writer's key
+    // order otherwise, so `rank` overwrites in place.
+    const row = isRrf ? { ...rest, fusionScore: r.score.toFixed(3) } : rest;
     if (!emitMergedFrom) {
       // Omit mergedFrom entirely on the single path (SCHEMA.md) so the
       // emitted objects stay byte-identical to the pre-fan-out merge.
-      const { mergedFrom: _mf, ...restNoProvenance } = rest;
+      const { mergedFrom: _mf, ...restNoProvenance } = row;
       void _mf;
       return { ...restNoProvenance, rank };
     }
-    return { ...rest, rank };
+    return { ...row, rank };
   });
 }
 
@@ -385,7 +453,7 @@ export async function search(
   // value must fail loud, not silently no-budget.
   rejectSmuggledMaxChars(options, "search");
 
-  const { capability, cache, sleep, random, retryPolicy, consume, now } = deps;
+  const { capability, cache, sleep, random, retryPolicy, consume, now, fusionMode } = deps;
 
   // Split query on `|` if --merge is set. Empty fragments are dropped.
   // A literal pipe in a single query can be escaped as `\|` (won't split).
@@ -431,9 +499,10 @@ export async function search(
   // The single-provider --merge path and the fan-out path (Ticket 3)
   // share one merge implementation. The single path passes no provider
   // and no count, so its output is byte-identical to the pre-fan-out
-  // merge (no mergedFrom field, no post-merge slice).
+  // merge (no mergedFrom field, no post-merge slice). Seed-24 T3: the
+  // ranking mode is named here, at the caller — the seam never defaults.
   const formattedResults: FormattedResult[] = isMerge
-    ? mergeResults([{ results: perQueryFormatted }])
+    ? mergeResults([{ results: perQueryFormatted }], { mode: fusionMode ?? "rrf" })
     : perQueryFormatted[0] || [];
 
   if (isMerge && context) {
@@ -673,6 +742,13 @@ export interface FanoutExecutionOptions {
   readonly env: NodeJS.ProcessEnv;
   readonly query: string;
   readonly searchOptions: SearchOptions;
+  /**
+   * Fusion ranking mode for the (arm × sub-query) merge (seed-24 T3),
+   * threaded from the handler's `deps.fusionMode`. Required: the fan-out
+   * merge always names its ranking algorithm explicitly — there is no
+   * defaulting inside the executor.
+   */
+  readonly fusionMode: FusionMode;
   readonly dependencies: FanoutExecutionDependencies;
   readonly secrets?: string[];
 }
@@ -852,6 +928,7 @@ export async function executeFanoutPlan(
     results: s.results,
   }));
   const merged: FormattedResult[] = mergeResults(grid, {
+    mode: options.fusionMode,
     emitMergedFrom: true,
     count: options.searchOptions.count,
   });

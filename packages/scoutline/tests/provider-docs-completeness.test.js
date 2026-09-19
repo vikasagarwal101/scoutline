@@ -14,7 +14,11 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import { PROVIDER_IDS } from "../dist/providers/types.js";
-import { PROVIDER_LABELS as PROVIDER_MATRIX_LABELS } from "../dist/providers/catalog.js";
+import {
+  PROVIDER_LABELS as PROVIDER_MATRIX_LABELS,
+  SHARED_PROVIDER_IDS,
+  SHARED_PROVIDER_FLAG_IDS,
+} from "../dist/providers/catalog.js";
 
 const architecture = fs.readFile(new URL("../../../docs/architecture.md", import.meta.url), "utf8");
 const skill = fs.readFile(new URL("../skills/scoutline/SKILL.md", import.meta.url), "utf8");
@@ -112,5 +116,100 @@ describe("doc completeness — troubleshooting.md unknown-provider surfaces (#16
       [...PROVIDER_IDS],
       "prose id sequence must equal PROVIDER_IDS in registry order",
     );
+  });
+});
+const rootReadme = fs.readFile(new URL("../../../README.md", import.meta.url), "utf8");
+const packageReadme = fs.readFile(new URL("../README.md", import.meta.url), "utf8");
+const configuration = fs.readFile(
+  new URL("../../../docs/configuration.md", import.meta.url),
+  "utf8",
+);
+
+describe("doc completeness — README + configuration.md follow the shared provider set (#238)", () => {
+  function sharedMatrixLabels() {
+    return SHARED_PROVIDER_IDS.map((id) => {
+      const label = PROVIDER_MATRIX_LABELS[id];
+      assert.ok(label, `PROVIDER_MATRIX_LABELS is missing ${id}`);
+      return label;
+    });
+  }
+
+  function providerSelection(text, what) {
+    const start = text.indexOf("## Provider Selection");
+    assert.ok(start >= 0, `${what} must have ## Provider Selection`);
+    const next = text.indexOf("\n## ", start + 1);
+    return text.slice(start, next > start ? next : undefined);
+  }
+
+  function delimiterRow(text, header, what) {
+    const idx = text.indexOf(header);
+    assert.ok(idx >= 0, `${what} capability matrix must include header: ${header}`);
+    return text.slice(idx).split("\n")[1] ?? "";
+  }
+
+  function assertDelimiterMatchesHeader(delimiter, header, what) {
+    const headerCells = header.split("|").map((c) => c.trim()).filter((c) => c !== "");
+    const cells = delimiter.split("|").map((c) => c.trim()).filter((c) => c !== "");
+    assert.equal(
+      cells.length,
+      headerCells.length,
+      `${what} capability matrix delimiter row must have one cell per header column`,
+    );
+    assert.ok(
+      cells.every((c) => /^:?-+:?$/.test(c)),
+      `${what} capability matrix delimiter row cells must all be delimiters: ${delimiter}`,
+    );
+  }
+
+  it("root README Provider Selection enum matches the shared flag set", async () => {
+    const section = providerSelection(await rootReadme, "root README");
+    const expected = `--provider <${SHARED_PROVIDER_FLAG_IDS}>`;
+    assert.ok(
+      section.includes(expected),
+      `root README Provider Selection must include ${expected}`,
+    );
+  });
+
+  it("root README capability matrix header and delimiter match the shared registry", async () => {
+    const text = await rootReadme;
+    const header = `| Capability | ${sharedMatrixLabels().join(" | ")} | Command |`;
+    assertDelimiterMatchesHeader(delimiterRow(text, header, "root README"), header, "root README");
+  });
+
+  it("package README Provider Selection enum matches the shared flag set", async () => {
+    const section = providerSelection(await packageReadme, "package README");
+    const expected = `--provider <${SHARED_PROVIDER_FLAG_IDS}>`;
+    assert.ok(
+      section.includes(expected),
+      `package README Provider Selection must include ${expected}`,
+    );
+  });
+
+  it("package README capability matrix header and delimiter match the shared registry", async () => {
+    const text = await packageReadme;
+    const header = `| Capability | ${sharedMatrixLabels().join(" | ")} | Notes |`;
+    assertDelimiterMatchesHeader(
+      delimiterRow(text, header, "package README"),
+      header,
+      "package README",
+    );
+  });
+
+  it("configuration.md bracket enumerations equal SHARED_PROVIDER_IDS exactly (2 occurrences)", async () => {
+    const text = await configuration;
+    const matches = [...text.matchAll(/\[zai, [^\]]*\]/g)];
+    const expected = `[${SHARED_PROVIDER_IDS.join(", ")}]`;
+    assert.equal(
+      matches.length,
+      2,
+      `configuration.md must have exactly 2 bracket enumerations, found ${matches.length}`,
+    );
+    for (const match of matches) {
+      assert.equal(
+        match[0],
+        expected,
+        "configuration.md bracket enumeration must equal SHARED_PROVIDER_IDS in registry order",
+      );
+    }
   });
 });

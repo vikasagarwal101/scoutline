@@ -448,8 +448,16 @@ describe("mergeResults: cross-arm near-duplicates collapse by canonical identity
 });
 
 // --- occurrence ranking across the (arm × sub-query) grid ----------------
+//
+// The merge pins in this section (from here down to the single-provider
+// golden) all exercise the OCCURRENCE mode explicitly — they are the
+// legacy-behavior pins. The standing byte-identity authority for this path
+// is the A/B golden suite in tests/fusion.test.js ("occurrence mode:
+// byte-identity golden (AC-4)"), which compares full serialized output
+// against bytes captured at main @ 9ac85fd. These pins stay narrower on
+// purpose: they name the individual behaviors that suite covers in bulk.
 
-describe("mergeResults: occurrence ranking across the arms × sub-queries grid", () => {
+describe("mergeResults: occurrence ranking across the arms × sub-queries grid (occurrence mode — AC-4 legacy pin)", () => {
   it("counts occurrences across every arm and sub-query, then ranks (occ desc, bestPos asc)", () => {
     const grid = [
       {
@@ -486,7 +494,7 @@ describe("mergeResults: occurrence ranking across the arms × sub-queries grid",
 
 // --- arm-order first-writer-wins -----------------------------------------
 
-describe("mergeResults: earlier arm's metadata wins on collision", () => {
+describe("mergeResults: earlier arm's metadata wins on collision (occurrence mode — AC-4 legacy pin)", () => {
   it("keeps the first arm's title/summary/url for a shared canonical URL", () => {
     const grid = [
       { provider: "tavily", results: [[{ rank: 1, title: "First", url: "https://e/page", summary: "first summary" }]] },
@@ -502,7 +510,7 @@ describe("mergeResults: earlier arm's metadata wins on collision", () => {
 
 // --- mergedFrom provenance ----------------------------------------------
 
-describe("mergeResults: mergedFrom provenance (unique, first-encounter order)", () => {
+describe("mergeResults: mergedFrom provenance (unique, first-encounter order) (occurrence mode — AC-4 legacy pin)", () => {
   it("accumulates distinct providers in first-encounter order across a three-arm collision", () => {
     const grid = [
       { provider: "tavily", results: [[{ rank: 1, title: "T", url: "https://e/collide", summary: "t" }]] },
@@ -544,7 +552,7 @@ describe("mergeResults: mergedFrom provenance (unique, first-encounter order)", 
 
 // --- post-merge --count slice --------------------------------------------
 
-describe("mergeResults: post-merge --count slice", () => {
+describe("mergeResults: post-merge --count slice (occurrence mode — AC-4 legacy pin)", () => {
   const grid = [
     {
       provider: "tavily",
@@ -583,7 +591,7 @@ describe("mergeResults: post-merge --count slice", () => {
 
 // --- single-provider --merge golden (byte-identical to pre-fan-out) ------
 
-describe("single-provider --merge path: golden byte-identical output", () => {
+describe("single-provider --merge path: golden byte-identical output (occurrence mode — AC-4 legacy pin)", () => {
   it("produces today's exact merged data (no mergedFrom, no count slice)", async () => {
     // Seed-24 T3: this pin guards LEGACY merge behavior (T4 re-scopes it);
     // runSearch defaults to the occurrence mode.

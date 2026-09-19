@@ -52,7 +52,10 @@ test("strip touches only the host; path and surviving query untouched", () => {
   assert.ok(canonical.endsWith("/p"), `unexpected identity: ${canonical}`);
 });
 
-test("merge seam dedupes www/apex pairs but emits the first writer's URL verbatim", () => {
+// Occurrence mode (AC-4 legacy pin): this merge seam runs the legacy ranking;
+// the byte-identity authority for that path is the A/B golden suite in
+// tests/fusion.test.js ("occurrence mode: byte-identity golden (AC-4)").
+test("merge seam dedupes www/apex pairs but emits the first writer's URL verbatim (occurrence mode — AC-4 legacy pin)", () => {
   const grid = [
     {
       provider: "tavily",

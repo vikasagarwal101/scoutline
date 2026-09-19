@@ -534,6 +534,237 @@ describe("T3 fusionScore flows through --fields (search seam) and the single-pro
   });
 });
 
+// ---------------------------------------------------------------------------
+// T4 — occurrence-mode byte-identity golden (PRD AC-4)
+//
+// CURATION RULES — the fixture set is audited for near-dup crossings and
+// curated to none, so this suite stays valid across the whole fan-out lane:
+//   (a) www-SAFE: no fixture URL is the www/apex twin of another. Every host
+//       is the single label `e` with a distinct path, so T2's URL-identity
+//       widening can never collapse two golden rows into one.
+//   (b) SHINGLE-SAFE: every title is at most two words and every summary is
+//       a single whitespace-free token, so no title/summary n-gram can
+//       collide across rows. The upcoming T5 title clustering has nothing
+//       to merge here.
+//
+// CAPTURE PROCEDURE — goldens captured at main @ 9ac85fd, BEFORE any change
+// on this lane (PRD AC-4 "golden bytes captured at main"), and pasted
+// VERBATIM below: `git archive main packages/scoutline` into a scratch tree,
+// `npm run build` there, then run the three grids through that tree's own
+// `mergeResults(grid, {emitMergedFrom[, count]})` — main has NO mode option,
+// so its occurrence ranking is simply the default — and record
+// `JSON.stringify(...)` unchanged. The worktree dist is never touched.
+// Fingerprints (sha256 of each literal, first 24 hex chars):
+//   G1 f4f43be3199c0a357e4986ed
+//   G2 baef9d58270ca0ef472a2acf
+//   G3 595a2d86f83cbd6a00cf7019
+//
+// The grids also drive the A/B leg: the SAME grid under "rrf" must agree on
+// every row's metadata (first-writer title/summary/url, occurrences,
+// mergedFrom) and differ only by rank order plus the added fusionScore.
+// ---------------------------------------------------------------------------
+
+/** G1/G3 fixture — 3 arms × 2 sub-queries; the {1,63,40} / {4,40} shape. */
+function goldenGridG1() {
+  const g = (rank, title, url, summary) => ({ rank, title, url, summary });
+  return [
+    {
+      provider: "tavily",
+      results: [
+        [
+          g(1, "Tav A", "https://e/shared", "s-tav-q1-r1"),
+          g(2, "Tav B", "https://e/only-a", "s-tav-q1-r2"),
+        ],
+        [g(1, "Tav C", "https://e/shared", "s-tav-q2-r1")],
+      ],
+    },
+    {
+      provider: "exa",
+      results: [
+        [
+          g(1, "Exa D", "https://e/shared", "s-exa-q1-r1"),
+          g(63, "Exa E", "https://e/high-few", "s-exa-q1-r63"),
+        ],
+        [],
+      ],
+    },
+    {
+      provider: "brave",
+      results: [
+        [
+          g(2, "Brave F", "https://e/high-few", "s-brave-q1-r2"),
+          g(4, "Brave G", "https://e/deep-many", "s-brave-q1-r4"),
+          g(40, "Brave H", "https://e/deep-many2", "s-brave-q1-r40"),
+        ],
+        [g(40, "Brave I", "https://e/deep-many", "s-brave-q2-r40")],
+      ],
+    },
+  ];
+}
+
+/** G2 fixture — one arm, no provider, two sub-queries (single-path shape). */
+function goldenGridG2() {
+  const g = (rank, title, url, summary) => ({ rank, title, url, summary });
+  return [
+    {
+      results: [
+        [
+          g(1, "A One", "https://e/x", "s-q1-r1"),
+          g(2, "B Two", "https://e/y", "s-q1-r2"),
+        ],
+        [
+          g(1, "C Three", "https://e/x", "s-q2-r1"),
+          g(3, "D Four", "https://e/z", "s-q2-r3"),
+        ],
+      ],
+    },
+  ];
+}
+
+/** main @ 9ac85fd, G1: emitMergedFrom, no count. */
+const GOLDEN_G1 =
+  "[{\"rank\":1,\"title\":\"Tav A\",\"url\":\"https://e/shared\",\"summary\":\"s-tav-q1-r1\",\"occurrences\":3,\"mergedFrom\":[\"tavily\",\"exa\"]}," +
+  "{\"rank\":2,\"title\":\"Exa E\",\"url\":\"https://e/high-few\",\"summary\":\"s-exa-q1-r63\",\"occurrences\":2,\"mergedFrom\":[\"exa\",\"brave\"]}," +
+  "{\"rank\":3,\"title\":\"Brave G\",\"url\":\"https://e/deep-many\",\"summary\":\"s-brave-q1-r4\",\"occurrences\":2,\"mergedFrom\":[\"brave\"]}," +
+  "{\"rank\":4,\"title\":\"Tav B\",\"url\":\"https://e/only-a\",\"summary\":\"s-tav-q1-r2\",\"occurrences\":1,\"mergedFrom\":[\"tavily\"]}," +
+  "{\"rank\":5,\"title\":\"Brave H\",\"url\":\"https://e/deep-many2\",\"summary\":\"s-brave-q1-r40\",\"occurrences\":1,\"mergedFrom\":[\"brave\"]}]";
+
+/** main @ 9ac85fd, G2: no emitMergedFrom (single path), no count. */
+const GOLDEN_G2 =
+  "[{\"rank\":1,\"title\":\"A One\",\"url\":\"https://e/x\",\"summary\":\"s-q1-r1\",\"occurrences\":2}," +
+  "{\"rank\":2,\"title\":\"B Two\",\"url\":\"https://e/y\",\"summary\":\"s-q1-r2\",\"occurrences\":1}," +
+  "{\"rank\":3,\"title\":\"D Four\",\"url\":\"https://e/z\",\"summary\":\"s-q2-r3\",\"occurrences\":1}]";
+
+/** main @ 9ac85fd, G3: G1's arms with emitMergedFrom + count 2. */
+const GOLDEN_G3 =
+  "[{\"rank\":1,\"title\":\"Tav A\",\"url\":\"https://e/shared\",\"summary\":\"s-tav-q1-r1\",\"occurrences\":3,\"mergedFrom\":[\"tavily\",\"exa\"]}," +
+  "{\"rank\":2,\"title\":\"Exa E\",\"url\":\"https://e/high-few\",\"summary\":\"s-exa-q1-r63\",\"occurrences\":2,\"mergedFrom\":[\"exa\",\"brave\"]}]";
+
+/**
+ * `sameRowSet` is false for G3 only: the --count slice runs AFTER ranking, so
+ * the two modes slice in different rows and only the count survives as an
+ * invariant. The reordering consequence is pinned by its own test below.
+ */
+const GOLDEN_GRIDS = [
+  {
+    name: "G1 fan-out shape",
+    grid: goldenGridG1,
+    options: { emitMergedFrom: true },
+    golden: GOLDEN_G1,
+    sameRowSet: true,
+  },
+  { name: "G2 single-path shape", grid: goldenGridG2, options: {}, golden: GOLDEN_G2, sameRowSet: true },
+  {
+    name: "G3 count slice",
+    grid: goldenGridG1,
+    options: { emitMergedFrom: true, count: 2 },
+    golden: GOLDEN_G3,
+    sameRowSet: false,
+  },
+];
+
+/**
+ * Rows keyed by url with `rank` and `fusionScore` dropped: the two keys that
+ * legitimately differ between the modes. Everything left — first-writer
+ * title/summary/url, occurrences, mergedFrom — must be mode-invariant.
+ */
+function rowsWithoutRankOrScore(rows) {
+  const map = new Map();
+  for (const row of rows) {
+    const { rank: _rank, fusionScore: _score, ...rest } = row;
+    void _rank;
+    void _score;
+    map.set(row.url, rest);
+  }
+  return map;
+}
+
+describe("occurrence mode: byte-identity golden (AC-4)", () => {
+  for (const { name, grid, options, golden, sameRowSet } of GOLDEN_GRIDS) {
+    it(`${name}: occurrence output is byte-identical to the main @ 9ac85fd capture`, () => {
+      const merged = mergeResults(grid(), { mode: "occurrence", ...options });
+      const bytes = JSON.stringify(merged);
+      assert.strictEqual(bytes, golden, `${name} drifted from the captured main bytes`);
+      // Guard the guard: the literal is a real capture, not a mirror of the
+      // live output — it must still parse back to the same rows.
+      assert.deepStrictEqual(JSON.parse(golden), JSON.parse(bytes));
+      for (const row of merged) {
+        assert.ok(!Object.hasOwn(row, "fusionScore"), `occurrence emits no fusionScore (${row.url})`);
+      }
+    });
+
+    it(`${name}: rrf keeps every row's metadata and the same row count`, () => {
+      const occurrence = mergeResults(grid(), { mode: "occurrence", ...options });
+      const rrf = mergeResults(grid(), { mode: "rrf", ...options });
+      assert.strictEqual(rrf.length, occurrence.length, "row count is mode-invariant");
+      if (!sameRowSet) {
+        // The count slice is applied post-ranking, so a differing order
+        // legitimately selects different rows. Only the two-mode
+        // equivalence is asserted for this grid.
+        return;
+      }
+      assert.deepStrictEqual(
+        rowsWithoutRankOrScore(rrf),
+        rowsWithoutRankOrScore(occurrence),
+        "title/url/summary/occurrences/mergedFrom are mode-invariant",
+      );
+    });
+
+    it(`${name}: every rrf row carries a 3-decimal fusionScore string`, () => {
+      const rrf = mergeResults(grid(), { mode: "rrf", ...options });
+      for (const row of rrf) {
+        assert.ok(Object.hasOwn(row, "fusionScore"), `fusionScore present on ${row.url}`);
+        assert.strictEqual(typeof row.fusionScore, "string", `fusionScore is a string (${row.url})`);
+        assert.match(row.fusionScore, /^\d+\.\d{3}$/, `3 decimals, no locale drift (${row.url})`);
+      }
+    });
+  }
+
+  it("G1: the divisible pair flips — occurrence pins bestPos, rrf pins the score", () => {
+    const occurrence = mergeResults(goldenGridG1(), { mode: "occurrence", emitMergedFrom: true });
+    const rrf = mergeResults(goldenGridG1(), { mode: "rrf", emitMergedFrom: true });
+    const urls = (rows) => rows.map((r) => r.url);
+    // Same two occurrences, but Exa E carries rank 63 while Brave G carries 4:
+    // occurrence ties on count and breaks on bestPos (1 < 4 → E first), rrf
+    // scores 1/123 vs 2/64 (→ G first).
+    assert.ok(
+      urls(occurrence).indexOf("https://e/high-few") < urls(occurrence).indexOf("https://e/deep-many"),
+      "occurrence: high-few (bestPos 1) outranks deep-many (bestPos 4)",
+    );
+    assert.ok(
+      urls(rrf).indexOf("https://e/deep-many") < urls(rrf).indexOf("https://e/high-few"),
+      "rrf: deep-many (two hits) outranks high-few",
+    );
+    assert.notDeepStrictEqual(urls(rrf), urls(occurrence), "the two modes genuinely reorder");
+  });
+
+  it("G2: the single path keeps the same order — fusionScore is the only diff", () => {
+    const occurrence = mergeResults(goldenGridG2(), { mode: "occurrence" });
+    const rrf = mergeResults(goldenGridG2(), { mode: "rrf" });
+    assert.deepStrictEqual(
+      rrf.map((r) => r.url),
+      occurrence.map((r) => r.url),
+      "no score inversion to exploit here: order is identical",
+    );
+    const stripScore = (rows) => rows.map(({ fusionScore: _f, ...rest }) => rest);
+    assert.deepStrictEqual(
+      stripScore(rrf),
+      stripScore(occurrence),
+      "stripping fusionScore makes the rows identical, rank included",
+    );
+  });
+
+  it("G3: the count slice keeps the same rows but rrf ranks a different second row", () => {
+    const options = { emitMergedFrom: true, count: 2 };
+    const occurrence = mergeResults(goldenGridG1(), { mode: "occurrence", ...options });
+    const rrf = mergeResults(goldenGridG1(), { mode: "rrf", ...options });
+    assert.strictEqual(occurrence[0].url, "https://e/shared");
+    assert.strictEqual(rrf[0].url, "https://e/shared");
+    assert.strictEqual(occurrence[1].url, "https://e/high-few", "occurrence slices E in");
+    assert.strictEqual(rrf[1].url, "https://e/deep-many", "rrf slices G in");
+  });
+});
+
 // --- T3 local helpers (mirroring tests/search-fanout.test.js:332) ---------
 
 /** Shorthand for a single formatted result (search-fanout.test.js `src`). */

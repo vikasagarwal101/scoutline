@@ -765,6 +765,275 @@ describe("occurrence mode: byte-identity golden (AC-4)", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// T5 — title-shingle near-duplicate clustering (DESIGN D4)
+//
+// BOUNDARY ARITHMETIC — every Jaccard below was re-derived EMPIRICALLY against
+// the shipped implementation before being encoded (scratch script over the
+// real shingle/Jaccard code), not taken from the ticket prose: distinct words
+// ⇒ shingles = words − 2, and members of a Jaccard pair share every shingle
+// except the appended tail.
+//   exact   : 6w vs 7w  → ∩4 ∪5  → J = 4/5  = 0.8000000000000000  CLUSTERS
+//   below   : 21w vs 26w → ∩19 ∪24 → J = 19/24 = 0.7916666666666666 NO
+//   above   : 11w vs 13w → ∩9  ∪11 → J = 9/11 = 0.8181818181818182 CLUSTERS
+//   floor   : 5w vs 5w  → 3 shingles each → gated out at J = 1.0     NO
+//
+// The 21w/26w pair is ALSO the short-circuit witness: |sa| = 19 < 0.8 × |sb| =
+// 24, so the pair's ceiling J ≤ 19/24 < 0.8 proves it cannot merge and the
+// implementation skips it without intersecting. The two rows staying separate
+// is therefore evidence of BOTH the threshold comparison and the size bound.
+// ---------------------------------------------------------------------------
+
+/** n distinct words → "w1 w2 … wn" (distinct ⇒ exactly n − 2 shingles). */
+function wordTitle(n) {
+  return Array.from({ length: n }, (_, i) => `w${i + 1}`).join(" ");
+}
+
+/** A clustering fixture row: one-token summary, explicit rank. */
+function ranked(rank, title, url) {
+  return { rank, title, url, summary: `s-${rank}` };
+}
+
+/** The US-3 syndication triple: a www/apex pair (T2 collapses it) + a copy. */
+const SYNDICATED_TITLE = "one two three four five six";
+const SYNDICATED_VARIANT = "one two three four five six seven";
+
+function syndicationGrid() {
+  return [
+    {
+      provider: "tavily",
+      results: [[ranked(1, SYNDICATED_TITLE, "https://reuters.com/article-x")]],
+    },
+    {
+      provider: "brave",
+      results: [[ranked(1, SYNDICATED_TITLE, "https://www.reuters.com/article-x")]],
+    },
+    {
+      provider: "exa",
+      results: [[ranked(1, SYNDICATED_VARIANT, "https://news.yahoo.com/same-story")]],
+    },
+  ];
+}
+
+describe("T5 clustering: Jaccard boundary pins", () => {
+  it("clusters the exact-0.80 pair (J = ∩4/∪5 = 0.80) — the inclusive threshold", () => {
+    const merged = mergeResults(
+      [
+        {
+          provider: "tavily",
+          results: [[ranked(1, "one two three four five six", "https://e/six")]],
+        },
+        {
+          provider: "exa",
+          results: [[ranked(1, "one two three four five six seven", "https://e/seven")]],
+        },
+      ],
+      { mode: "rrf", emitMergedFrom: true },
+    );
+    assert.strictEqual(merged.length, 1, "J = 0.80 exactly must cluster (threshold is >=");
+    const row = merged[0];
+    // Both rows score 1/61 with occ 1 at bestPos 1, so the D2 chain falls
+    // through to first-encounter: the tavily row is the representative.
+    assert.strictEqual(row.url, "https://e/six", "first-encounter representative");
+    assert.strictEqual(row.title, "one two three four five six", "representative keeps its OWN title");
+    assert.strictEqual(row.occurrences, 2, "occurrences sum over the cluster");
+    assert.deepStrictEqual(row.mergedFrom, ["tavily", "exa"]);
+    assert.deepStrictEqual(row.clusterUrls, ["https://e/seven"]);
+    assert.strictEqual(row.rank, 1);
+    assert.strictEqual(row.fusionScore, (1 / 61).toFixed(3), "the representative's OWN raw score");
+  });
+
+  it("leaves the 0.7917 pair apart (J = ∩19/∪24) — below threshold", () => {
+    const merged = mergeResults(
+      [
+        { provider: "tavily", results: [[ranked(1, wordTitle(21), "https://e/a21")]] },
+        { provider: "exa", results: [[ranked(1, wordTitle(26), "https://e/b26")]] },
+      ],
+      { mode: "rrf", emitMergedFrom: true },
+    );
+    // |sa| = 19 < 0.8 × |sb| = 24, so the size short-circuit skips the pair
+    // before any intersection: J ≤ 19/24 < 0.8 either way.
+    assert.strictEqual(merged.length, 2, "J = 19/24 ≈ 0.7917 stays two rows");
+    for (const row of merged) {
+      assert.strictEqual(row.occurrences, 1);
+      assert.ok(!Object.hasOwn(row, "clusterUrls"), `no clusterUrls on ${row.url}`);
+    }
+  });
+
+  it("clusters the 0.8182 pair (J = ∩9/∪11) — above threshold", () => {
+    const merged = mergeResults(
+      [
+        { provider: "tavily", results: [[ranked(1, wordTitle(11), "https://e/a11")]] },
+        { provider: "exa", results: [[ranked(1, wordTitle(13), "https://e/b13")]] },
+      ],
+      { mode: "rrf", emitMergedFrom: true },
+    );
+    assert.strictEqual(merged.length, 1, "J = 9/11 ≈ 0.8182 clusters");
+    assert.strictEqual(merged[0].url, "https://e/a11", "first-encounter representative");
+    assert.deepStrictEqual(merged[0].clusterUrls, ["https://e/b13"]);
+    assert.strictEqual(merged[0].occurrences, 2);
+  });
+
+  it("never clusters a < 4-shingle title, even at J = 1.0 (identical 5-word titles)", () => {
+    const fiveWords = "alpha bravo charlie delta echo"; // 5 words → 3 shingles
+    const merged = mergeResults(
+      [
+        { provider: "tavily", results: [[ranked(1, fiveWords, "https://e/one")]] },
+        { provider: "brave", results: [[ranked(1, fiveWords, "https://e/two")]] },
+      ],
+      { mode: "rrf", emitMergedFrom: true },
+    );
+    assert.strictEqual(merged.length, 2, "3 shingles is below the 4-shingle floor");
+    for (const row of merged) {
+      assert.ok(!Object.hasOwn(row, "clusterUrls"), `no clusterUrls on ${row.url}`);
+      assert.strictEqual(row.occurrences, 1, "nothing accumulated");
+    }
+  });
+
+  it("a lone row carries no clusterUrls key at all", () => {
+    const merged = mergeResults(
+      [
+        {
+          provider: "tavily",
+          results: [[ranked(1, "one two three four five six", "https://e/solo")]],
+        },
+      ],
+      { mode: "rrf", emitMergedFrom: true },
+    );
+    assert.strictEqual(merged.length, 1);
+    assert.ok(
+      !Object.hasOwn(merged[0], "clusterUrls"),
+      "an unclustered row must not carry the key (absent, never undefined)",
+    );
+  });
+});
+
+describe("T5 clustering: the US-3 syndication triple", () => {
+  it("rrf: one row, occurrences 3, url and provenance merged across both identities", () => {
+    const merged = mergeResults(syndicationGrid(), { mode: "rrf", emitMergedFrom: true });
+    assert.strictEqual(merged.length, 1, "T2 collapses the www/apex pair, D4 the syndicated copy");
+    const row = merged[0];
+    // reuters 2/61 outranks the yahoo copy's 1/61, so the reuters row (whose
+    // emitted url is tavily's original non-www string) is the representative.
+    assert.strictEqual(row.url, "https://reuters.com/article-x");
+    assert.strictEqual(row.title, SYNDICATED_TITLE);
+    assert.strictEqual(row.occurrences, 3, "2 from the www/apex collapse + 1 syndicated");
+    assert.deepStrictEqual(row.mergedFrom, ["tavily", "brave", "exa"]);
+    assert.deepStrictEqual(row.clusterUrls, ["https://news.yahoo.com/same-story"]);
+  });
+
+  it("occurrence: the same cluster forms with clusterUrls but no fusionScore", () => {
+    const merged = mergeResults(syndicationGrid(), { mode: "occurrence", emitMergedFrom: true });
+    assert.strictEqual(merged.length, 1, "the identity layer is rank-independent");
+    const row = merged[0];
+    assert.strictEqual(row.url, "https://reuters.com/article-x", "occ 3 wins the occurrence chain");
+    assert.strictEqual(row.occurrences, 3);
+    assert.deepStrictEqual(row.mergedFrom, ["tavily", "brave", "exa"]);
+    assert.deepStrictEqual(row.clusterUrls, ["https://news.yahoo.com/same-story"]);
+    assert.ok(!Object.hasOwn(row, "fusionScore"), "occurrence emits no fusionScore");
+    assert.ok(!Object.hasOwn(row, "bestPos"), "bestPos never leaks");
+  });
+});
+
+describe("T5 representative pick: the D2 chain orders the cluster", () => {
+  it("a higher-scoring syndicated copy takes the representative slot over first-encounter", () => {
+    // reuters: two hits at rank 63 → 2/123 ≈ 0.016260
+    // yahoo  : one hit  at rank 1  → 1/61  ≈ 0.016393 (strictly higher)
+    // Lexicographic order would pick "https://news.…" (n < r) — which here
+    // coincides with the SCORE pick, so this fixture cannot catch that mutant;
+    // the US-3 rrf fixture above is the one that inverts under it.
+    const merged = mergeResults(
+      [
+        {
+          provider: "tavily",
+          results: [[ranked(63, SYNDICATED_TITLE, "https://reuters.com/article-x")]],
+        },
+        {
+          provider: "brave",
+          results: [[ranked(63, SYNDICATED_TITLE, "https://www.reuters.com/article-x")]],
+        },
+        {
+          provider: "exa",
+          results: [[ranked(1, SYNDICATED_VARIANT, "https://news.yahoo.com/same-story")]],
+        },
+      ],
+      { mode: "rrf", emitMergedFrom: true },
+    );
+    assert.strictEqual(merged.length, 1);
+    const row = merged[0];
+    assert.strictEqual(row.url, "https://news.yahoo.com/same-story", "highest raw score wins");
+    assert.strictEqual(row.title, SYNDICATED_VARIANT, "representative keeps its OWN title");
+    assert.strictEqual(row.summary, "s-1", "…and its own summary");
+    assert.strictEqual(row.fusionScore, (1 / 61).toFixed(3), "the representative's own score, not the sum");
+    assert.strictEqual(row.occurrences, 3, "occurrences still accumulate over the cluster");
+    assert.deepStrictEqual(
+      row.clusterUrls,
+      ["https://reuters.com/article-x"],
+      "the www twin is one map row already, emitted under its first writer's url",
+    );
+  });
+
+  it("accumulates occurrences and unions provenance across arms in first-encounter order", () => {
+    const merged = mergeResults(
+      [
+        {
+          provider: "tavily",
+          results: [[ranked(1, SYNDICATED_TITLE, "https://e/alpha")]],
+        },
+        {
+          provider: "exa",
+          results: [[ranked(1, SYNDICATED_VARIANT, "https://e/beta")]],
+        },
+        {
+          provider: "brave",
+          results: [[ranked(1, SYNDICATED_VARIANT, "https://e/beta")]],
+        },
+      ],
+      { mode: "rrf", emitMergedFrom: true },
+    );
+    assert.strictEqual(merged.length, 1);
+    const row = merged[0];
+    assert.strictEqual(row.url, "https://e/beta", "occ 2 (and a higher score) beats occ 1");
+    assert.strictEqual(row.occurrences, 3, "1 + 2 across the two members");
+    assert.deepStrictEqual(
+      row.mergedFrom,
+      ["tavily", "exa", "brave"],
+      "union in first-encounter order: alpha's arm first, then beta's two",
+    );
+    assert.deepStrictEqual(row.clusterUrls, ["https://e/alpha"], "the non-representative's verbatim url");
+  });
+});
+
+describe("T5 clustering determinism", () => {
+  /** A three-member cluster: one title across three distinct canonical URLs. */
+  function tripleGrid() {
+    return [
+      { provider: "tavily", results: [[ranked(1, SYNDICATED_TITLE, "https://e/a")]] },
+      { provider: "exa", results: [[ranked(1, SYNDICATED_TITLE, "https://e/b")]] },
+      { provider: "brave", results: [[ranked(1, SYNDICATED_TITLE, "https://e/c")]] },
+    ];
+  }
+
+  it("lists every non-representative url in first-encounter order", () => {
+    const merged = mergeResults(tripleGrid(), { mode: "rrf", emitMergedFrom: true });
+    assert.strictEqual(merged.length, 1);
+    const row = merged[0];
+    assert.strictEqual(row.url, "https://e/a", "full tie → first-encounter representative");
+    assert.deepStrictEqual(row.clusterUrls, ["https://e/b", "https://e/c"]);
+    assert.deepStrictEqual(row.mergedFrom, ["tavily", "exa", "brave"]);
+    assert.strictEqual(row.occurrences, 3);
+  });
+
+  it("two runs over the same grid serialize identically (clusterUrls order included)", () => {
+    const a = mergeResults(tripleGrid(), { mode: "rrf", emitMergedFrom: true });
+    const b = mergeResults(tripleGrid(), { mode: "rrf", emitMergedFrom: true });
+    assert.strictEqual(JSON.stringify(a), JSON.stringify(b));
+    const c = mergeResults(syndicationGrid(), { mode: "occurrence", emitMergedFrom: true });
+    const d = mergeResults(syndicationGrid(), { mode: "occurrence", emitMergedFrom: true });
+    assert.strictEqual(JSON.stringify(c), JSON.stringify(d));
+  });
+});
+
 // --- T3 local helpers (mirroring tests/search-fanout.test.js:332) ---------
 
 /** Shorthand for a single formatted result (search-fanout.test.js `src`). */

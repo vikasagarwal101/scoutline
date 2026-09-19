@@ -102,6 +102,13 @@ export interface FormattedResult {
    * single-provider path — SCHEMA.md.
    */
   mergedFrom?: ProviderId[];
+  /**
+   * Near-duplicate clustering (DESIGN D4, fan-out lane T5): on a cluster
+   * representative, every OTHER member's emitted url, verbatim, in
+   * first-encounter order. Absent on unclustered rows — the key is never
+   * emitted at all rather than emitted empty.
+   */
+  clusterUrls?: string[];
 }
 
 function truncate(text: string | undefined, max?: number): string {
@@ -235,6 +242,172 @@ type MergedRow = FormattedResult & {
 };
 
 /**
+ * Near-duplicate title clustering constant (DESIGN D4). A fixed contract,
+ * not a knob: the same title pair must cluster on every machine and run.
+ */
+const CLUSTER_JACCARD_MIN = 0.8;
+/** Shingle width (DESIGN D4): a 3-word sliding window over the title. */
+const SHINGLE_SIZE = 3;
+/**
+ * Titles yielding fewer shingles than this are never clustered: at 3
+ * shingles a one-word difference swings Jaccard too far for the signal to
+ * mean anything (two 5-word titles share 3 shingles → J = 1.0 on 3
+ * samples). 6 words → 4 shingles is the smallest title that can cluster.
+ */
+const CLUSTER_MIN_SHINGLES = 4;
+
+/**
+ * Lowercased 3-word shingles of a title, whitespace-collapsed and deduped
+ * (DESIGN D4 #1). The set — not the multiset — is the Jaccard operand, so a
+ * repeated phrase counts once.
+ */
+function titleShingles(title: string): Set<string> {
+  const words = title.toLowerCase().split(/\s+/).filter(Boolean);
+  const shingles = new Set<string>();
+  for (let i = 0; i + SHINGLE_SIZE <= words.length; i++) {
+    shingles.add(words.slice(i, i + SHINGLE_SIZE).join(" "));
+  }
+  return shingles;
+}
+
+/** Jaccard similarity over two shingle sets: |∩| / |∪|. */
+function jaccard(a: Set<string>, b: Set<string>): number {
+  // Intersect the smaller set — same result, fewer probes.
+  const [small, large] = a.size <= b.size ? [a, b] : [b, a];
+  let intersection = 0;
+  for (const shingle of small) if (large.has(shingle)) intersection += 1;
+  return intersection / (a.size + b.size - intersection);
+}
+
+/**
+ * Union the near-duplicate rows of `rows` in place (DESIGN D4, fan-out lane
+ * T5): pairwise Jaccard ≥ 0.80 over title shingles, merged via union-find,
+ * to a fixed point — transitive chains collapse into one cluster.
+ *
+ * `rows` must be insertion-ordered (the map's value order); that order is
+ * authoritative for pair enumeration, first-encounter tiebreaks, the
+ * `mergedFrom` union, and `clusterUrls`. This step never re-sorts — ranking
+ * happens after it, so accumulated `occurrences` participate in tiebreaks.
+ *
+ * Cost is O(n² · shingles) over n ≤ ~count × arms rows after dedupe — a few
+ * hundred at most, so the pairwise scan is bounded and needs no index.
+ * Correctness of the order-sensitive merges piggybacks on that: only an
+ * already-merged row can be merged again, so `mergedFrom` is already a
+ * first-encounter union by the time it is extended.
+ */
+function clusterNearDuplicates(rows: MergedRow[]): MergedRow[] {
+  // Shingle once per row; rows below the floor can never merge, so they
+  // take no part in the pairwise scan at all.
+  const shingles = rows.map((row) => titleShingles(row.title ?? ""));
+  const eligible = shingles.map((set) => set.size >= CLUSTER_MIN_SHINGLES);
+
+  const parent = rows.map((_, i) => i);
+  const find = (i: number): number => {
+    let root = i;
+    while (parent[root]! !== root) root = parent[root]!;
+    while (parent[i]! !== root) [parent[i], i] = [root, parent[i]!];
+    return root;
+  };
+
+  for (let i = 0; i < rows.length; i++) {
+    if (!eligible[i]) continue;
+    for (let j = i + 1; j < rows.length; j++) {
+      if (!eligible[j]) continue;
+      // Size short-circuit (DESIGN D4 #5): J ≤ min/|max|, so a pair whose
+      // smaller shingle set is under 80% of the larger one cannot reach the
+      // threshold at all — skip it without intersecting anything.
+      // Compared as 5·min < 4·max rather than min < 0.8·max: the integer
+      // form is exact (0.8·5 is not 4 in binary floating point, which would
+      // misjudge the boundary pair the suite pins).
+      const small = Math.min(shingles[i]!.size, shingles[j]!.size);
+      const large = Math.max(shingles[i]!.size, shingles[j]!.size);
+      if (small * 5 < large * 4) continue;
+      if (jaccard(shingles[i]!, shingles[j]!) < CLUSTER_JACCARD_MIN) continue;
+      const rootI = find(i);
+      const rootJ = find(j);
+      if (rootI !== rootJ) parent[Math.max(rootI, rootJ)] = Math.min(rootI, rootJ);
+    }
+  }
+
+  // Members per cluster, first-encounter order — one pass suffices because
+  // the loop is ordered and this array is saved before anything mutates.
+  const members = new Map<number, number[]>();
+  for (let i = 0; i < rows.length; i++) {
+    // A row that can never merge is its own cluster: skip the find() walk.
+    const root = eligible[i] ? find(i) : i;
+    const bucket = members.get(root);
+    if (bucket) bucket.push(i);
+    else members.set(root, [i]);
+  }
+
+  const survivors: MergedRow[] = [];
+  for (let i = 0; i < rows.length; i++) {
+    // A merged-away row is simply absent from the output; this walk stays
+    // independent of the mutation happening around it.
+    if (find(i) !== i) continue;
+    const clusterRows: MergedRow[] = [];
+    for (const index of members.get(i) ?? [i]) clusterRows.push(rows[index]!);
+    if (clusterRows.length === 1) {
+      // SINGLETON — the overwhelmingly common path. Leave the row's key
+      // order and identity untouched: it is the object already in the map,
+      // returned as-is.
+      survivors.push(clusterRows[0]!);
+      continue;
+    }
+    survivors.push(mergeCluster(clusterRows));
+  }
+  return survivors;
+}
+
+/**
+ * Collapse one cluster's members into a single representative row (DESIGN
+ * D4 #4). `members` must be in first-encounter order — that order is the
+ * fallback for both the representative pick and `clusterUrls`.
+ *
+ * The representative is the member the D2 chain selects: highest raw score →
+ * occurrences desc → bestPos asc → first-encounter. Under "occurrence" every
+ * score is 0, so the chain falls straight through to occurrences → bestPos →
+ * first-encounter, which keeps the identity layer rank-independent as
+ * required. It KEEPS its own title/summary/url and key order.
+ *
+ * Accumulation is deliberately partial: `occurrences` sums over the members
+ * and `mergedFrom` unions in first-encounter order, but the representative's
+ * raw `score` is left alone — its `fusionScore` is the REPRESENTATIVE's own
+ * rank score, not the cluster's total. Sorting runs after this, so the
+ * accumulated occurrences participate in tiebreaks.
+ */
+function mergeCluster(members: MergedRow[]): MergedRow {
+  let representative = members[0]!;
+  for (const member of members) {
+    if (
+      member.score > representative.score ||
+      (member.score === representative.score &&
+        (member.occurrences > representative.occurrences ||
+          (member.occurrences === representative.occurrences &&
+            member.bestPos < representative.bestPos)))
+    ) {
+      representative = member;
+    }
+  }
+  const clusterUrls: string[] = [];
+  const mergedFrom: ProviderId[] = [];
+  let occurrences = 0;
+  for (const member of members) {
+    if (member !== representative) clusterUrls.push(member.url);
+    occurrences += member.occurrences;
+    for (const provider of member.mergedFrom) {
+      if (!mergedFrom.includes(provider)) mergedFrom.push(provider);
+    }
+  }
+  return {
+    ...representative,
+    occurrences,
+    mergedFrom,
+    clusterUrls,
+  };
+}
+
+/**
  * Merge results from an (arm × sub-query) grid (DESIGN D3, D2). Generalizes
  * the pre-fan-out sub-query merge with two new keys: dedupe by
  * `canonicalUrl(url)` (DESIGN D4) instead of the raw string, and a
@@ -299,7 +472,7 @@ export function mergeResults(grid: MergeGridArm[], options: MergeResultsOptions)
       }
     }
   }
-  let merged = Array.from(map.values());
+  let merged = clusterNearDuplicates(Array.from(map.values()));
   if (isRrf) {
     // Raw double first — occurrences and bestPos only break exact ties.
     // The stable sort leaves full ties in insertion (first-encounter)

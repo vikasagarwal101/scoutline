@@ -296,20 +296,40 @@ describe("cross-provider timeout clamp conformance (#214)", () => {
 // ---------------------------------------------------------------------------
 // Source-sweep guard (#233): the table above pins only the resolvers it
 // lists. This sweep walks src/**/*.ts and asserts that every file with a
-// line combining `parseInt` with a `*_TIMEOUT` identifier imports
-// `clampTimeoutMs`. A NEW provider client that parses a *_TIMEOUT env var
-// without clamping therefore fails deterministically here.
+// line combining `parseInt` with a `*_TIMEOUT` identifier actually USES
+// `clampTimeoutMs` at the match site — not merely imports it (an import
+// can be a dead binding; NIT-1). A matched line counts as clamped iff:
+//
+//   (a) `clampTimeoutMs(` appears on the matched line itself —
+//       src/lib/mcp-client.ts:93:
+//       `return clampTimeoutMs(parseIntOrDefault(env.Z_AI_TIMEOUT, ...), ...);`
+//   (b) `clampTimeoutMs(` appears on the matched line +1 or +2 — the
+//       dominant shape, all 21 provider-style resolvers, e.g.
+//       src/providers/brave/client.ts:86:
+//       `const raw = parseInt(env.BRAVE_TIMEOUT || ..., 10);`
+//       then `return clampTimeoutMs(raw, DEFAULT_TIMEOUT_MS);`
+//   (c) the immediately preceding line ends with `clampTimeoutMs(` —
+//       src/lib/config.ts:71-72, where the parseInt opens the clamp
+//       call's argument list. The ends-with-`(` requirement excludes an
+//       adjacent sibling resolver's already-closed
+//       `return clampTimeoutMs(raw, DEFAULT);` line from satisfying a
+//       different unclamped resolver two lines above (the
+//       adjacent-resolver false-green).
+//
+// A NEW provider client that parses a *_TIMEOUT env var without
+// clamping therefore fails deterministically here.
 //
 // Known honest gap (documented, not fixed): src/lib/code-mode.ts reads
 // Z_AI_TIMEOUT on a line separate from its parseInt call, so a same-line
 // sweep does not match that file — it clamps anyway (verified by the
 // zai-code-mode rows above). The sweep is a guard (matched ⇒ must clamp),
 // not a proof of coverage.
-describe("source-sweep guard #233 (parseInt-on-*_TIMEOUT must import clampTimeoutMs)", () => {
+describe("source-sweep guard #233 (parseInt-on-*_TIMEOUT must use clampTimeoutMs)", () => {
   const srcRoot = fileURLToPath(new URL("../src", import.meta.url));
   const LINE_RE = /parseInt/;
   const TIMEOUT_ID_RE = /[A-Z][A-Z0-9_]*_TIMEOUT/;
-  const IMPORT_RE = /import\s*\{[^}]*\bclampTimeoutMs\b[^}]*\}/;
+  const CALL_RE = /clampTimeoutMs\s*\(/;
+  const CALL_OPEN_END_RE = /clampTimeoutMs\s*\(\s*$/;
 
   const walk = (dir) =>
     fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -327,22 +347,37 @@ describe("source-sweep guard #233 (parseInt-on-*_TIMEOUT must import clampTimeou
       const matching = lines
         .map((text, i) => ({ text, line: i + 1 }))
         .filter(({ text }) => LINE_RE.test(text) && TIMEOUT_ID_RE.test(text));
-      if (matching.length > 0 && !IMPORT_RE.test(fs.readFileSync(file, "utf8"))) {
+      if (matching.length === 0) continue;
+      const unclamped = matching.filter(({ line }) => {
+        const i = line - 1;
+        // (a) clamp call on the matched line, or (b) on the matched line +1/+2.
+        if (
+          CALL_RE.test(lines[i]) ||
+          CALL_RE.test(lines[i + 1] || "") ||
+          CALL_RE.test(lines[i + 2] || "")
+        ) {
+          return false;
+        }
+        // (c) the preceding line opens the clamp call's argument list (ends
+        // with `clampTimeoutMs(`) — a closed sibling call does not count.
+        return !CALL_OPEN_END_RE.test(lines[i - 1] || "");
+      });
+      if (unclamped.length > 0) {
         offenders.push({
           file: relative(srcRoot, file).split(sep).join("/"),
-          lines: matching.map(({ text, line }) => `${line}: ${text.trim()}`),
+          lines: unclamped.map(({ text, line }) => `${line}: ${text.trim()}`),
         });
       }
     }
     return offenders;
   };
 
-  it("every parseInt-on-*_TIMEOUT resolver file imports clampTimeoutMs", () => {
+  it("every parseInt-on-*_TIMEOUT match site uses clampTimeoutMs", () => {
     const offenders = sweep();
     assert.deepStrictEqual(
       offenders,
       [],
-      `Files parse a *_TIMEOUT value without importing clampTimeoutMs:\n${offenders
+      `Files parse a *_TIMEOUT value without a clampTimeoutMs( call at the match site:\n${offenders
         .map((o) => `  ${o.file}\n${o.lines.map((l) => `    ${l}`).join("\n")}`)
         .join("\n")}`,
     );

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-09-19
+
 - **Registry completeness gates (#231, #236):** the init wizard's `PROVIDER_PROMPT_META` map gained an offline completeness gate (a missing provider row now fails the suite instead of exploding only inside `scoutline init`), and `SCIENCE_SEAT_IDS` in `tests/provider-enum-help.test.js` — the last hand-maintained registry mirror — now derives from the science seam (`science-registry.test.js` keeps its independent membership pin).
 - **`scripts/rebaseline-skill-hash.mjs` (#235):** one command replaces the manual `SKILL_BODY_SHA256` rebaseline ritual (16 hand-rebaselines, 2 cross-lane collision surgeries); `--check` is the CI-guard shape.
 - **Redaction completeness is derived, not hand-synced (#232):** every provider credential env name is now pinned to appear in every redaction surface (`CREDENTIAL_KEYS`, the `[=:]` rows, the whitespace lookahead loop, `configuredSecrets`) by a test importing each `providers/*/credentials.ts` module's exported names — a future provider naming a credential variable redact.ts doesn't cover fails at PR time. The live coverage gaps at base (four v3 key names missing from `CREDENTIAL_KEYS`, nine incumbent names missing from the whitespace loop) are closed with mutation-proof rows.

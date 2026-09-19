@@ -6,6 +6,9 @@
 
 import { ConfigurationError } from "../../lib/errors.js";
 
+/** Credential environment names read by this module (#232 derivation pin). */
+export const ENV_NAMES = ["PARALLEL_API_KEY"] as const;
+
 const MISSING_KEY_HELP = 'export PARALLEL_API_KEY="your-parallel-api-key"';
 
 function pickNonBlank(raw: unknown): string | undefined {

@@ -34,6 +34,7 @@ import {
 } from "../../lib/errors.js";
 import type { ProviderQuotaFetch } from "../types.js";
 import { getGlobalFetch } from "../types.js";
+import { clampTimeoutMs } from "../../lib/timeout.js";
 
 const { version: VERSION } = pkg;
 
@@ -46,11 +47,18 @@ const DEFAULT_TIMEOUT_MS = 30000;
  */
 const USER_AGENT = `scoutline/${VERSION} (mailto:scoutline@localhost)`;
 
-/** Injectable transport dependencies (fetch, timers). */
+/** Injectable transport dependencies (fetch, timers, env). */
 export interface CrossrefTransportDeps {
   readonly fetch?: ProviderQuotaFetch;
   readonly setTimeout?: typeof setTimeout;
   readonly clearTimeout?: typeof clearTimeout;
+  readonly env?: NodeJS.ProcessEnv;
+}
+
+/** `CROSSREF_TIMEOUT` override, clamped through the shared seam (#234). */
+export function resolveTimeoutMs(env: NodeJS.ProcessEnv): number {
+  const raw = parseInt(env.CROSSREF_TIMEOUT || String(DEFAULT_TIMEOUT_MS), 10);
+  return clampTimeoutMs(raw, DEFAULT_TIMEOUT_MS);
 }
 
 /**
@@ -147,6 +155,8 @@ export async function fetchCrossrefJson(
   const f = deps.fetch ?? getGlobalFetch<ProviderQuotaFetch>();
   const setT = deps.setTimeout ?? setTimeout;
   const clearT = deps.clearTimeout ?? clearTimeout;
+  const env = deps.env ?? process.env;
+  const timeoutMs = resolveTimeoutMs(env);
   // Entity-route path segments are percent-encoded (review): a DOI
   // suffix containing `?` or `#` would otherwise be truncated into the
   // query/fragment by `new URL`. `/` separators are preserved.
@@ -171,7 +181,7 @@ export async function fetchCrossrefJson(
   const timeoutId = setT(() => {
     timedOut = true;
     controller.abort();
-  }, DEFAULT_TIMEOUT_MS);
+  }, timeoutMs);
   const abortWithExternal = () => controller.abort();
   if (signal !== undefined) {
     if (signal.aborted) {
@@ -197,7 +207,7 @@ export async function fetchCrossrefJson(
       await res.body?.cancel().catch(() => {});
       throw mapStatusError(
         res.status,
-        DEFAULT_TIMEOUT_MS,
+        timeoutMs,
         parseRetryAfterHintMs(res.headers),
       );
     }
@@ -259,7 +269,7 @@ export async function fetchCrossrefJson(
       throw new ApiError("Crossref returned a malformed response", 500);
     }
   } catch (err) {
-    throw normalizeTransportError(err, DEFAULT_TIMEOUT_MS, timedOut, signal);
+    throw normalizeTransportError(err, timeoutMs, timedOut, signal);
   } finally {
     if (signal !== undefined) {
       signal.removeEventListener("abort", abortWithExternal);

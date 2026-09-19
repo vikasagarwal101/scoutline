@@ -9,6 +9,9 @@ import { createHash } from "node:crypto";
 
 import { ConfigurationError } from "../../lib/errors.js";
 
+/** Credential environment names read by this module (#232 derivation pin). */
+export const ENV_NAMES = ["KAGI_API_KEY", "KAGI_TOKEN"] as const;
+
 export const MISSING_KEY_HELP = 'export KAGI_API_KEY="your-kagi-api-key"';
 
 function pickTrimmedNonBlank(raw: unknown): string | undefined {

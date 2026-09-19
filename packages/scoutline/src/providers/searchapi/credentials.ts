@@ -22,6 +22,9 @@ import crypto from "node:crypto";
 
 import { ConfigurationError } from "../../lib/errors.js";
 
+/** Credential environment names read by this module (#232 derivation pin). */
+export const ENV_NAMES = ["SEARCHAPI_API_KEY", "SERPAPI_API_KEY"] as const;
+
 const MISSING_KEY_HELP = 'export SEARCHAPI_API_KEY="your-api-key"';
 
 /**

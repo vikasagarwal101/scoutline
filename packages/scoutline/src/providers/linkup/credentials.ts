@@ -20,6 +20,9 @@ import crypto from "node:crypto";
 
 import { ConfigurationError } from "../../lib/errors.js";
 
+/** Credential environment names read by this module (#232 derivation pin). */
+export const ENV_NAMES = ["LINKUP_API_KEY"] as const;
+
 const MISSING_KEY_HELP = 'export LINKUP_API_KEY="your-api-key"';
 
 /**

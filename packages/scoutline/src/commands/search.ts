@@ -271,12 +271,20 @@ function titleShingles(title: string): Set<string> {
 }
 
 /** Jaccard similarity over two shingle sets: |∩| / |∪|. */
-function jaccard(a: Set<string>, b: Set<string>): number {
+export function jaccard(a: Set<string>, b: Set<string>): number {
   // Intersect the smaller set — same result, fewer probes.
   const [small, large] = a.size <= b.size ? [a, b] : [b, a];
   let intersection = 0;
   for (const shingle of small) if (large.has(shingle)) intersection += 1;
-  return intersection / (a.size + b.size - intersection);
+  // Issue #243 total guard: the CLUSTER_MIN_SHINGLES eligibility gate in
+  // clusterNearDuplicates keeps both operands at >= 4 shingles, so the
+  // union can never be 0 on that path — but jaccard is exported and
+  // callable directly. An empty-set pair scores 0 (no overlap) by
+  // definition, never 0/0 = NaN (NaN compares >= 0.8 false only by
+  // accident of IEEE semantics).
+  const union = a.size + b.size - intersection;
+  if (union === 0) return 0;
+  return intersection / union;
 }
 
 /**
@@ -1106,15 +1114,24 @@ export async function executeFanoutPlan(
     provider: s.arm,
     results: s.results,
   }));
-  const merged: FormattedResult[] = mergeResults(grid, {
+  // Issue #243: merge WITHOUT the count slice, then slice locally, so the
+  // summary notice can report the merge's PRE-slice unique count — the old
+  // call passed count into mergeResults and the notice printed the
+  // post-slice length as "unique".
+  const fullMerged: FormattedResult[] = mergeResults(grid, {
     mode: options.fusionMode,
     emitMergedFrom: true,
-    count: options.searchOptions.count,
   });
+  const count = options.searchOptions.count;
+  // Same slice semantics as mergeResults' internal cap (rank-mapped rows
+  // 1..N; taking the first N is byte-identical to slicing pre-rank-map).
+  const merged: FormattedResult[] =
+    count === undefined ? fullMerged : fullMerged.slice(0, Math.max(0, count));
 
   // Summary notice (D5). K = total raw results across the whole
   // arms × sub-queries grid (the post-truncate counts the executor
-  // collected); M = merged unique count. An arm with 0 results
+  // collected); M = the merge's PRE-slice unique count; shown = rows
+  // remaining after the --count cap. An arm with 0 results
   // contributes 0 to K — the notice still names the arm so the
   // operator sees the full set.
   const totalRaw = successes.reduce(
@@ -1124,7 +1141,9 @@ export async function executeFanoutPlan(
   if (context) {
     const armList = arms.join(", ");
     context.notice(
-      `fanned out to ${arms.length} providers (${armList}) → ${merged.length} unique of ${totalRaw} results`,
+      count === undefined
+        ? `fanned out to ${arms.length} providers (${armList}) → ${fullMerged.length} unique of ${totalRaw} results`
+        : `fanned out to ${arms.length} providers (${armList}) → ${merged.length} shown of ${fullMerged.length} unique of ${totalRaw} results`,
     );
   }
 

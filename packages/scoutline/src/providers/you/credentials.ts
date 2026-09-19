@@ -19,8 +19,8 @@ import crypto from "node:crypto";
 
 import { ConfigurationError } from "../../lib/errors.js";
 
-/** Credential environment names, in resolution-preference order. */
-const YOU_API_KEY_ENV_NAMES = ["YDC_API_KEY", "YOU_API_KEY"] as const;
+/** Credential environment names, in resolution-preference order (#232 derivation pin). */
+export const ENV_NAMES = ["YDC_API_KEY", "YOU_API_KEY"] as const;
 
 /**
  * Resolve the You.com API key without throwing. Returns the trimmed key
@@ -28,7 +28,7 @@ const YOU_API_KEY_ENV_NAMES = ["YDC_API_KEY", "YOU_API_KEY"] as const;
  * is present.
  */
 export function getYouApiKey(env: NodeJS.ProcessEnv): string | undefined {
-  for (const name of YOU_API_KEY_ENV_NAMES) {
+  for (const name of ENV_NAMES) {
     const raw = env[name];
     if (typeof raw === "string" && raw.trim().length > 0) return raw.trim();
   }

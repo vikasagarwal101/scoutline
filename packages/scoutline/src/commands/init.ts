@@ -201,7 +201,7 @@ interface ProviderPromptMeta {
   readonly keylessNote?: string;
 }
 
-const PROVIDER_PROMPT_META: Record<ProviderId, ProviderPromptMeta> = {
+export const PROVIDER_PROMPT_META: Record<ProviderId, ProviderPromptMeta> = {
   zai: {
     label: "Z.AI",
     envVar: "Z_AI_API_KEY",

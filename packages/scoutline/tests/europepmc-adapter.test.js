@@ -1228,3 +1228,48 @@ describe("europepmc abort signal threading and honest cancellation (#151)", () =
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Env seam — injected env must reach the client (#257). Sibling science
+// capabilities (pubmed/openalex/searchapi) destructure `env` into their
+// deps; europepmc dropped it, so the client's `deps.env ?? process.env`
+// fallback read ambient env and an injected env value was silently bypassed.
+// ---------------------------------------------------------------------------
+
+describe("europepmc env seam — injected env reaches the client (#257)", () => {
+  it("science.search arms its timeout from the INJECTED env's EUROPEPMC_TIMEOUT, not ambient", async () => {
+    let armedDelayMs;
+    const descriptor = createEuropepmcDescriptor({
+      transport: {
+        fetch: (_url, init) =>
+          new Promise((_res, rej) => {
+            if (init?.signal?.aborted) {
+              const err = new Error("aborted");
+              err.name = "AbortError";
+              rej(err);
+              return;
+            }
+            init?.signal?.addEventListener("abort", () => {
+              const err = new Error("aborted");
+              err.name = "AbortError";
+              rej(err);
+            });
+          }),
+        setTimeout: (cb, delayMs) => {
+          armedDelayMs = delayMs;
+          setImmediate(cb);
+          return 123;
+        },
+        clearTimeout: () => {},
+      },
+    });
+    const adapter = descriptor.create({ env: { EUROPEPMC_TIMEOUT: "12345" } });
+    const promise = adapter.science.search.invoke({ query: "x" });
+    await assert.rejects(promise, (e) => e instanceof TimeoutError);
+    assert.equal(
+      armedDelayMs,
+      12345,
+      "timeout must be armed from the injected env's EUROPEPMC_TIMEOUT (12345), not the ambient environment (default 30000)",
+    );
+  });
+});

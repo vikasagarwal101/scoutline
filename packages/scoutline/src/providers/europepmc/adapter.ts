@@ -288,8 +288,8 @@ function createEuropepmcScienceCapability(options: {
   readonly env: NodeJS.ProcessEnv;
   readonly transport?: EuropepmcTransportDeps;
 }): EuropepmcScienceCapability {
-  const { transport } = options;
-  const deps = { ...transport };
+  const { env, transport } = options;
+  const deps = { ...transport, env };
 
   const search: EuropepmcScienceSearchCapability = {
     validate: validateEuropepmcSearchRequest,

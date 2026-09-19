@@ -196,6 +196,11 @@ non-TTY settings surface (dotted paths: `routing`, `routing.<capability>`,
 - **`get` is always redacted** — credential values are masked by value match
   and by credential field name, so a file-stored API key is never printable
   in any output mode.
+- **`get` shows the stored key; environment overrides are runtime-only**
+  and are not reflected. With config `fusion=rrf` and
+  `SCOUTLINE_FUSION=occurrence` exported, `config get fusion` prints
+  `rrf` while searches rank by `occurrence` — the same stored-value
+  posture as every other env-overridable key (`fanout`, `journal`).
 - **`set` is strict, deliberately asymmetric with load-time leniency**: an
   explicit single-value command must not silently store something different
   than typed, so `config set routing.search tavlly` fails with

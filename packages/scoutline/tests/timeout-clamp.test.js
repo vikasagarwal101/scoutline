@@ -21,9 +21,8 @@
  *
  * Providers WITHOUT a `*_TIMEOUT` env resolver (fixed-constant
  * timeouts, nothing user-overridable to clamp) are intentionally absent
- * from this table: spider, the five science suppliers (arXiv,
- * OpenAlex, Crossref, PubMed, Europe PMC), and the media fetch
- * constants (zai/media.ts, minimax/media.ts).
+ * from this table: the media fetch constants (zai/media.ts,
+ * minimax/media.ts).
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -49,6 +48,12 @@ import * as linkupClient from "../dist/providers/linkup/client.js";
 import * as parallelClient from "../dist/providers/parallel/client.js";
 import * as firecrawlClient from "../dist/providers/firecrawl/client.js";
 import * as youClient from "../dist/providers/you/client.js";
+import * as spiderClient from "../dist/providers/spider/client.js";
+import * as arxivClient from "../dist/providers/arxiv/client.js";
+import * as crossrefClient from "../dist/providers/crossref/client.js";
+import * as pubmedClient from "../dist/providers/pubmed/client.js";
+import * as europepmcClient from "../dist/providers/europepmc/client.js";
+import * as openalexClient from "../dist/providers/openalex/client.js";
 
 const TIMEOUT_MAX = 2147483647;
 
@@ -186,6 +191,42 @@ const RESOLVER_ROWS = [
     defaultMs: 300000,
   },
   {
+    provider: "spider",
+    envVar: "SPIDER_TIMEOUT",
+    resolve: spiderClient.resolveTimeoutMs,
+    defaultMs: 30000,
+  },
+  {
+    provider: "arxiv",
+    envVar: "ARXIV_TIMEOUT",
+    resolve: arxivClient.resolveTimeoutMs,
+    defaultMs: 30000,
+  },
+  {
+    provider: "crossref",
+    envVar: "CROSSREF_TIMEOUT",
+    resolve: crossrefClient.resolveTimeoutMs,
+    defaultMs: 30000,
+  },
+  {
+    provider: "pubmed",
+    envVar: "PUBMED_TIMEOUT",
+    resolve: pubmedClient.resolveTimeoutMs,
+    defaultMs: 30000,
+  },
+  {
+    provider: "europepmc",
+    envVar: "EUROPEPMC_TIMEOUT",
+    resolve: europepmcClient.resolveTimeoutMs,
+    defaultMs: 30000,
+  },
+  {
+    provider: "openalex",
+    envVar: "OPENALEX_TIMEOUT",
+    resolve: openalexClient.resolveTimeoutMs,
+    defaultMs: 30000,
+  },
+  {
     provider: "zai-mcp",
     envVar: "Z_AI_TIMEOUT",
     resolve: zaiMcpClient.resolveZaiMcpTimeoutMs,
@@ -209,16 +250,17 @@ const RESOLVER_ROWS = [
 
 describe("cross-provider timeout clamp conformance (#214)", () => {
   it("covers every provider that ships a *_TIMEOUT env resolver", () => {
-    // Guardrail against accidental row loss: 21 resolver rows across 18
-    // modules — 15 provider client modules (jina, perplexity, and
+    // Guardrail against accidental row loss: 27 resolver rows across 24
+    // modules — 21 provider client modules (jina, perplexity, and
     // minimax contribute two resolvers each; you contributes the legacy
-    // YDC alias row), the two shared Z.AI lib clients (mcp-client,
-    // code-mode), and loadConfig's inline Z_AI_TIMEOUT parse. A resolver
-    // added to the codebase but not to this table is NOT caught here —
-    // extend the table whenever a client gains a *_TIMEOUT env resolver.
-    assert.equal(RESOLVER_ROWS.length, 21);
+    // YDC alias row; the five science suppliers and spider add one each),
+    // the two shared Z.AI lib clients (mcp-client, code-mode), and
+    // loadConfig's inline Z_AI_TIMEOUT parse. A resolver added to the
+    // codebase but not to this table is NOT caught here — extend the
+    // table whenever a client gains a *_TIMEOUT env resolver.
+    assert.equal(RESOLVER_ROWS.length, 27);
     const providers = new Set(RESOLVER_ROWS.map((r) => r.provider));
-    assert.equal(providers.size, 21);
+    assert.equal(providers.size, 27);
   });
 
   for (const row of RESOLVER_ROWS) {

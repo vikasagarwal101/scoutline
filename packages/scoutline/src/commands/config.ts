@@ -131,7 +131,7 @@ export async function configGetCommand(
       ? unknownConfigKeyError(path)
       : new ValidationError(
           `Unknown config key "${path}".`,
-          'Valid keys: routing, routing.<capability>, fallbackEnabled, fanout, journal, providers.<id>. Run "scoutline config --help".',
+          'Valid keys: routing, routing.<capability>, fallbackEnabled, fanout, fusion, journal, providers.<id>. Run "scoutline config --help".',
         );
   }
   const raw = valueAtPath(config, path);

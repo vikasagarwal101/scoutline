@@ -434,7 +434,10 @@ function mergeCluster(members: MergedRow[]): MergedRow {
  *
  * `bestPos` is internal bookkeeping in both modes and never emitted.
  */
-export function mergeResults(grid: MergeGridArm[], options: MergeResultsOptions): FormattedResult[] {
+export function mergeResults(
+  grid: MergeGridArm[],
+  options: MergeResultsOptions,
+): FormattedResult[] {
   const { mode, emitMergedFrom = false, count } = options ?? ({} as MergeResultsOptions);
   if (mode !== "rrf" && mode !== "occurrence") {
     throw new Error(
@@ -523,6 +526,9 @@ function renderTextFormat(
     // absent). Never print `undefined` — omit what the allowlist took.
     rank += 1;
     const r = { rank, title: "", url: "", ...row } as FormattedResult;
+    // ×N badge (DESIGN D5): N counts the row's merged occurrences AND,
+    // under near-duplicate clustering (fan-out lane T5), the absorbed
+    // cluster members — occurrences accumulates both contributions.
     const occBadge = r.occurrences && r.occurrences > 1 ? ` ×${r.occurrences}` : "";
     if (mode === "compact") {
       lines.push(

@@ -214,7 +214,11 @@ import {
   isDryRunBatchInvocation,
   OBSERVATIONAL_COMMANDS,
 } from "./lib/trigger-detection.js";
-import { resolveProviderId, resolveEffectiveProvider } from "./providers/selection.js";
+import {
+  resolveProviderId,
+  resolveEffectiveProvider,
+  parseProviderId,
+} from "./providers/selection.js";
 import { BUILT_IN_PROVIDER_DESCRIPTORS } from "./providers/registry.js";
 import { PROVIDER_IDS } from "./providers/types.js";
 import { SHARED_PROVIDER_FLAG_IDS, SHARED_PROVIDER_IDS } from "./providers/catalog.js";
@@ -653,7 +657,7 @@ export const STRICT_FLAG_ALLOWLIST: Readonly<Record<string, ReadonlySet<string>>
 };
 
 /**
- * The strict-mode gate (#241): scan a command's argv (the tokens AFTER
+ * The strict-flag gate (#241): scan a command's argv (the tokens AFTER
  * the command name — global options were already extracted) and return
  * the first flag token the command's allowlist does not name, or
  * `undefined` when every token is accepted. Pure; throws never; the
@@ -674,6 +678,39 @@ export function findUnknownStrictFlag(
     if (!allowed.has(key)) return arg;
   }
   return undefined;
+}
+
+/**
+ * One early resolution pass over the known env doors (#244), so a bad
+ * value fails identically on EVERY command — previously
+ * SCOUTLINE_FUSION=bogus failed `quota` (the credentialed path
+ * resolves the door unconditionally) but silently succeeded on
+ * early-return commands (`config get` never read it).
+ *
+ *   - SCOUTLINE_FUSION — strict enum via {@link resolveFusionMode}
+ *     (config passed as undefined: this pass validates the ENV door
+ *     only; the file value arrives at the later resolution already
+ *     leniently parsed). Empty string is unset.
+ *   - SCOUTLINE_PROVIDER — a single shared Provider id via
+ *     {@link parseProviderId}, the exact validation the shared-capability
+ *     paths already run — except on `science`, whose env-door grammar
+ *     is the science supplier ids + "all" and is validated inside
+ *     handleScience against the D5 arm order. The `--provider` FLAG is
+ *     out of scope: it is extracted globally and still surfaces its
+ *     per-command errors where it is consumed.
+ *   - SCOUTLINE_NO_FALLBACK — boolean kill-switch: any non-empty value
+ *     disables fallback, so there is nothing to validate (listed here
+ *     because the door set is the contract, not just the checks).
+ *
+ * Pure; throws ValidationError on a bad door. `main` runs this
+ * pre-dispatch for every command (help/version bare short-circuits have
+ * already returned) and owns the error envelope.
+ */
+export function validateEnvDoors(env: NodeJS.ProcessEnv, command: string): void {
+  resolveFusionMode(env, undefined);
+  if (command !== "science" && env.SCOUTLINE_PROVIDER !== undefined) {
+    parseProviderId(env.SCOUTLINE_PROVIDER);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -5933,6 +5970,26 @@ export async function main(
   const command = rest[0] ?? "";
   const commandArgs = rest.slice(1);
 
+  // #244: validate the env doors ONCE, pre-dispatch, for ALL command
+  // RUNS — a typo'd env value used to fail only on the paths that
+  // happened to resolve it first (quota yes, config get no). Help
+  // invocations stay exempt (documentation, not a run — the same
+  // doctrine as the --max-chars/--no-journal gates and the existing
+  // "<cmd> --help succeeds with an invalid SCOUTLINE_PROVIDER" pins:
+  // rendering help must never require a valid environment). Runs before
+  // the strict-flags gate and every command-specific gate, and before
+  // any disk or network work (the agent-registration check below), so a
+  // doomed run costs nothing. Bare `--help`/`--version` already
+  // returned above.
+  if (!isCommandHelpInvocation(commandArgs)) {
+    try {
+      validateEnvDoors(env, command);
+    } catch (error) {
+      invocation.writeStderr(formatErrorOutput(error, outputMode, envSecrets));
+      return getErrorExitCode(error);
+    }
+  }
+
   // #241: opt-in strict flag mode. Fires before every other pre-dispatch
   // gate (and before the agent-registration disk check) so a doomed run
   // costs nothing: with SCOUTLINE_STRICT_FLAGS set to any non-empty
@@ -6084,7 +6141,9 @@ export async function main(
           // SCOUTLINE_CONFIG_DIR sees its recorded usage in the root the
           // `usage` command reports from (review P2).
           createUsageLedgerSink({
-            filePath: resolveUsageLedgerPath(resolveConfigRootPure(env, { homedir: os.homedir() })),
+            filePath: resolveUsageLedgerPath(
+              resolveConfigRootPure(env, { homedir: os.homedir() }),
+            ),
           }),
         )
       : undefined);

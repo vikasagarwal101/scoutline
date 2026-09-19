@@ -618,6 +618,11 @@ export const STRICT_FLAG_ALLOWLIST: Readonly<Record<string, ReadonlySet<string>>
     "repeats",
     "since",
     "tags",
+    // `history note` consumes --url/--title pairs through its own
+    // raw-argv scan (repeatable rows, not parseArgs flag state) — the
+    // final-review false-reject probe.
+    "url",
+    "title",
   ]),
   init: new Set(["help", "h", "unregister"]),
   config: new Set(["help", "h"]),

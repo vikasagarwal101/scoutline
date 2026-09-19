@@ -214,7 +214,11 @@ import {
   isDryRunBatchInvocation,
   OBSERVATIONAL_COMMANDS,
 } from "./lib/trigger-detection.js";
-import { resolveProviderId, resolveEffectiveProvider } from "./providers/selection.js";
+import {
+  resolveProviderId,
+  resolveEffectiveProvider,
+  parseProviderId,
+} from "./providers/selection.js";
 import { BUILT_IN_PROVIDER_DESCRIPTORS } from "./providers/registry.js";
 import { PROVIDER_IDS } from "./providers/types.js";
 import { SHARED_PROVIDER_FLAG_IDS, SHARED_PROVIDER_IDS } from "./providers/catalog.js";
@@ -298,8 +302,9 @@ advertises search, research, and reader; Perplexity advertises search
 and research; Jina AI advertises search, reader, and research (keyless
 supported); You.com advertises search, reader, and research; Linkup advertises search, reader, and research; Spider.cloud
 advertises search, reader, crawl, and map; Bocha AI advertises and
-supplies search; MiniMax advertises and supplies none of those
-Provider-only Capabilities.
+supplies search; SearchApi advertises and supplies search; Kagi
+advertises and supplies search; MiniMax advertises and supplies none of
+those Provider-only Capabilities.
 Provider fallback is always-on by default (0.11.0+): selecting a
 non-supplier emits a stderr notice and silently reroutes to the next
 eligible configured Provider in registry order. Use --no-fallback (or
@@ -312,6 +317,11 @@ Merged-search ranking: fan-out and --merge results rank by reciprocal
 rank fusion (SCOUTLINE_FUSION=<rrf|occurrence>; default rrf; also the
 config \`fusion\` key, env wins). \`occurrence\` restores the legacy
 ordering byte-for-byte. See \`scoutline search --help\`.
+
+Flag strictness: unknown command flags are silently ignored by default
+(a typo like --fusio runs as if the flag were absent). Set
+SCOUTLINE_STRICT_FLAGS=1 to reject unknown flags on every command with
+a VALIDATION_ERROR naming the offender.
 
 Global Options:
   --output-format <data|json|pretty|compact|markdown|refs|tty>  Output mode (default: data)
@@ -359,6 +369,16 @@ function parseArgs(args: string[]): {
     if (arg.startsWith("--")) {
       const key = arg.slice(2);
 
+      // TWO-SPELLING CONTRACT (#242): this branch maps `--no-X` to BOTH
+      // `flags.X = false` AND `flags["no-X"] = true`. A feature that
+      // must reject a flag therefore has to reject BOTH spellings — a
+      // handler checking only `flags.X` silently accepts `--no-X`, and
+      // one checking only `flags["no-X"]` misses the plain form. Use
+      // `rejectFlagPair(flags, name, makeError)` (below) for every
+      // flag-forbidden surface; the fusion rejection is the reference
+      // retrofit. (A structural fix — making `--no-X` set a single
+      // `flags.noX` key — would break every existing `--no-*`
+      // consumer.)
       if (key.startsWith("no-")) {
         flags[key.slice(3)] = false;
         flags[key] = true;
@@ -394,6 +414,25 @@ function parseArgs(args: string[]): {
 }
 
 /**
+ * Guard for flag-forbidden features (#242): parseArgs maps `--no-X` to
+ * BOTH `flags.X = false` AND `flags["no-X"] = true`, so a feature that
+ * must reject a flag has to reject both spellings — checking one
+ * silently accepts the other (the footgun the fusion lane hit when its
+ * `--fusion` rejection had to know to test both). Throws the CALLER's
+ * error (built lazily, so the no-reject path allocates nothing) when
+ * either spelling of `--<name>` / `--no-<name>` is present.
+ */
+export function rejectFlagPair(
+  flags: Record<string, string | boolean>,
+  name: string,
+  makeError: () => Error,
+): void {
+  if (flags[name] !== undefined || flags[`no-${name}`] !== undefined) {
+    throw makeError();
+  }
+}
+
+/**
  * Collect every occurrence of a long `--<name>` flag in argv order,
  * mirroring parseArgs' value-consumption rule (the next argument is the
  * value iff it exists, is non-empty, and does not start with "-").
@@ -415,6 +454,280 @@ function collectLongFlagValues(args: string[], name: string): (string | true)[] 
     }
   }
   return values;
+}
+
+// ---------------------------------------------------------------------------
+// Strict flag mode (#241). Outside `batch` (and `vision batch` /
+// `history clear`, which carry their own gates) unknown CLI flags are
+// silently ignored — `search "q" --fusio rrf` runs as if the flag were
+// absent and parseArgs swallows the value into flag state. Global
+// strictness would break users passing redundant flags, so rejection is
+// OPT-IN: SCOUTLINE_STRICT_FLAGS set to any non-empty value (the
+// SCOUTLINE_NO_FALLBACK idiom) makes the dispatcher reject every flag
+// token the command's allowlist does not name, with the batch-style
+// error naming the offender.
+//
+// Semantics of the scan (deliberate rulings):
+//   - Exact spellings: `--no-journal` is accepted only as the literal
+//     `no-journal` row; it does NOT license a bare `--journal`. The
+//     parseArgs `--no-X` double-map never participates — the scan reads
+//     raw argv tokens, not parsed flag state.
+//   - Short flags are checked too (`-h` everywhere; fetch's `-A/-X/-H`).
+//     A multi-dash-letter token like `-ab` (which parseArgs would treat
+//     as positional) rejects under strict mode — strict means strict.
+//   - Global flags (`--provider`, `--output-format`, `--save*`, ...) are
+//     stripped by extractGlobalOptions BEFORE this gate, so they are not
+//     listed; a few commands (cache/usage) keep `provider` rows anyway
+//     for direct in-process callers whose argv was never extracted.
+//   - Flags a command's handler REJECTS with a specific error (e.g.
+//     search's `--fusion`, map's `--max-chars`) are absent from the set
+//     on purpose: under strict mode the generic rejection fires first;
+//     under the lenient default the handler's specific error still does.
+//   - When you add a flag to a command, add its spelling here — a miss
+//     only bites strict-mode users, but it bites them loudly.
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-command accepted flag spellings for SCOUTLINE_STRICT_FLAGS mode
+ * (#241). Keys are post-dash spellings (`no-journal`, not
+ * `--no-journal`); sets are the UNION across a command's subcommands.
+ * Exported for the strict-mode tests and the DISPATCHED_COMMANDS
+ * coverage pin.
+ */
+export const STRICT_FLAG_ALLOWLIST: Readonly<Record<string, ReadonlySet<string>>> = {
+  vision: new Set([
+    "help",
+    "h",
+    "context",
+    "focus",
+    "language",
+    "output",
+    "type",
+    // `vision batch` wrapper (the VISION_BATCH_FLAGS surface)
+    "out",
+    "prompt",
+    "concurrency",
+    "dry-run",
+  ]),
+  search: new Set([
+    "help",
+    "h",
+    "count",
+    "domain",
+    "fields",
+    "recency",
+    "topic",
+    "type",
+    "location",
+    "content-size",
+    "merge",
+    "max-summary",
+    "no-cache",
+    "max-chars",
+    "context",
+    "context-stdin",
+    "no-journal",
+  ]),
+  read: new Set([
+    "help",
+    "h",
+    "extract",
+    "format",
+    "full-envelope",
+    "keep-img-data-url",
+    "no-cache",
+    "no-gfm",
+    "no-images",
+    "timeout",
+    "with-images-summary",
+    "with-links",
+    "max-chars",
+    "no-journal",
+  ]),
+  crawl: new Set([
+    "help",
+    "h",
+    "breadth",
+    "content-size",
+    "depth",
+    "exclude-paths",
+    "format",
+    "instructions",
+    "limit",
+    "no-cache",
+    "select-paths",
+    "timeout",
+    "max-chars",
+  ]),
+  map: new Set([
+    "help",
+    "h",
+    "breadth",
+    "depth",
+    "exclude-paths",
+    "instructions",
+    "limit",
+    "no-cache",
+    "select-paths",
+  ]),
+  research: new Set([
+    "help",
+    "h",
+    "citation-format",
+    "context",
+    "context-mode",
+    "context-stdin",
+    "domain",
+    "model",
+    "no-cache",
+    "output-length",
+    "timeout",
+    "max-chars",
+    "no-journal",
+  ]),
+  repo: new Set([
+    "help",
+    "h",
+    "depth",
+    "focus",
+    "lang",
+    "language",
+    "max-chars",
+    "no-cache",
+    "no-focus",
+    "path",
+  ]),
+  batch: new Set(["help", "h", "concurrency", "fail-fast", "dry-run"]),
+  tools: new Set(["help", "h", "filter", "full", "ts", "typescript", "vision", "no-vision"]),
+  tool: new Set(["help", "h", "vision", "no-vision"]),
+  call: new Set(["help", "h", "dry-run", "file", "json", "stdin", "vision", "no-vision"]),
+  doctor: new Set(["help", "h", "available", "health", "no-tools"]),
+  quota: new Set(["help", "h", "all-providers"]),
+  code: new Set(["help", "h", "logs", "timeout"]),
+  cache: new Set(["help", "h", "capability", "older-than", "provider"]),
+  usage: new Set(["help", "h", "days", "provider"]),
+  history: new Set([
+    "help",
+    "h",
+    "all",
+    "as-of",
+    "capability",
+    "command",
+    "kind",
+    "limit",
+    "repeats",
+    "since",
+    "tags",
+    // `history note` consumes --url/--title pairs through its own
+    // raw-argv scan (repeatable rows, not parseArgs flag state) — the
+    // final-review false-reject probe.
+    "url",
+    "title",
+  ]),
+  init: new Set(["help", "h", "unregister"]),
+  config: new Set(["help", "h"]),
+  fetch: new Set([
+    "help",
+    "h",
+    "md5",
+    "sha256",
+    "raw",
+    "out",
+    "ua",
+    "user-agent",
+    "A",
+    "method",
+    "X",
+    "data",
+    "header",
+    "H",
+    "pdf",
+    "pdf-repair",
+    "timeout",
+  ]),
+  archive: new Set(["help", "h", "at", "from", "limit", "raw", "since", "status", "timeout", "to"]),
+  watch: new Set(["help", "h", "all", "format", "keep", "name", "purge", "timeout"]),
+  science: new Set([
+    "help",
+    "h",
+    "author",
+    "year",
+    "venue",
+    "type",
+    "provider",
+    "no-cache",
+    "max-chars",
+    "no-journal",
+  ]),
+};
+
+/**
+ * The strict-flag gate (#241): scan a command's argv (the tokens AFTER
+ * the command name — global options were already extracted) and return
+ * the first flag token the command's allowlist does not name, or
+ * `undefined` when every token is accepted. Pure; throws never; the
+ * caller owns the error envelope. Commands without an allowlist row
+ * (unknown commands — the dispatcher's own `Unknown command` path) scan
+ * nothing.
+ */
+export function findUnknownStrictFlag(
+  command: string,
+  args: readonly string[],
+): string | undefined {
+  const allowed = STRICT_FLAG_ALLOWLIST[command];
+  if (allowed === undefined) return undefined;
+  for (const arg of args) {
+    if (typeof arg !== "string" || !arg.startsWith("-") || arg.length < 2) continue;
+    const key = arg.startsWith("--") ? arg.slice(2) : arg.slice(1);
+    if (key.length === 0) continue; // a bare `--` token: never a flag name
+    if (!allowed.has(key)) return arg;
+  }
+  return undefined;
+}
+
+/**
+ * One early resolution pass over the known env doors (#244), so a bad
+ * value fails identically on EVERY command — previously
+ * SCOUTLINE_FUSION=bogus failed `quota` (the credentialed path
+ * resolves the door unconditionally) but silently succeeded on
+ * early-return commands (`config get` never read it).
+ *
+ *   - SCOUTLINE_FUSION — strict enum via {@link resolveFusionMode}
+ *     (config passed as undefined: this pass validates the ENV door
+ *     only; the file value arrives at the later resolution already
+ *     leniently parsed). Empty string is unset.
+ *   - SCOUTLINE_PROVIDER — a single shared Provider id via
+ *     {@link parseProviderId}, the exact validation the shared-capability
+ *     paths already run — except on `science`, whose env-door grammar
+ *     is the science supplier ids + "all" and is validated inside
+ *     handleScience against the D5 arm order. The `--provider` FLAG is
+ *     out of scope: it is extracted globally and still surfaces its
+ *     per-command errors where it is consumed.
+ *   - SCOUTLINE_NO_FALLBACK — boolean kill-switch: any non-empty value
+ *     disables fallback, so there is nothing to validate (listed here
+ *     because the door set is the contract, not just the checks).
+ *
+ * Pure; throws ValidationError on a bad door. `main` runs this
+ * pre-dispatch for every command (help/version bare short-circuits have
+ * already returned) and owns the error envelope.
+ */
+export function validateEnvDoors(
+  env: NodeJS.ProcessEnv,
+  command: string,
+  explicitProvider?: string,
+): void {
+  resolveFusionMode(env, undefined);
+  // PR #253 round 1: a present --provider flag (any value — id, comma
+  // list, or "all") wins the precedence chain, so SCOUTLINE_PROVIDER is
+  // a dead value on a pinned run and must not fail it. The flag's own
+  // value is validated downstream, where the consuming command reads it.
+  if (
+    command !== "science" &&
+    explicitProvider === undefined &&
+    env.SCOUTLINE_PROVIDER !== undefined
+  ) {
+    parseProviderId(env.SCOUTLINE_PROVIDER);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1422,17 +1735,20 @@ async function handleSearch(
 
   // Fusion seed-24 AC-1 pin: search takes NO --fusion flag — the
   // algorithm is a standing setting, not a per-query option — so a
-  // query flag could never exist. parseArgs maps `--no-fusion` to BOTH
-  // flags.fusion=false and flags["no-fusion"]=true, so both spellings
-  // are caught by the fusion field test; rejection runs BEFORE the
-  // help-gate for the same reason as `--context` above (parseArgs
-  // swallows the value into flag state, and help would exit 0).
-  if (flags.fusion !== undefined || flags["no-fusion"] !== undefined) {
-    throw new ValidationError(
-      "search has no --fusion flag; the ranking algorithm is a standing setting, not a per-query option.",
-      "Use `scoutline config set fusion <rrf|occurrence>` or the SCOUTLINE_FUSION environment variable.",
-    );
-  }
+  // query flag could never exist. rejectFlagPair (#242) guards BOTH
+  // spellings (parseArgs maps `--no-fusion` to flags.fusion=false AND
+  // flags["no-fusion"]=true); rejection runs BEFORE the help-gate for
+  // the same reason as `--context` above (parseArgs swallows the value
+  // into flag state, and help would exit 0).
+  rejectFlagPair(
+    flags,
+    "fusion",
+    () =>
+      new ValidationError(
+        "search has no --fusion flag; the ranking algorithm is a standing setting, not a per-query option.",
+        "Use `scoutline config set fusion <rrf|occurrence>` or the SCOUTLINE_FUSION environment variable.",
+      ),
+  );
 
   if (flags.help || flags.h || positional.length === 0) {
     deps.invocation.writeStdout(SEARCH_HELP);
@@ -4923,7 +5239,6 @@ function buildSaveWiring(
   };
 }
 
-
 // Save-artifact hook construction lives in lib/save-artifacts.ts
 // (ruling round): artifactHeaderComment, renderMarkdownArtifactBody,
 // exportTargetExists, createSaveArtifactHook. The existing call sites
@@ -5020,7 +5335,6 @@ function parseMaxCharsFlag(flags: Record<string, unknown>): number | undefined {
   }
   return parseBriefMaxChars(raw);
 }
-
 
 // ---------------------------------------------------------------------------
 // History-journal merge T2a — the ALWAYS-ON journal hook at the same
@@ -5672,6 +5986,49 @@ export async function main(
 
   const command = rest[0] ?? "";
   const commandArgs = rest.slice(1);
+
+  // #244: validate the env doors ONCE, pre-dispatch, for ALL command
+  // RUNS — a typo'd env value used to fail only on the paths that
+  // happened to resolve it first (quota yes, config get no). Help
+  // invocations stay exempt (documentation, not a run — the same
+  // doctrine as the --max-chars/--no-journal gates and the existing
+  // "<cmd> --help succeeds with an invalid SCOUTLINE_PROVIDER" pins:
+  // rendering help must never require a valid environment). Runs before
+  // the strict-flags gate and every command-specific gate, and before
+  // any disk or network work (the agent-registration check below), so a
+  // doomed run costs nothing. Bare `--help`/`--version` already
+  // returned above.
+  if (!isCommandHelpInvocation(commandArgs)) {
+    try {
+      validateEnvDoors(env, command, provider);
+    } catch (error) {
+      invocation.writeStderr(formatErrorOutput(error, outputMode, envSecrets));
+      return getErrorExitCode(error);
+    }
+  }
+
+  // #241: opt-in strict flag mode. Fires before every other pre-dispatch
+  // gate (and before the agent-registration disk check) so a doomed run
+  // costs nothing: with SCOUTLINE_STRICT_FLAGS set to any non-empty
+  // value, a flag token the command's allowlist does not name rejects
+  // with the batch-style error. The lenient default (unset/empty env)
+  // stays byte-identical — unknown flags are accepted and dropped.
+  if (typeof env.SCOUTLINE_STRICT_FLAGS === "string" && env.SCOUTLINE_STRICT_FLAGS.length > 0) {
+    const unknownFlag = findUnknownStrictFlag(command, commandArgs);
+    if (unknownFlag !== undefined) {
+      invocation.writeStderr(
+        formatErrorOutput(
+          new ValidationError(
+            `unknown flag "${unknownFlag}" for command "${command}" (SCOUTLINE_STRICT_FLAGS is enabled)`,
+            `Run "scoutline ${command} --help" for the accepted flags, or unset SCOUTLINE_STRICT_FLAGS to restore lenient flag handling.`,
+          ),
+          outputMode,
+          envSecrets,
+        ),
+      );
+      return 1;
+    }
+  }
 
   // Lazy agent-registration stamp check (agent registration D5/D6):
   // fires exactly once per CLI run, before command dispatch. Stamp-absent

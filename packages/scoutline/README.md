@@ -411,7 +411,7 @@ PMC) serve only `scoutline science ...` and `doctor` (see the Science
 section). The exact same `descriptor.capabilities()` set drives
 executor preflight, Provider selection, and `doctor`.
 
-| Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Parallel | Perplexity | Jina | You.com | Linkup | Spider.cloud | Bocha AI | SearchApi | Kagi | Notes |
+| Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Parallel | Perplexity | Jina AI | You.com | Linkup | Spider.cloud | Bocha AI | SearchApi | Kagi | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `search` | Yes | Yes | Yes | Yes | Yes (incl. `type: "video"`) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Parallel (declarative semantic), Jina (neural web search) |
 | `vision.interpret-image` (analyze) | Yes | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | Provider-specific media limits; uncached |

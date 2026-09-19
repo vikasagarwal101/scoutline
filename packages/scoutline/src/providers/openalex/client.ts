@@ -33,6 +33,7 @@ import {
 } from "../../lib/errors.js";
 import type { ProviderQuotaFetch } from "../types.js";
 import { getGlobalFetch } from "../types.js";
+import { clampTimeoutMs } from "../../lib/timeout.js";
 
 const { version: VERSION } = pkg;
 
@@ -58,6 +59,12 @@ export interface OpenalexCredentials {
 export function resolveOpenalexCredentials(env: NodeJS.ProcessEnv): OpenalexCredentials {
   const apiKey = env["OPENALEX_API_KEY"];
   return apiKey === undefined || apiKey === "" ? {} : { apiKey };
+}
+
+/** `OPENALEX_TIMEOUT` override, clamped through the shared seam (#234). */
+export function resolveTimeoutMs(env: NodeJS.ProcessEnv): number {
+  const raw = parseInt(env.OPENALEX_TIMEOUT || String(DEFAULT_TIMEOUT_MS), 10);
+  return clampTimeoutMs(raw, DEFAULT_TIMEOUT_MS);
 }
 
 /**
@@ -164,6 +171,7 @@ export async function fetchOpenalexJson(
   const f = deps.fetch ?? getGlobalFetch<ProviderQuotaFetch>();
   const setT = deps.setTimeout ?? setTimeout;
   const clearT = deps.clearTimeout ?? clearTimeout;
+  const timeoutMs = resolveTimeoutMs(deps.env ?? {});
   const { apiKey } = resolveOpenalexCredentials(deps.env ?? {});
   // Entity-route path segments are percent-encoded (review): a DOI
   // suffix containing `?` or `#` would otherwise be truncated into the
@@ -197,7 +205,7 @@ export async function fetchOpenalexJson(
   const timeoutId = setT(() => {
     timedOut = true;
     controller.abort();
-  }, DEFAULT_TIMEOUT_MS);
+  }, timeoutMs);
   const abortWithExternal = () => controller.abort();
   if (signal !== undefined) {
     if (signal.aborted) {
@@ -223,7 +231,7 @@ export async function fetchOpenalexJson(
       await res.body?.cancel().catch(() => {});
       throw mapStatusError(
         res.status,
-        DEFAULT_TIMEOUT_MS,
+        timeoutMs,
         parseRetryAfterHintMs(res.headers),
       );
     }
@@ -285,7 +293,7 @@ export async function fetchOpenalexJson(
       throw new ApiError("OpenAlex returned a malformed response", 500);
     }
   } catch (err) {
-    throw normalizeTransportError(err, DEFAULT_TIMEOUT_MS, timedOut, signal);
+    throw normalizeTransportError(err, timeoutMs, timedOut, signal);
   } finally {
     if (signal !== undefined) {
       signal.removeEventListener("abort", abortWithExternal);

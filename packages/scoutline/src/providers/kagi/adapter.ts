@@ -24,12 +24,13 @@
  *   type        -> REJECTED (UnsupportedOptionError)
  *
  * Auth is `Authorization: Bot <key>` — Kagi wire truth, not Bearer.
- * Diagnostics probes the same v1 search endpoint with q=test&limit=1.
+ * Diagnostics probes the same v1 search endpoint with q=scoutline-doctor-probe&limit=1.
  */
 
 import type { ProviderAdapter, ProviderContext, ProviderDescriptor, ProviderId } from "../types.js";
 import type {
   SearchCacheIdentity,
+  SearchCapability,
   SearchRequest,
   SearchSource,
 } from "../../capabilities/search.js";
@@ -45,7 +46,12 @@ import {
 } from "../../lib/errors.js";
 import { hashKagiApiKey, isKagiConfigured, requireKagiApiKey } from "./credentials.js";
 import { applySearchTopic } from "../../lib/search-topic.js";
-import { fetchKagiSearch, fetchKagiNews, type KagiTransportDeps } from "./client.js";
+import {
+  fetchKagiSearch,
+  fetchKagiNews,
+  DEFAULT_SEARCH_LIMIT,
+  type KagiTransportDeps,
+} from "./client.js";
 import { createKagiDiagnosticsCapability } from "./diagnostics.js";
 
 const KAGI_PROVIDER_ID: ProviderId = "kagi";
@@ -138,7 +144,7 @@ function normalizeSearchResults(response: {
 
 export class KagiAdapter implements ProviderAdapter {
   readonly id: ProviderId = KAGI_PROVIDER_ID;
-  readonly search;
+  readonly search: SearchCapability;
   readonly diagnostics: DiagnosticsCapability;
 
   constructor(
@@ -195,7 +201,7 @@ export class KagiAdapter implements ProviderAdapter {
         if (controls?.topic !== "news") {
           query = applySearchTopic(query, controls?.topic);
         }
-        const params = { query, limit: 10 };
+        const params = { query, limit: DEFAULT_SEARCH_LIMIT };
 
         // Only the transport call is rewrapped (raw-body sanitization);
         // normalizeSearchResults fails closed with a curated ApiError

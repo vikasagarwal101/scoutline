@@ -25,6 +25,7 @@ import pkg from "../../../package.json" with { type: "json" };
 import { ApiError, AuthError, NetworkError, TimeoutError } from "../../lib/errors.js";
 import type { ProviderQuotaFetch } from "../types.js";
 import { getGlobalFetch } from "../types.js";
+import { clampTimeoutMs } from "../../lib/timeout.js";
 
 const { version: VERSION } = pkg;
 
@@ -66,6 +67,12 @@ export interface SpiderSearchParams {
   readonly tbs?: string;
   /** Domain allowlist mapped from `controls.domain`. */
   readonly whitelist?: readonly string[];
+}
+
+/** `SPIDER_TIMEOUT` override, clamped through the shared seam (#234). */
+export function resolveTimeoutMs(env: NodeJS.ProcessEnv): number {
+  const raw = parseInt(env.SPIDER_TIMEOUT || String(DEFAULT_TIMEOUT_MS), 10);
+  return clampTimeoutMs(raw, DEFAULT_TIMEOUT_MS);
 }
 
 /**
@@ -125,9 +132,11 @@ async function postSpiderJson(
   const f = deps.fetch ?? getGlobalFetch<ProviderQuotaFetch>();
   const setT = deps.setTimeout ?? setTimeout;
   const clearT = deps.clearTimeout ?? clearTimeout;
+  const env = deps.env ?? process.env;
+  const timeoutMs = resolveTimeoutMs(env);
   const url = `${BASE_URL}${path}`;
   const controller = new AbortController();
-  const timeoutId = setT(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+  const timeoutId = setT(() => controller.abort(), timeoutMs);
   const abortWithExternal = () => controller.abort();
   if (signal !== undefined) {
     if (signal.aborted) {
@@ -149,7 +158,7 @@ async function postSpiderJson(
     });
     if (!res.ok) {
       await res.text().catch(() => {});
-      throw mapStatusError(res.status, DEFAULT_TIMEOUT_MS);
+      throw mapStatusError(res.status, timeoutMs);
     }
     try {
       return await res.json();
@@ -161,7 +170,7 @@ async function postSpiderJson(
       throw new ApiError(`Spider ${endpointLabel} returned a malformed response`, 500);
     }
   } catch (err) {
-    throw normalizeTransportError(err, DEFAULT_TIMEOUT_MS);
+    throw normalizeTransportError(err, timeoutMs);
   } finally {
     if (signal !== undefined) {
       signal.removeEventListener("abort", abortWithExternal);
@@ -337,9 +346,11 @@ async function getSpiderJson(
   const f = deps.fetch ?? getGlobalFetch<ProviderQuotaFetch>();
   const setT = deps.setTimeout ?? setTimeout;
   const clearT = deps.clearTimeout ?? clearTimeout;
+  const env = deps.env ?? process.env;
+  const timeoutMs = resolveTimeoutMs(env);
   const url = `${BASE_URL}${path}`;
   const controller = new AbortController();
-  const timeoutId = setT(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+  const timeoutId = setT(() => controller.abort(), timeoutMs);
   try {
     const res = await f(url, {
       method: "GET",
@@ -351,7 +362,7 @@ async function getSpiderJson(
     });
     if (!res.ok) {
       await res.text().catch(() => {});
-      throw mapStatusError(res.status, DEFAULT_TIMEOUT_MS);
+      throw mapStatusError(res.status, timeoutMs);
     }
     try {
       return await res.json();
@@ -363,7 +374,7 @@ async function getSpiderJson(
       throw new ApiError(`Spider ${endpointLabel} returned a malformed response`, 500);
     }
   } catch (err) {
-    throw normalizeTransportError(err, DEFAULT_TIMEOUT_MS);
+    throw normalizeTransportError(err, timeoutMs);
   } finally {
     clearT(timeoutId);
     controller.abort();

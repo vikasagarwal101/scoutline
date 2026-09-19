@@ -267,8 +267,8 @@ function createCrossrefScienceCapability(options: {
   readonly env: NodeJS.ProcessEnv;
   readonly transport?: CrossrefTransportDeps;
 }): CrossrefScienceCapability {
-  const { transport } = options;
-  const deps = { ...transport };
+  const { env, transport } = options;
+  const deps = { ...transport, env };
 
   const search: CrossrefScienceSearchCapability = {
     validate: validateCrossrefSearchRequest,

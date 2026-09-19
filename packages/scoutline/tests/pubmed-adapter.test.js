@@ -1444,3 +1444,52 @@ describe("pubmed abort signal threading and honest cancellation (#151)", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Transport-env precedence — the descriptor env is AUTHORITATIVE (#260).
+// The transport deps' optional `env` field is decorative in the adapter
+// path: the adapter's `{ ...transport, env }` construction (pubmed,
+// openalex, europepmc, crossref — env-last, #257/#260) always clobbers it.
+// It exists for direct client-call test seams only. This pin proves the
+// contract: a transport-injected PUBMED_TIMEOUT must NOT override through
+// the adapter path.
+// ---------------------------------------------------------------------------
+
+describe("pubmed transport-env precedence — descriptor env wins (#260)", () => {
+  it("transport-injected PUBMED_TIMEOUT does not override; the descriptor env arms the timer", async () => {
+    let armedDelayMs;
+    const descriptor = createPubmedDescriptor({
+      transport: {
+        env: { PUBMED_TIMEOUT: "12345" },
+        fetch: (_url, init) =>
+          new Promise((_res, rej) => {
+            if (init?.signal?.aborted) {
+              const err = new Error("aborted");
+              err.name = "AbortError";
+              rej(err);
+              return;
+            }
+            init?.signal?.addEventListener("abort", () => {
+              const err = new Error("aborted");
+              err.name = "AbortError";
+              rej(err);
+            });
+          }),
+        setTimeout: (cb, delayMs) => {
+          armedDelayMs = delayMs;
+          setImmediate(cb);
+          return 123;
+        },
+        clearTimeout: () => {},
+      },
+    });
+    const adapter = descriptor.create({ env: {} });
+    const promise = adapter.science.search.invoke({ query: "x" });
+    await assert.rejects(promise, (e) => e instanceof TimeoutError);
+    assert.equal(
+      armedDelayMs,
+      30000,
+      "descriptor env must be authoritative: transport-injected PUBMED_TIMEOUT=12345 is decorative in the adapter path ({ ...transport, env } clobbers it), so the DEFAULT_TIMEOUT_MS 30000 from the empty descriptor env arms the timer",
+    );
+  });
+});

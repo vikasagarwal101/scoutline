@@ -452,6 +452,8 @@ describe("init fresh-onboarding happy path: multi-provider, atomic write", () =>
       script.queueConfirm(true);
       // Journal prompt: default Yes (T7).
       script.queueConfirm(true);
+      // Fusion prompt: default Yes (T6).
+      script.queueConfirm(true);
 
       const realStore = await import("../dist/lib/config-store.js");
       const store = {
@@ -481,6 +483,7 @@ describe("init fresh-onboarding happy path: multi-provider, atomic write", () =>
         version: 1,
         fallbackEnabled: true,
         journal: true,
+        fusion: "rrf",
         providers: {
           zai: {
             apiKey: "zai-secret",
@@ -522,6 +525,8 @@ describe("init fresh-onboarding happy path: multi-provider, atomic write", () =>
       // Single fallback confirm.
       script.queueConfirm(true);
       // Journal prompt (T7).
+      script.queueConfirm(true);
+      // Fusion prompt (T6).
       script.queueConfirm(true);
 
       const realStore = await import("../dist/lib/config-store.js");
@@ -588,6 +593,7 @@ describe("init validation classification: honest broad taxonomy", () => {
       script.queuePassword("correct-secret");
       script.queueConfirm(true); // fallback
       script.queueConfirm(true); // journal (T7)
+      script.queueConfirm(true); // fusion (T6)
 
       const realStore = await import("../dist/lib/config-store.js");
       const store = {
@@ -641,6 +647,7 @@ describe("init validation classification: honest broad taxonomy", () => {
       script.queueConfirm(true);
       script.queueConfirm(true); // fallback
       script.queueConfirm(true); // journal (T7)
+      script.queueConfirm(true); // fusion (T6)
 
       const realStore = await import("../dist/lib/config-store.js");
       const store = {
@@ -688,6 +695,7 @@ describe("init validation classification: honest broad taxonomy", () => {
       script.queueConfirm(false); // decline save-unverified
       script.queueConfirm(true); // fallback default
       script.queueConfirm(true); // journal (T7)
+      script.queueConfirm(true); // fusion (T6)
 
       const realStore = await import("../dist/lib/config-store.js");
       const store = {
@@ -784,6 +792,7 @@ describe("init credit-cost disclosure: shown before paid probes, absent for free
       script.queuePassword("tvly-key");
       script.queueConfirm(true);
       script.queueConfirm(true); // journal (T7)
+      script.queueConfirm(true); // fusion (T6)
 
       const realStore = await import("../dist/lib/config-store.js");
       const store = {
@@ -820,6 +829,7 @@ describe("init credit-cost disclosure: shown before paid probes, absent for free
       script.queuePassword("zai-key");
       script.queueConfirm(true);
       script.queueConfirm(true); // journal (T7)
+      script.queueConfirm(true); // fusion (T6)
 
       const realStore = await import("../dist/lib/config-store.js");
       const store = {
@@ -973,6 +983,7 @@ describe("init zero-provider confirmation: default No returns to checklist", () 
       script.queuePassword("zai-key");
       script.queueConfirm(true);
       script.queueConfirm(true); // journal (T7)
+      script.queueConfirm(true); // fusion (T6)
 
       const realStore = await import("../dist/lib/config-store.js");
       const store = {
@@ -1013,6 +1024,9 @@ describe("init zero-provider confirmation: default No returns to checklist", () 
       // Journal prompt (T7) — decline so the minimal write pins
       // journal:false (the confirm is honored, not ignored).
       script.queueConfirm(false);
+      // Fusion prompt (T6) — decline so the minimal write pins
+      // fusion:"occurrence" (the confirm is honored, not ignored).
+      script.queueConfirm(false);
 
       const realStore = await import("../dist/lib/config-store.js");
       const store = {
@@ -1037,6 +1051,7 @@ describe("init zero-provider confirmation: default No returns to checklist", () 
         version: 1,
         fallbackEnabled: false,
         journal: false,
+        fusion: "occurrence",
         providers: {},
       });
       assert.match(stdoutChunks[0], /no providers configured/i);
@@ -1066,6 +1081,7 @@ describe("init registration link: hyperlink + literal URL both rendered", () => 
       // Fallback still asked.
       script.queueConfirm(true);
       script.queueConfirm(true); // journal (T7)
+      script.queueConfirm(true); // fusion (T6)
 
       const realStore = await import("../dist/lib/config-store.js");
       const store = {
@@ -1114,6 +1130,7 @@ describe("init env-key import: candidate offered when ambient env has a key", ()
       // Fallback.
       script.queueConfirm(true);
       script.queueConfirm(true); // journal (T7)
+      script.queueConfirm(true); // fusion (T6)
 
       const realStore = await import("../dist/lib/config-store.js");
       const store = {
@@ -1170,6 +1187,7 @@ describe("init env-key import: candidate offered when ambient env has a key", ()
       script.queuePassword("manual-key");
       script.queueConfirm(true);
       script.queueConfirm(true); // journal (T7)
+      script.queueConfirm(true); // fusion (T6)
 
       const realStore = await import("../dist/lib/config-store.js");
       const store = {
@@ -1369,9 +1387,10 @@ describe("init wizard: minimum keyless branch for keyless science suppliers (T2)
 
       const script = createScriptedPrompts();
       script.queueCheckbox(["arxiv"]);
-      // Fallback + journal confirms still apply after onboarding.
+      // Fallback + journal + fusion confirms still apply after onboarding.
       script.queueConfirm(true);
       script.queueConfirm(true);
+      script.queueConfirm(true); // fusion (T6)
 
       const realStore = await import("../dist/lib/config-store.js");
       const store = {
@@ -1425,6 +1444,7 @@ describe("init wizard: minimum keyless branch for keyless science suppliers (T2)
       script.queueCheckbox(["arxiv"]);
       // Fallback + journal confirms still run after the skipped onboarding.
       script.queueConfirm(true);
+      script.queueConfirm(true); // fusion (T6)
       script.queueConfirm(true);
 
       const realStore = await import("../dist/lib/config-store.js");
@@ -1739,6 +1759,7 @@ describe("init journal prompt (T7): one-time disclosure, default enabled", () =>
       const zai = makeFakeDescriptor({ id: "zai", behaviour: "resolve" });
       const script = minimalFreshScript(createScriptedPrompts());
       script.queueConfirm(true); // journal: keep (default Yes)
+      script.queueConfirm(true); // fusion: keep (default rrf)
 
       const { deps, stdoutChunks } = createInitDeps({
         descriptors: [zai.descriptor],
@@ -1762,6 +1783,7 @@ describe("init journal prompt (T7): one-time disclosure, default enabled", () =>
       const zai = makeFakeDescriptor({ id: "zai", behaviour: "resolve" });
       const script = minimalFreshScript(createScriptedPrompts());
       script.queueConfirm(false); // journal: no
+      script.queueConfirm(false); // fusion: no (occurrence)
 
       const { deps } = createInitDeps({
         descriptors: [zai.descriptor],
@@ -1811,6 +1833,120 @@ describe("init journal prompt (T7): one-time disclosure, default enabled", () =>
     const writes = store.getWrites();
     assert.strictEqual(writes.length, 1);
     assert.strictEqual(writes[0].config.journal, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fusion-lane T6 — init fusion disclosure prompt (DESIGN D6)
+// ---------------------------------------------------------------------------
+
+describe("init fusion prompt (T6): one-time disclosure, default rrf", () => {
+  function realStoreAdapter(filePath) {
+    const realStorePromise = import("../dist/lib/config-store.js");
+    return {
+      async inspect() {
+        const realStore = await realStorePromise;
+        return realStore.inspectConfig({ filePath });
+      },
+      async write(config, options) {
+        const realStore = await realStorePromise;
+        await realStore.writeConfig(config, { filePath, ...options });
+      },
+    };
+  }
+
+  it("default Yes writes top-level fusion:'rrf'; the disclosure was a fusion confirm", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const filePath = path.join(dir, "config.json");
+      const zai = makeFakeDescriptor({ id: "zai", behaviour: "resolve" });
+      const script = createScriptedPrompts();
+      script.queueCheckbox(["zai"]);
+      script.queueConfirm(true); // has key
+      script.queuePassword("zai-key");
+      script.queueConfirm(true); // fallback
+      script.queueConfirm(true); // journal
+      script.queueConfirm(true); // fusion: keep default (rrf)
+
+      const { deps, stdoutChunks } = createInitDeps({
+        descriptors: [zai.descriptor],
+        prompts: script.prompts,
+        configStore: realStoreAdapter(filePath),
+      });
+      const status = await handleInitWithHelp([], deps);
+      assert.strictEqual(status, 0);
+      const written = JSON.parse(await fs.readFile(filePath, "utf8"));
+      assert.strictEqual(written.fusion, "rrf");
+      // The disclosure was a fusion confirm (wizard-visible contract).
+      const confirmMessages = script.calls.confirm.map((c) => c.message).join("\n");
+      assert.match(confirmMessages, /fusion|rank merged/i);
+    });
+  });
+
+  it("declining writes fusion:'occurrence' (the legacy byte-identical escape hatch)", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const filePath = path.join(dir, "config.json");
+      const zai = makeFakeDescriptor({ id: "zai", behaviour: "resolve" });
+      const script = createScriptedPrompts();
+      script.queueCheckbox(["zai"]);
+      script.queueConfirm(true); // has key
+      script.queuePassword("zai-key");
+      script.queueConfirm(true); // fallback
+      script.queueConfirm(true); // journal
+      script.queueConfirm(false); // fusion: no (occurrence)
+
+      const { deps } = createInitDeps({
+        descriptors: [zai.descriptor],
+        prompts: script.prompts,
+        configStore: realStoreAdapter(filePath),
+      });
+      const status = await handleInitWithHelp([], deps);
+      assert.strictEqual(status, 0);
+      const written = JSON.parse(await fs.readFile(filePath, "utf8"));
+      assert.strictEqual(written.fusion, "occurrence");
+    });
+  });
+
+  it("cancel on the fusion prompt writes nothing (exit 1)", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const filePath = path.join(dir, "config.json");
+      const zai = makeFakeDescriptor({ id: "zai", behaviour: "resolve" });
+      const script = createScriptedPrompts();
+      script.queueCheckbox(["zai"]);
+      script.queueConfirm(true); // has key
+      script.queuePassword("zai-key");
+      script.queueConfirm(true); // fallback
+      script.queueConfirm(true); // journal
+      script.queueConfirmCancel(); // fusion prompt: Ctrl+C
+
+      const { deps } = createInitDeps({
+        descriptors: [zai.descriptor],
+        prompts: script.prompts,
+        configStore: realStoreAdapter(filePath),
+      });
+      const status = await handleInitWithHelp([], deps);
+      assert.strictEqual(status, 1);
+      await assert.rejects(fs.readFile(filePath, "utf8"));
+    });
+  });
+
+  it("non-TTY: the refuse fires before any prompt — zero fusion prompts, no fusion key written", async () => {
+    const script = createScriptedPrompts();
+    const store = createFakeConfigStore();
+    const zai = makeFakeDescriptor({ id: "zai" });
+    const { deps } = createInitDeps({
+      descriptors: [zai.descriptor],
+      prompts: script.prompts,
+      configStore: store,
+      stdinIsTTY: false,
+    });
+
+    const status = await handleInitWithHelp([], deps);
+
+    assert.strictEqual(status, 1);
+    assert.strictEqual(script.calls.confirm.length, 0, "no confirm of any kind under non-TTY");
+    assert.strictEqual(store.getWrites().length, 0);
+    const written = store.getConfig();
+    assert.ok(written === null || written.fusion === undefined, "no fusion key written");
   });
 });
 
@@ -1907,6 +2043,7 @@ describe("init re-config: remove-provider drops the entry", () => {
       script.queueConfirm(true); // continue with no providers confirmation
       script.queueConfirm(true); // fallback preference
       script.queueConfirm(true); // journal prompt
+      script.queueConfirm(true); // fusion prompt (T6)
 
       const { deps, stderrChunks } = createInitDeps({
         descriptors: [zai.descriptor],
@@ -1945,6 +2082,7 @@ describe("init re-config: remove-provider drops the entry", () => {
       script.queueConfirm(true); // continue with no providers
       script.queueConfirm(true); // fallback preference
       script.queueConfirm(true); // journal prompt
+      script.queueConfirm(true); // fusion prompt (T6)
 
       const { deps } = createInitDeps({
         descriptors: [],
@@ -1989,6 +2127,7 @@ describe("init re-config: remove-provider drops the entry", () => {
       script.queueConfirm(true); // continue with none
       script.queueConfirm(true); // fallback preference
       script.queueConfirm(true); // journal prompt
+      script.queueConfirm(true); // fusion prompt (T6)
 
       const { deps } = createInitDeps({
         descriptors: [],
@@ -2063,6 +2202,7 @@ describe("init corrupt-config repair: backup + rewrite (T3b)", () => {
       script.queuePassword("fresh-key");
       script.queueConfirm(true);
       script.queueConfirm(true); // journal (T7)
+      script.queueConfirm(true); // fusion (T6)
 
       const realStore = await import("../dist/lib/config-store.js");
       const store = {
@@ -2120,6 +2260,7 @@ describe("init env-import: stale-env-after-import warning (T3b edge case)", () =
       script.queueConfirm(true);
       script.queueConfirm(true); // fallback
       script.queueConfirm(true); // journal (T7)
+      script.queueConfirm(true); // fusion (T6)
 
       const realStore = await import("../dist/lib/config-store.js");
       const store = {

@@ -410,6 +410,7 @@ describe("wizard agent step: fresh onboarding path (DESIGN D4)", () => {
       version: 1,
       fallbackEnabled: true,
       journal: true, // integration (PR #111): wizard journal confirm answered yes by the harness
+      fusion: "rrf", // integration (T6): wizard fusion confirm answered yes by the harness
       providers: {
         zai: {
           apiKey: "zai-secret",

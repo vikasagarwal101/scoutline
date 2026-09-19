@@ -171,6 +171,7 @@ describe("init wizard: keyed science opt-in question (T11)", () => {
       script.queueConfirm(false); // opt-in: no
       script.queueConfirm(true); // fallback
       script.queueConfirm(true); // journal
+script.queueConfirm(true); // fusion (T6)
       const { deps } = createInitDeps({
         descriptors: [science.openalex.descriptor, science.pubmed.descriptor],
         prompts: script.prompts,
@@ -203,6 +204,7 @@ describe("init wizard: keyed science opt-in question (T11)", () => {
       script.queueConfirm(false); // opt-in: no
       script.queueConfirm(true); // fallback
       script.queueConfirm(true); // journal
+script.queueConfirm(true); // fusion (T6)
       const { deps } = createInitDeps({
         descriptors: [science.openalex.descriptor, science.pubmed.descriptor],
         prompts: script.prompts,
@@ -245,6 +247,7 @@ describe("init wizard: keyed science opt-in question (T11)", () => {
       script.queuePassword("ncbi-key-1");
       script.queueConfirm(true); // fallback
       script.queueConfirm(true); // journal
+script.queueConfirm(true); // fusion (T6)
       const { deps } = createInitDeps({
         descriptors: Object.values(science).map((s) => s.descriptor),
         prompts: recordInto(log, script.prompts),
@@ -271,10 +274,11 @@ describe("init wizard: keyed science opt-in question (T11)", () => {
       assert.ok(!/Crossref/.test(passwordMessages), "no key prompt for Crossref");
       assert.ok(!/Europe PMC/.test(passwordMessages), "no key prompt for Europe PMC");
 
-      // The wizard ends on the standard fallback + journal confirms.
+      // The wizard ends on the standard fallback + journal + fusion confirms.
       const confirmMessages = script.calls.confirm.map((c) => c.message);
-      assert.match(confirmMessages[confirmMessages.length - 2], /Route automatically/);
-      assert.match(confirmMessages[confirmMessages.length - 1], /journal/i);
+      assert.match(confirmMessages[confirmMessages.length - 3], /Route automatically/);
+      assert.match(confirmMessages[confirmMessages.length - 2], /journal/i);
+      assert.match(confirmMessages[confirmMessages.length - 1], /fusion|rank merged/i);
 
       // Candidates probed through the ephemeral env.
       const oaProbe = science.openalex.invokes.find(
@@ -323,6 +327,7 @@ describe("init wizard: keyed science opt-in question (T11)", () => {
       trioScript.queueCheckbox(["arxiv", "crossref", "europepmc"]);
       trioScript.queueConfirm(true); // fallback
       trioScript.queueConfirm(true); // journal
+      trioScript.queueConfirm(true); // fusion (T6)
       const trioDeps = createInitDeps({
         descriptors: [science.arxiv.descriptor, science.crossref.descriptor, science.europepmc.descriptor],
         prompts: trioScript.prompts,
@@ -345,6 +350,7 @@ describe("init wizard: keyed science opt-in question (T11)", () => {
       zaiScript.queuePassword("z-key-1");
       zaiScript.queueConfirm(true); // fallback
       zaiScript.queueConfirm(true); // journal
+      zaiScript.queueConfirm(true); // fusion (T6)
       const zaiDeps = createInitDeps({
         descriptors: [zai.descriptor],
         prompts: zaiScript.prompts,
@@ -390,6 +396,7 @@ describe("init wizard: keyed opt-in coexists with agent-registration prompts (T1
       script.queueConfirm(false); // keyed opt-in: no
       script.queueConfirm(true); // fallback
       script.queueConfirm(true); // journal
+script.queueConfirm(true); // fusion (T6)
       const { deps } = createInitDeps({
         descriptors: [science.openalex.descriptor],
         prompts: recordInto(log, script.prompts),
@@ -400,7 +407,7 @@ describe("init wizard: keyed opt-in coexists with agent-registration prompts (T1
       const status = await handleInitWithHelp([], deps);
       assert.equal(status, 0);
 
-      assert.equal(log.length, 5, "exactly five prompts in the flow");
+      assert.equal(log.length, 6, "exactly six prompts in the flow");
       assert.match(log[0].message, /Register scoutline with claude/i, "agent confirm first");
       assert.equal(log[1].kind, "checkbox", "checklist second");
       assert.ok(
@@ -408,7 +415,8 @@ describe("init wizard: keyed opt-in coexists with agent-registration prompts (T1
         "keyed opt-in third",
       );
       assert.match(log[3].message, /Route automatically/, "fallback fourth");
-      assert.match(log[4].message, /journal/i, "journal last");
+      assert.match(log[4].message, /journal/i, "journal fifth");
+      assert.match(log[5].message, /fusion|rank merged/i, "fusion last (T6)");
 
       const written = await readWrittenConfig(filePath);
       assert.equal(written.agentRules?.claude, true, "agentRules survive the wizard's final write");

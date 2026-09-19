@@ -199,6 +199,17 @@ stderr notice instead of failing the invocation). Activation tiers:
 billable calls.** Use it when recall across providers matters more than
 spend; use a single `--provider` pin when it does not.
 
+### Fusion ranking (merged search)
+
+Merged lists (fan-out and `--merge`) rank by `fusion` (config key;
+`SCOUTLINE_FUSION` env wins; no `--fusion` flag): `rrf` (default) scores
+Σ 1/(60 + rank) over every arm × sub-query occurrence and emits a fixed
+3-decimal `fusionScore` on every row; `occurrence` restores the legacy
+ordering byte-for-byte. Near-dup clustering (3-word title shingles,
+Jaccard ≥ 0.8, ≥ 4 shingles) runs in both modes — absorbed urls travel
+verbatim on the representative's `clusterUrls`; `www`/apex hosts
+collapse to one identity.
+
 ### Local context (`--context` / `--context-stdin`)
 
 `research` and `search` accept a local notes file (markdown headings +

@@ -1169,6 +1169,13 @@ Multi-provider fan-out — activation tiers (highest precedence first):
   the arms × sub-queries grid. A failed arm is dropped with a stderr
   notice; if every arm fails, the last arm's error surfaces.
 
+  Ranking (fusion): merged lists — from fan-out and from --merge —
+  rank by reciprocal rank fusion over every arm × sub-query occurrence
+  (config key \`fusion\`, rrf | occurrence; default rrf). Set
+  \`scoutline config set fusion occurrence\` (or SCOUTLINE_FUSION=occurrence)
+  to restore the legacy occurrence-count ordering byte-for-byte. There
+  is no --fusion flag; the fixed env door is SCOUTLINE_FUSION.
+
 Note: support for the optional controls below varies by provider AND by
 control — a control accepted by one provider may be rejected
 (UNSUPPORTED_OPTION) by another before invocation. Run
@@ -1253,6 +1260,8 @@ Default JSON shape:
       "date": "2024-01-15",
       "occurrences": 2   // only present with --merge when >1
       "mergedFrom": ["tavily", "exa"]   // fan-out only: arms that surfaced this result
+      "fusionScore": "0.049"   // rrf mode only: rank-fusion score, fixed 3 decimals
+      "clusterUrls": ["https://...", ...]   // near-dup cluster members; the representative's own url is excluded
     }
   ]
 `.trim();

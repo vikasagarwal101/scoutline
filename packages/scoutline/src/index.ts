@@ -308,6 +308,11 @@ UNSUPPORTED_CAPABILITY behavior. Z.AI-only commands (tools, tool,
 call, code) carry the flag but ignore it. Quota and doctor report
 per-Provider; --provider picks the effective Provider for metadata.
 
+Merged-search ranking: fan-out and --merge results rank by reciprocal
+rank fusion (SCOUTLINE_FUSION=<rrf|occurrence>; default rrf; also the
+config \`fusion\` key, env wins). \`occurrence\` restores the legacy
+ordering byte-for-byte. See \`scoutline search --help\`.
+
 Global Options:
   --output-format <data|json|pretty|compact|markdown|refs|tty>  Output mode (default: data)
   -O <mode>                                                     Alias for --output-format

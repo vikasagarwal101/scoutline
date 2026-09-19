@@ -711,7 +711,7 @@ describe("openalex diagnostics — keyless bounded probe (TASKS T4; DESIGN D2 ro
     // can stay green while anonymous search is 503-paused.
     assert.equal(
       wireUrl.searchParams.get("search"),
-      "test",
+      "scoutline-doctor-probe",
       "probe exercises the search capability (search= is on the wire)",
     );
     // Review: the works API request parameter is `per-page` —
@@ -753,7 +753,7 @@ describe("openalex diagnostics — keyless bounded probe (TASKS T4; DESIGN D2 ro
     assert.equal(probeCalls.length, 1, "the probe issued the failing call itself");
     assert.equal(
       new URL(probeCalls[0]).searchParams.get("search"),
-      "test",
+      "scoutline-doctor-probe",
       "the failing call was the SEARCH probe, not the bare works list",
     );
   });

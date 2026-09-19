@@ -155,7 +155,7 @@ function mapStatusError(status: number, timeoutMs: number, hintMs?: number): Err
     return new AuthError("Brave authentication failed", "BRAVE_SEARCH_API_KEY");
   }
   if (status === 408 || status === 504) {
-    return new TimeoutError(timeoutMs, TIMEOUT_HELP_TEXT);
+    return new TimeoutError(timeoutMs, TIMEOUT_HELP_TEXT, retryHintOptions(hintMs));
   }
   if (status === 429) {
     return new QuotaError(

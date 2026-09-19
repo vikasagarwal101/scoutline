@@ -615,6 +615,162 @@ describe("Z.AI quota normalization", () => {
     assert.strictEqual(JSON.stringify(zeroCap.categories[0].current), "{}");
   });
 
+  it("picks the first SELF-CONSISTENT TIME_LIMIT entry when the leading one is corrupt (#204)", () => {
+    // #204 multi-entry semantics: a corrupt leading entry must not poison
+    // the category when a healthy sibling exists. Windows of different
+    // scopes are not additive, so entries are never summed or merged —
+    // first-consistent wins, deterministically, fabricating nothing. (The
+    // only observed wire shape is single-entry; this pins the defensive
+    // path for a future multi-entry payload.)
+    const normalized = normalizeZaiQuota({
+      level: "pro",
+      limits: [
+        {
+          type: "TIME_LIMIT",
+          unit: 5,
+          number: 1,
+          usage: 1000,
+          currentValue: 4912,
+          remaining: 88,
+          percentage: 98.8,
+          nextResetTime: 1791411480983,
+        },
+        {
+          type: "TIME_LIMIT",
+          unit: 1,
+          number: 1,
+          usage: 100,
+          currentValue: 10,
+          remaining: 90,
+          percentage: 10,
+          nextResetTime: 1791411480984,
+        },
+      ],
+    });
+    const w = normalized.categories.find((c) => c.name === "requests").current;
+    assert.strictEqual(w.used, 10, "second (consistent) entry's window wins");
+    assert.strictEqual(w.limit, 100);
+    assert.strictEqual(w.remainingPercent, 90);
+  });
+
+  it("keeps the FIRST TIME_LIMIT entry when several are consistent (#204)", () => {
+    // #204: first-consistent, not last-consistent — position wins among
+    // equally healthy siblings.
+    const normalized = normalizeZaiQuota({
+      level: "pro",
+      limits: [
+        {
+          type: "TIME_LIMIT",
+          unit: 5,
+          number: 1,
+          usage: 100,
+          currentValue: 10,
+          remaining: 90,
+          percentage: 10,
+          nextResetTime: 1791411480983,
+        },
+        {
+          type: "TIME_LIMIT",
+          unit: 1,
+          number: 1,
+          usage: 50,
+          currentValue: 5,
+          remaining: 45,
+          percentage: 10,
+          nextResetTime: 1791411480984,
+        },
+      ],
+    });
+    const w = normalized.categories.find((c) => c.name === "requests").current;
+    assert.strictEqual(w.used, 10, "first entry wins");
+    assert.strictEqual(w.limit, 100);
+  });
+
+  it("falls back to the FIRST TIME_LIMIT entry when NO entry is consistent (#204)", () => {
+    // #204: all-corrupt preserves today's behavior — first entry emits
+    // its empty window rather than dropping the category.
+    const normalized = normalizeZaiQuota({
+      level: "pro",
+      limits: [
+        {
+          type: "TIME_LIMIT",
+          unit: 5,
+          number: 1,
+          usage: 1000,
+          currentValue: 4912,
+          remaining: 88,
+          percentage: 98.8,
+          nextResetTime: 1791411480983,
+        },
+        {
+          type: "TIME_LIMIT",
+          unit: 1,
+          number: 1,
+          usage: 0,
+          currentValue: 0,
+          remaining: 100,
+          percentage: 0,
+          nextResetTime: 1791411480984,
+        },
+      ],
+    });
+    const category = normalized.categories.find((c) => c.name === "requests");
+    assert.ok(category, "category still emitted");
+    assert.strictEqual(JSON.stringify(category.current), "{}");
+  });
+
+  it("keeps the first TOKENS_LIMIT entry when several are present (#204)", () => {
+    // #204: tokens entries have no consistency guard, nothing to rank
+    // by — first entry wins, pinned against accidental last-wins.
+    const normalized = normalizeZaiQuota({
+      level: "pro",
+      limits: [
+        { type: "TOKENS_LIMIT", unit: 1, number: 1, percentage: 30, nextResetTime: 1700000000000 },
+        { type: "TOKENS_LIMIT", unit: 2, number: 1, percentage: 70, nextResetTime: 1700000000001 },
+      ],
+    });
+    assert.strictEqual(
+      normalized.categories.find((c) => c.name === "tokens").current.remainingPercent,
+      70,
+    );
+  });
+
+  it("toolUsage travels with the CHOSEN TIME_LIMIT entry (#204)", () => {
+    // #204: per-tool rows are read from the same entry the window comes
+    // from — they must follow the picker, not stay glued to the first
+    // TIME_LIMIT.
+    const normalized = normalizeZaiQuota({
+      level: "pro",
+      limits: [
+        {
+          type: "TIME_LIMIT",
+          unit: 5,
+          number: 1,
+          usage: 1000,
+          currentValue: 4912,
+          remaining: 88,
+          percentage: 98.8,
+          nextResetTime: 1791411480983,
+          usageDetails: [{ modelCode: "corrupt", usage: 1 }],
+        },
+        {
+          type: "TIME_LIMIT",
+          unit: 1,
+          number: 1,
+          usage: 100,
+          currentValue: 10,
+          remaining: 90,
+          percentage: 10,
+          nextResetTime: 1791411480984,
+          usageDetails: [{ modelCode: "chosen", usage: 7 }],
+        },
+      ],
+    });
+    const category = normalized.categories.find((c) => c.name === "requests");
+    assert.strictEqual(category.current.used, 10);
+    assert.deepStrictEqual(category.toolUsage, [{ tool: "chosen", usage: 7 }]);
+  });
+
   it("keeps the count fields on a sane TIME_LIMIT payload while preferring the raw percentage (#191)", () => {
     // #191 raw-preference: the Provider's own percentage (1 used -> 99
     // remaining) wins over the counts-derived 98.5, which differs inside

@@ -115,19 +115,22 @@ function normalizeJinaError(error: unknown): Error {
     // JINA_DEEPSEARCH_TIMEOUT). This preserves endpoint-specific guidance
     // without exposing arbitrary upstream text through the normalizer.
     const help = error.help;
+    const hintOptions = retryHintOptionsFromError(error);
     if (help && help.includes("JINA_")) {
-      return new TimeoutError(error.durationMs, help);
+      return new TimeoutError(error.durationMs, help, hintOptions);
     }
     return new TimeoutError(
       error.durationMs,
       "Try again or increase timeout with JINA_TIMEOUT env var",
+      hintOptions,
     );
   }
   // Every ApiError rewrap below forwards the inbound hint: the transport
   // parsed it off the Response (#186 P3), and this normalizer builds a
   // FRESH error, so without the forward the shared executor never sees it
-  // (P3b). `AuthError` / `NetworkError` / `TimeoutError` take no options
-  // parameter — they are not retry-hint carriers by design.
+  // (P3b). The TimeoutError rewrap above forwards it too (#205) — the
+  // class is now a retry-hint carrier; `AuthError` / `NetworkError`
+  // take no options parameter by design.
   const hintOptions = retryHintOptionsFromError(error);
   if (error instanceof ApiError) {
     const statusCode = error.statusCode || 500;

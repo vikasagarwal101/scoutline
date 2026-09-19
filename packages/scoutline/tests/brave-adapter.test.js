@@ -1592,6 +1592,36 @@ describe("Brave retry-hint seam — every status-map site reads the Response hea
     assert.equal(err.retryAfterMs, 4000);
   });
 
+  it("a 504 with Retry-After: 2 surfaces retryAfterMs 2000 on the TimeoutError (#205)", async () => {
+    // #205: Brave's documented 504 gateway timeout now forwards the
+    // parsed Retry-After. Message and duration are byte-identical to the
+    // no-hint throw — only the option field is added.
+    const hinted = await thrown(
+      getBraveJson(TEST_API_KEY, "/res/v1/web/search", { q: "x" }, {
+        fetch: hintFetch(504, { "Retry-After": "2" }),
+      }),
+    );
+    const bare = await thrown(
+      getBraveJson(TEST_API_KEY, "/res/v1/web/search", { q: "x" }, { fetch: hintFetch(504, {}) }),
+    );
+    assert.ok(hinted instanceof TimeoutError, "the 504 class is unchanged");
+    assert.ok(bare instanceof TimeoutError);
+    assert.equal(hinted.retryAfterMs, 2000, "the parsed Retry-After lands on the timeout");
+    assert.equal(hinted.message, bare.message, "the hint never reaches the message");
+    assert.equal(hinted.durationMs, bare.durationMs, "the duration is preserved");
+  });
+
+  it("a 408 with Retry-After: 2 surfaces retryAfterMs 2000 on the TimeoutError (#205)", async () => {
+    const err = await thrown(
+      getBraveJson(TEST_API_KEY, "/res/v1/web/search", { q: "x" }, {
+        fetch: hintFetch(408, { "Retry-After": "2" }),
+      }),
+    );
+    assert.ok(err instanceof TimeoutError, "the 408 class is unchanged");
+    assert.equal(err.retryAfterMs, 2000);
+    assert.equal(err.code, "TIMEOUT_ERROR");
+  });
+
   it("a 429 QuotaError carries the hint informationally (class + terminal ruling unchanged)", async () => {
     const adapter = createBraveDescriptor({
       transport: {
@@ -1697,5 +1727,20 @@ describe("Brave retry-hint forwarding — the adapter rewrap keeps the parsed hi
     assert.equal(quota.message, "Brave quota exhausted. Check your Brave plan rate limits.");
     assert.equal(quota.retryAfterMs, 30000, "the informational field still lands on the pass-through");
     assert.equal(quota.retryable, false, "the #140 terminal ruling is untouched");
+  });
+
+  it("search.invoke: a 504 TimeoutError's hint survives the adapter rewrap (#205)", async () => {
+    // P3b pattern: injected transport -> search.invoke -> normalizeBraveError
+    // -> caller. The rewrap builds a FRESH TimeoutError, so without an
+    // explicit forward the parsed hint dies at that boundary.
+    const adapter = adapterOver(hintFetch(504, { "Retry-After": "2" }));
+    const err = await thrown(adapter.search.invoke({ query: "x" }));
+    assert.ok(err instanceof TimeoutError, "the rewrapped class is unchanged");
+    assert.equal(
+      err.retryAfterMs,
+      2000,
+      "the parsed hint must survive the TimeoutError rewrap (P3b)",
+    );
+    assert.equal(err.message, "Request timed out after 30000ms");
   });
 });

@@ -111,7 +111,16 @@ const changelog = fs.readFile(new URL("../../../CHANGELOG.md", import.meta.url),
 // widened to the nine reader suppliers, and the quota no-capability
 // set, extended with Bocha AI and Kagi) plus the every-Provider
 // --topic claim, now scoped for Firecrawl's `finance` rejection.
-const SKILL_BODY_SHA256 = "fc762753678a372ecf9326cf99186bf61ed52131ee14f377f3dd662a753eaf0e";
+// Rebaselined at fusion-lane T6 (seed-24): one compact "Fusion ranking
+// (merged search)" section inserted after the Search fan-out section —
+// config key + env + default rrf, occurrence escape hatch, rrf/fusion
+// semantics, near-dup clustering, www/apex identity collapse. No other
+// body copy changed.
+// Rebaselined at fusion PR #240 review round 1: the Search fan-out
+// section header now cites ADR-0012 (0004 superseded) and its merge
+// description states fusion ranking + near-dup clustering + occurrence
+// escape hatch (was: occurrence ranking). No other body copy changed.
+const SKILL_BODY_SHA256 = "f89160248674710de264d046092df7b908a02424eaf9bdf1662ff07f5df7ccfc";
 
 // AC-10 budget: codex/qwen load name+description before any body
 // byte; the old enumeration (~1500 chars) blows the disclosure

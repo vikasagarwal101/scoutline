@@ -1,7 +1,7 @@
 # Fusion Ranking — supersedes the ADR-0004 merge clause
 
-Status: proposed (drafted with the fanout-fusion plan
-`docs/plans/fanout-fusion/`; accepted when the plan's lane lands)
+Status: accepted (2026-09-19; implemented by the fan-out fusion lane —
+`feat/fanout-fusion`, tickets T1-T6)
 
 ## Context
 

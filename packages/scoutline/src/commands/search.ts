@@ -20,6 +20,7 @@ import type {
   SearchType,
 } from "../capabilities/search.js";
 import type { ResponseCache } from "../lib/cache.js";
+import type { FusionMode } from "../lib/config-store.js";
 import type { RetryPolicy } from "../lib/execution.js";
 import { executeSearch } from "../lib/execution.js";
 import { rejectSmuggledMaxChars, type LadderRule } from "../lib/output-budget.js";
@@ -75,6 +76,15 @@ export interface SearchExecutionDependencies {
   readonly consume?: ConsumptionSink;
   /** Timestamp source for consumption events; defaults to `Date.now`. */
   readonly now?: () => number;
+  /**
+   * Fusion ranking mode (seed-24 T3). Resolved ONCE at the handler seam
+   * via `resolveFusionMode` (env > config > default "rrf") and threaded
+   * here so the command never parses a flag or a config file itself.
+   * Omitted (tests and other direct callers) → "rrf", the standing
+   * default; the merge seam still requires an explicit value, so this
+   * default lives at the caller and never inside `mergeResults`.
+   */
+  readonly fusionMode?: FusionMode;
 }
 
 export interface FormattedResult {
@@ -92,6 +102,13 @@ export interface FormattedResult {
    * single-provider path — SCHEMA.md.
    */
   mergedFrom?: ProviderId[];
+  /**
+   * Near-duplicate clustering (DESIGN D4, fan-out lane T5): on a cluster
+   * representative, every OTHER member's emitted url, verbatim, in
+   * first-encounter order. Absent on unclustered rows — the key is never
+   * emitted at all rather than emitted empty.
+   */
+  clusterUrls?: string[];
 }
 
 function truncate(text: string | undefined, max?: number): string {
@@ -193,6 +210,14 @@ export interface MergeGridArm {
 }
 
 export interface MergeResultsOptions {
+  /**
+   * Ranking algorithm. REQUIRED — the caller resolves it (production:
+   * `deps.fusionMode`, defaulting to "rrf" at the handler seam), so the
+   * seam cannot silently drift to a default inside the merge. A value
+   * that is neither mode throws a plain Error (internal invariant, not
+   * a user-facing ValidationError).
+   */
+  mode: FusionMode;
   /** Emit mergedFrom provenance on every result (fan-out active). */
   emitMergedFrom?: boolean;
   /** Post-merge --count cap. Each arm was already asked for this count. */
@@ -200,27 +225,227 @@ export interface MergeResultsOptions {
 }
 
 /**
- * Merge results from an (arm × sub-query) grid (DESIGN D3). Generalizes
- * the pre-fan-out sub-query merge with exactly one new key: dedupe by
- * `canonicalUrl(url)` (DESIGN D4) instead of the raw string. Ranking is
- * unchanged — (occurrence count desc, best position asc) — but
- * `occurrences` now counts across the whole arms × sub-queries grid.
+ * Reciprocal-rank-fusion constant (DESIGN D2). Fixed by the fusion
+ * contract — deliberately NOT a knob, a parameter, or a config value:
+ * the fusionScore for every row must stay comparable across runs,
+ * providers, and machines.
+ */
+const RRF_K = 60;
+
+/** A merge map row: emitted fields + the ranking bookkeeping. */
+type MergedRow = FormattedResult & {
+  occurrences: number;
+  bestPos: number;
+  mergedFrom: ProviderId[];
+  /** Raw RRF sum; only ever accumulated under mode "rrf". */
+  score: number;
+};
+
+/**
+ * Near-duplicate title clustering constant (DESIGN D4). A fixed contract,
+ * not a knob: the same title pair must cluster on every machine and run.
+ */
+const CLUSTER_JACCARD_MIN = 0.8;
+/** Shingle width (DESIGN D4): a 3-word sliding window over the title. */
+const SHINGLE_SIZE = 3;
+/**
+ * Titles yielding fewer shingles than this are never clustered: at 3
+ * shingles a one-word difference swings Jaccard too far for the signal to
+ * mean anything (two 5-word titles share 3 shingles → J = 1.0 on 3
+ * samples). 6 words → 4 shingles is the smallest title that can cluster.
+ */
+const CLUSTER_MIN_SHINGLES = 4;
+
+/**
+ * Lowercased 3-word shingles of a title, whitespace-collapsed and deduped
+ * (DESIGN D4 #1). The set — not the multiset — is the Jaccard operand, so a
+ * repeated phrase counts once.
+ */
+function titleShingles(title: string): Set<string> {
+  const words = title.toLowerCase().split(/\s+/).filter(Boolean);
+  const shingles = new Set<string>();
+  for (let i = 0; i + SHINGLE_SIZE <= words.length; i++) {
+    shingles.add(words.slice(i, i + SHINGLE_SIZE).join(" "));
+  }
+  return shingles;
+}
+
+/** Jaccard similarity over two shingle sets: |∩| / |∪|. */
+function jaccard(a: Set<string>, b: Set<string>): number {
+  // Intersect the smaller set — same result, fewer probes.
+  const [small, large] = a.size <= b.size ? [a, b] : [b, a];
+  let intersection = 0;
+  for (const shingle of small) if (large.has(shingle)) intersection += 1;
+  return intersection / (a.size + b.size - intersection);
+}
+
+/**
+ * Union the near-duplicate rows of `rows` in place (DESIGN D4, fan-out lane
+ * T5): pairwise Jaccard ≥ 0.80 over title shingles, merged via union-find,
+ * to a fixed point — transitive chains collapse into one cluster.
+ *
+ * `rows` must be insertion-ordered (the map's value order); that order is
+ * authoritative for pair enumeration, first-encounter tiebreaks, the
+ * `mergedFrom` union, and `clusterUrls`. This step never re-sorts — ranking
+ * happens after it, so accumulated `occurrences` participate in tiebreaks.
+ *
+ * Cost is O(n² · shingles) over n ≤ ~count × arms rows after dedupe — a few
+ * hundred at most, so the pairwise scan is bounded and needs no index.
+ * Correctness of the order-sensitive merges piggybacks on that: only an
+ * already-merged row can be merged again, so `mergedFrom` is already a
+ * first-encounter union by the time it is extended.
+ */
+function clusterNearDuplicates(rows: MergedRow[]): MergedRow[] {
+  // Shingle once per row; rows below the floor can never merge, so they
+  // take no part in the pairwise scan at all.
+  const shingles = rows.map((row) => titleShingles(row.title ?? ""));
+  const eligible = shingles.map((set) => set.size >= CLUSTER_MIN_SHINGLES);
+
+  const parent = rows.map((_, i) => i);
+  const find = (i: number): number => {
+    let root = i;
+    while (parent[root]! !== root) root = parent[root]!;
+    while (parent[i]! !== root) [parent[i], i] = [root, parent[i]!];
+    return root;
+  };
+
+  for (let i = 0; i < rows.length; i++) {
+    if (!eligible[i]) continue;
+    for (let j = i + 1; j < rows.length; j++) {
+      if (!eligible[j]) continue;
+      // Size short-circuit (DESIGN D4 #5): J ≤ min/|max|, so a pair whose
+      // smaller shingle set is under 80% of the larger one cannot reach the
+      // threshold at all — skip it without intersecting anything.
+      // Compared as 5·min < 4·max rather than min < 0.8·max: the integer
+      // form is exact (0.8·5 is not 4 in binary floating point, which would
+      // misjudge the boundary pair the suite pins).
+      const small = Math.min(shingles[i]!.size, shingles[j]!.size);
+      const large = Math.max(shingles[i]!.size, shingles[j]!.size);
+      if (small * 5 < large * 4) continue;
+      if (jaccard(shingles[i]!, shingles[j]!) < CLUSTER_JACCARD_MIN) continue;
+      const rootI = find(i);
+      const rootJ = find(j);
+      if (rootI !== rootJ) parent[Math.max(rootI, rootJ)] = Math.min(rootI, rootJ);
+    }
+  }
+
+  // Members per cluster, first-encounter order — one pass suffices because
+  // the loop is ordered and this array is saved before anything mutates.
+  const members = new Map<number, number[]>();
+  for (let i = 0; i < rows.length; i++) {
+    // A row that can never merge is its own cluster: skip the find() walk.
+    const root = eligible[i] ? find(i) : i;
+    const bucket = members.get(root);
+    if (bucket) bucket.push(i);
+    else members.set(root, [i]);
+  }
+
+  const survivors: MergedRow[] = [];
+  for (let i = 0; i < rows.length; i++) {
+    // A merged-away row is simply absent from the output; this walk stays
+    // independent of the mutation happening around it.
+    if (find(i) !== i) continue;
+    const clusterRows: MergedRow[] = [];
+    for (const index of members.get(i) ?? [i]) clusterRows.push(rows[index]!);
+    if (clusterRows.length === 1) {
+      // SINGLETON — the overwhelmingly common path. Leave the row's key
+      // order and identity untouched: it is the object already in the map,
+      // returned as-is.
+      survivors.push(clusterRows[0]!);
+      continue;
+    }
+    survivors.push(mergeCluster(clusterRows));
+  }
+  return survivors;
+}
+
+/**
+ * Collapse one cluster's members into a single representative row (DESIGN
+ * D4 #4). `members` must be in first-encounter order — that order is the
+ * fallback for both the representative pick and `clusterUrls`.
+ *
+ * The representative is the member the D2 chain selects: highest raw score →
+ * occurrences desc → bestPos asc → first-encounter. Under "occurrence" every
+ * score is 0, so the chain falls straight through to occurrences → bestPos →
+ * first-encounter, which keeps the identity layer rank-independent as
+ * required. It KEEPS its own title/summary/url and key order.
+ *
+ * Accumulation is deliberately partial: `occurrences` sums over the members
+ * and `mergedFrom` unions in first-encounter order, but the representative's
+ * raw `score` is left alone — its `fusionScore` is the REPRESENTATIVE's own
+ * rank score, not the cluster's total. Sorting runs after this, so the
+ * accumulated occurrences participate in tiebreaks.
+ */
+function mergeCluster(members: MergedRow[]): MergedRow {
+  let representative = members[0]!;
+  for (const member of members) {
+    if (
+      member.score > representative.score ||
+      (member.score === representative.score &&
+        (member.occurrences > representative.occurrences ||
+          (member.occurrences === representative.occurrences &&
+            member.bestPos < representative.bestPos)))
+    ) {
+      representative = member;
+    }
+  }
+  const clusterUrls: string[] = [];
+  const mergedFrom: ProviderId[] = [];
+  let occurrences = 0;
+  for (const member of members) {
+    if (member !== representative) clusterUrls.push(member.url);
+    occurrences += member.occurrences;
+    for (const provider of member.mergedFrom) {
+      if (!mergedFrom.includes(provider)) mergedFrom.push(provider);
+    }
+  }
+  return {
+    ...representative,
+    occurrences,
+    mergedFrom,
+    clusterUrls,
+  };
+}
+
+/**
+ * Merge results from an (arm × sub-query) grid (DESIGN D3, D2). Generalizes
+ * the pre-fan-out sub-query merge with two new keys: dedupe by
+ * `canonicalUrl(url)` (DESIGN D4) instead of the raw string, and a
+ * caller-supplied ranking `mode`.
+ *
  * First-writer-wins: the earlier arm's title/summary/url win a collision
  * (arm order is the tiebreak priority). Every URL accumulates
  * `mergedFrom` (distinct providers, first-encounter order) when
  * `emitMergedFrom` is set, and the merged list is sliced to `count`
  * post-merge. The single-provider `--merge` path and the fan-out path
  * share this one implementation.
+ *
+ * Ranking:
+ *   - `"occurrence"` (legacy): occurrence count desc → best position asc,
+ *     over a stable sort. Byte-identical to the pre-fusion merge.
+ *   - `"rrf"`: raw reciprocal-rank score desc (`Σ 1/(RRF_K + rank)` over
+ *     every grid occurrence) → occurrences desc → bestPos asc →
+ *     first-encounter (the stable sort's insertion order). The sort runs
+ *     on the RAW double, never on the rounded display value: two rows
+ *     that round to the same `fusionScore` still order by their true
+ *     scores. Under this mode every row emits `fusionScore` (exactly
+ *     three decimals, locale-independent); under "occurrence" the key is
+ *     absent entirely.
+ *
+ * `bestPos` is internal bookkeeping in both modes and never emitted.
  */
 export function mergeResults(
   grid: MergeGridArm[],
-  options: MergeResultsOptions = {},
+  options: MergeResultsOptions,
 ): FormattedResult[] {
-  const { emitMergedFrom = false, count } = options;
-  const map = new Map<
-    string,
-    FormattedResult & { occurrences: number; bestPos: number; mergedFrom: ProviderId[] }
-  >();
+  const { mode, emitMergedFrom = false, count } = options ?? ({} as MergeResultsOptions);
+  if (mode !== "rrf" && mode !== "occurrence") {
+    throw new Error(
+      `mergeResults requires an explicit mode ("rrf" | "occurrence"); got ${JSON.stringify(mode)}.`,
+    );
+  }
+  const isRrf = mode === "rrf";
+  const map = new Map<string, MergedRow>();
   for (const arm of grid) {
     for (const results of arm.results) {
       for (const r of results) {
@@ -231,6 +456,10 @@ export function mergeResults(
         if (existing) {
           existing.occurrences += 1;
           existing.bestPos = Math.min(existing.bestPos, r.rank);
+          // Score accumulation shares the map-build loop; under
+          // "occurrence" it is never computed at all (the legacy path
+          // stays byte-identical and cheap).
+          if (isRrf) existing.score += 1 / (RRF_K + r.rank);
           if (emitMergedFrom && arm.provider && !existing.mergedFrom.includes(arm.provider)) {
             existing.mergedFrom.push(arm.provider);
           }
@@ -239,33 +468,48 @@ export function mergeResults(
             ...r,
             occurrences: 1,
             bestPos: r.rank,
+            score: isRrf ? 1 / (RRF_K + r.rank) : 0,
             mergedFrom: emitMergedFrom && arm.provider ? [arm.provider] : [],
           });
         }
       }
     }
   }
-  let merged = Array.from(map.values());
-  merged.sort((a, b) => {
-    if (b.occurrences !== a.occurrences) return b.occurrences - a.occurrences;
-    return a.bestPos - b.bestPos;
-  });
+  let merged = clusterNearDuplicates(Array.from(map.values()));
+  if (isRrf) {
+    // Raw double first — occurrences and bestPos only break exact ties.
+    // The stable sort leaves full ties in insertion (first-encounter)
+    // order, so no explicit encounter index is needed.
+    merged.sort(
+      (a, b) => b.score - a.score || b.occurrences - a.occurrences || a.bestPos - b.bestPos,
+    );
+  } else {
+    merged.sort((a, b) => {
+      if (b.occurrences !== a.occurrences) return b.occurrences - a.occurrences;
+      return a.bestPos - b.bestPos;
+    });
+  }
   // Post-merge --count slice (each arm was already asked for this count).
   if (count !== undefined) {
     merged = merged.slice(0, Math.max(0, count));
   }
   return merged.map((r, i) => {
-    const { bestPos: _bp, ...rest } = r;
+    const { bestPos: _bp, score: _score, ...rest } = r;
     void _bp;
+    void _score;
     const rank = i + 1;
+    // fusionScore is appended AFTER the emitted fields (key-order pin)
+    // and only under rrf; a result row keeps the first writer's key
+    // order otherwise, so `rank` overwrites in place.
+    const row = isRrf ? { ...rest, fusionScore: r.score.toFixed(3) } : rest;
     if (!emitMergedFrom) {
       // Omit mergedFrom entirely on the single path (SCHEMA.md) so the
       // emitted objects stay byte-identical to the pre-fan-out merge.
-      const { mergedFrom: _mf, ...restNoProvenance } = rest;
+      const { mergedFrom: _mf, ...restNoProvenance } = row;
       void _mf;
       return { ...restNoProvenance, rank };
     }
-    return { ...rest, rank };
+    return { ...row, rank };
   });
 }
 
@@ -282,6 +526,9 @@ function renderTextFormat(
     // absent). Never print `undefined` — omit what the allowlist took.
     rank += 1;
     const r = { rank, title: "", url: "", ...row } as FormattedResult;
+    // ×N badge (DESIGN D5): N counts the row's merged occurrences AND,
+    // under near-duplicate clustering (fan-out lane T5), the absorbed
+    // cluster members — occurrences accumulates both contributions.
     const occBadge = r.occurrences && r.occurrences > 1 ? ` ×${r.occurrences}` : "";
     if (mode === "compact") {
       lines.push(
@@ -385,7 +632,7 @@ export async function search(
   // value must fail loud, not silently no-budget.
   rejectSmuggledMaxChars(options, "search");
 
-  const { capability, cache, sleep, random, retryPolicy, consume, now } = deps;
+  const { capability, cache, sleep, random, retryPolicy, consume, now, fusionMode } = deps;
 
   // Split query on `|` if --merge is set. Empty fragments are dropped.
   // A literal pipe in a single query can be escaped as `\|` (won't split).
@@ -431,9 +678,10 @@ export async function search(
   // The single-provider --merge path and the fan-out path (Ticket 3)
   // share one merge implementation. The single path passes no provider
   // and no count, so its output is byte-identical to the pre-fan-out
-  // merge (no mergedFrom field, no post-merge slice).
+  // merge (no mergedFrom field, no post-merge slice). Seed-24 T3: the
+  // ranking mode is named here, at the caller — the seam never defaults.
   const formattedResults: FormattedResult[] = isMerge
-    ? mergeResults([{ results: perQueryFormatted }])
+    ? mergeResults([{ results: perQueryFormatted }], { mode: fusionMode ?? "rrf" })
     : perQueryFormatted[0] || [];
 
   if (isMerge && context) {
@@ -673,6 +921,13 @@ export interface FanoutExecutionOptions {
   readonly env: NodeJS.ProcessEnv;
   readonly query: string;
   readonly searchOptions: SearchOptions;
+  /**
+   * Fusion ranking mode for the (arm × sub-query) merge (seed-24 T3),
+   * threaded from the handler's `deps.fusionMode`. Required: the fan-out
+   * merge always names its ranking algorithm explicitly — there is no
+   * defaulting inside the executor.
+   */
+  readonly fusionMode: FusionMode;
   readonly dependencies: FanoutExecutionDependencies;
   readonly secrets?: string[];
 }
@@ -852,6 +1107,7 @@ export async function executeFanoutPlan(
     results: s.results,
   }));
   const merged: FormattedResult[] = mergeResults(grid, {
+    mode: options.fusionMode,
     emitMergedFrom: true,
     count: options.searchOptions.count,
   });
@@ -918,6 +1174,13 @@ Multi-provider fan-out — activation tiers (highest precedence first):
   with fan-out: every arm runs every sub-query and occurrences span
   the arms × sub-queries grid. A failed arm is dropped with a stderr
   notice; if every arm fails, the last arm's error surfaces.
+
+  Ranking (fusion): merged lists — from fan-out and from --merge —
+  rank by reciprocal rank fusion over every arm × sub-query occurrence
+  (config key \`fusion\`, rrf | occurrence; default rrf). Set
+  \`scoutline config set fusion occurrence\` (or SCOUTLINE_FUSION=occurrence)
+  to restore the legacy occurrence-count ordering byte-for-byte. There
+  is no --fusion flag; the fixed env door is SCOUTLINE_FUSION.
 
 Note: support for the optional controls below varies by provider AND by
 control — a control accepted by one provider may be rejected
@@ -1003,6 +1266,8 @@ Default JSON shape:
       "date": "2024-01-15",
       "occurrences": 2   // only present with --merge when >1
       "mergedFrom": ["tavily", "exa"]   // fan-out only: arms that surfaced this result
+      "fusionScore": "0.049"   // rrf mode only: rank-fusion score, fixed 3 decimals
+      "clusterUrls": ["https://...", ...]   // near-dup cluster members; the representative's own url is excluded
     }
   ]
 `.trim();

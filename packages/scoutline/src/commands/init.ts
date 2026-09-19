@@ -916,6 +916,23 @@ async function runFreshFlow(
     return 1;
   }
 
+  // Step 2c — merged-search ranking disclosure (fusion seed-24 D6):
+  // the ONE-TIME confirm beside the journal prompt, default rrf. Plain
+  // language; "no" records the legacy occurrence ordering (byte-identical
+  // to pre-fusion output).
+  let fusionMode: "rrf" | "occurrence" = "rrf";
+  try {
+    fusionMode = (await deps.prompts.confirm(
+      "Rank merged search results by reciprocal rank fusion (position-aware, the default) instead of occurrence count? [Y/n]",
+      true,
+    ))
+      ? "rrf"
+      : "occurrence";
+  } catch {
+    // Cancel on the fusion prompt is still a cancel.
+    return 1;
+  }
+
   // Step 3 — atomic write (T1 primitive). Build the final config and
   // commit. No partial writes ever reach disk: `writeConfig` either
   // replaces the live file atomically or leaves it untouched. The
@@ -930,7 +947,7 @@ async function runFreshFlow(
       ? inspectionNow.config.agentRules
       : undefined;
   const config: ScoutlineConfig = {
-    ...buildConfig(onboardings, fallbackEnabled, journalEnabled),
+    ...buildConfig(onboardings, fallbackEnabled, journalEnabled, fusionMode),
     ...(agentRules !== undefined ? { agentRules } : {}),
   };
   try {
@@ -2078,6 +2095,7 @@ function buildConfig(
   onboardings: readonly ProviderOnboarding[],
   fallbackEnabled: boolean,
   journalEnabled: boolean,
+  fusionMode: "rrf" | "occurrence",
 ): ScoutlineConfig {
   const providers: Partial<Record<ProviderId, ProviderConfig>> = {};
   for (const onboarding of onboardings) {
@@ -2101,6 +2119,9 @@ function buildConfig(
     // idiom). Always written by the wizard — including explicit false
     // — so the on-disk record matches what was confirmed.
     journal: journalEnabled,
+    // Fusion seed-24 D6: the Step-2c disclosure writes top-level
+    // "fusion" the same way — always written, choice matches the file.
+    fusion: fusionMode,
     providers,
   };
 }

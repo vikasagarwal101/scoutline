@@ -372,10 +372,14 @@ function makeContext() {
   return { context: { stdinIsTTY: false, readStdin: async () => "", notice: (m) => notices.push(m) }, notices };
 }
 
-async function runSearch(query, options, resultsByQuery) {
+async function runSearch(query, options, resultsByQuery, fusionMode) {
   const fake = makeFakeCapability(resultsByQuery);
   const { context, notices } = makeContext();
-  const result = await search(query, options, makeExecDeps(fake.capability), context);
+  // Seed-24 T3: the modes are a dependency, never a search option.
+  // Default "occurrence" here keeps this file's legacy pins on the
+  // legacy algorithm until T4 re-scopes them.
+  const deps = { ...makeExecDeps(fake.capability), fusionMode: fusionMode ?? "occurrence" };
+  const result = await search(query, options, deps, context);
   return { result, fake, notices };
 }
 
@@ -403,7 +407,7 @@ describe("mergeResults: cross-arm near-duplicates collapse by canonical identity
         ],
       },
     ];
-    const merged = mergeResults(grid, { emitMergedFrom: true });
+    const merged = mergeResults(grid, { mode: "occurrence", emitMergedFrom: true });
     assert.deepStrictEqual(merged, [
       {
         rank: 1,
@@ -437,15 +441,23 @@ describe("mergeResults: cross-arm near-duplicates collapse by canonical identity
       { provider: "tavily", results: [[{ rank: 1, title: "T", url: "https://e/page/", summary: "t" }]] },
       { provider: "exa", results: [[{ rank: 1, title: "E", url: "https://e/page?utm_campaign=c", summary: "e" }]] },
     ];
-    const merged = mergeResults(grid, { emitMergedFrom: true });
+    const merged = mergeResults(grid, { mode: "occurrence", emitMergedFrom: true });
     assert.strictEqual(merged.length, 1);
     assert.strictEqual(merged[0].url, "https://e/page/");
   });
 });
 
 // --- occurrence ranking across the (arm × sub-query) grid ----------------
+//
+// The merge pins in this section (from here down to the single-provider
+// golden) all exercise the OCCURRENCE mode explicitly — they are the
+// legacy-behavior pins. The standing byte-identity authority for this path
+// is the A/B golden suite in tests/fusion.test.js ("occurrence mode:
+// byte-identity golden (AC-4)"), which compares full serialized output
+// against bytes captured at main @ 9ac85fd. These pins stay narrower on
+// purpose: they name the individual behaviors that suite covers in bulk.
 
-describe("mergeResults: occurrence ranking across the arms × sub-queries grid", () => {
+describe("mergeResults: occurrence ranking across the arms × sub-queries grid (occurrence mode — AC-4 legacy pin)", () => {
   it("counts occurrences across every arm and sub-query, then ranks (occ desc, bestPos asc)", () => {
     const grid = [
       {
@@ -461,7 +473,7 @@ describe("mergeResults: occurrence ranking across the arms × sub-queries grid",
         results: [[{ rank: 1, title: "Exa D", url: "https://e/shared", summary: "td" }]],
       },
     ];
-    const merged = mergeResults(grid, { emitMergedFrom: true });
+    const merged = mergeResults(grid, { mode: "occurrence", emitMergedFrom: true });
     assert.strictEqual(merged[0].url, "https://e/shared");
     assert.strictEqual(merged[0].occurrences, 3);
     assert.strictEqual(merged[0].bestPos === undefined, true); // internal field never leaks
@@ -474,7 +486,7 @@ describe("mergeResults: occurrence ranking across the arms × sub-queries grid",
       { provider: "tavily", results: [[{ rank: 1, title: "T1", url: "https://e/a", summary: "t" }]] },
       { provider: "exa", results: [[{ rank: 1, title: "E1", url: "https://e/b", summary: "e" }]] },
     ];
-    const merged = mergeResults(grid, { emitMergedFrom: true });
+    const merged = mergeResults(grid, { mode: "occurrence", emitMergedFrom: true });
     assert.strictEqual(merged[0].url, "https://e/a");
     assert.strictEqual(merged[1].url, "https://e/b");
   });
@@ -482,13 +494,13 @@ describe("mergeResults: occurrence ranking across the arms × sub-queries grid",
 
 // --- arm-order first-writer-wins -----------------------------------------
 
-describe("mergeResults: earlier arm's metadata wins on collision", () => {
+describe("mergeResults: earlier arm's metadata wins on collision (occurrence mode — AC-4 legacy pin)", () => {
   it("keeps the first arm's title/summary/url for a shared canonical URL", () => {
     const grid = [
       { provider: "tavily", results: [[{ rank: 1, title: "First", url: "https://e/page", summary: "first summary" }]] },
       { provider: "exa", results: [[{ rank: 1, title: "Second", url: "https://e/page", summary: "second summary" }]] },
     ];
-    const merged = mergeResults(grid, { emitMergedFrom: true });
+    const merged = mergeResults(grid, { mode: "occurrence", emitMergedFrom: true });
     assert.strictEqual(merged.length, 1);
     assert.strictEqual(merged[0].title, "First");
     assert.strictEqual(merged[0].summary, "first summary");
@@ -498,14 +510,14 @@ describe("mergeResults: earlier arm's metadata wins on collision", () => {
 
 // --- mergedFrom provenance ----------------------------------------------
 
-describe("mergeResults: mergedFrom provenance (unique, first-encounter order)", () => {
+describe("mergeResults: mergedFrom provenance (unique, first-encounter order) (occurrence mode — AC-4 legacy pin)", () => {
   it("accumulates distinct providers in first-encounter order across a three-arm collision", () => {
     const grid = [
       { provider: "tavily", results: [[{ rank: 1, title: "T", url: "https://e/collide", summary: "t" }]] },
       { provider: "exa", results: [[{ rank: 1, title: "E", url: "https://e/collide", summary: "e" }]] },
       { provider: "brave", results: [[{ rank: 1, title: "B", url: "https://e/collide", summary: "b" }]] },
     ];
-    const merged = mergeResults(grid, { emitMergedFrom: true });
+    const merged = mergeResults(grid, { mode: "occurrence", emitMergedFrom: true });
     assert.strictEqual(merged.length, 1);
     assert.deepStrictEqual(merged[0].mergedFrom, ["tavily", "exa", "brave"]);
     assert.strictEqual(merged[0].occurrences, 3);
@@ -522,7 +534,7 @@ describe("mergeResults: mergedFrom provenance (unique, first-encounter order)", 
       },
       { provider: "exa", results: [[{ rank: 1, title: "C", url: "https://e/x", summary: "c" }]] },
     ];
-    const merged = mergeResults(grid, { emitMergedFrom: true });
+    const merged = mergeResults(grid, { mode: "occurrence", emitMergedFrom: true });
     assert.strictEqual(merged[0].occurrences, 3);
     assert.deepStrictEqual(merged[0].mergedFrom, ["tavily", "exa"]);
   });
@@ -532,7 +544,7 @@ describe("mergeResults: mergedFrom provenance (unique, first-encounter order)", 
       { provider: "tavily", results: [[{ rank: 1, title: "T", url: "https://e/page", summary: "t" }]] },
       { provider: "exa", results: [[{ rank: 1, title: "E", url: "https://e/page", summary: "e" }]] },
     ];
-    const merged = mergeResults(grid);
+    const merged = mergeResults(grid, { mode: "occurrence" });
     assert.strictEqual(merged.length, 1);
     assert.ok(!Object.hasOwn(merged[0], "mergedFrom"), "no mergedFrom key on the single path");
   });
@@ -540,7 +552,7 @@ describe("mergeResults: mergedFrom provenance (unique, first-encounter order)", 
 
 // --- post-merge --count slice --------------------------------------------
 
-describe("mergeResults: post-merge --count slice", () => {
+describe("mergeResults: post-merge --count slice (occurrence mode — AC-4 legacy pin)", () => {
   const grid = [
     {
       provider: "tavily",
@@ -555,7 +567,7 @@ describe("mergeResults: post-merge --count slice", () => {
   ];
 
   it("slices the merged list to count after ranking (not before)", () => {
-    const merged = mergeResults(grid, { emitMergedFrom: true, count: 2 });
+    const merged = mergeResults(grid, { mode: "occurrence", emitMergedFrom: true, count: 2 });
     assert.deepStrictEqual(
       merged.map((r) => r.url),
       ["https://e/a", "https://e/b"],
@@ -567,20 +579,22 @@ describe("mergeResults: post-merge --count slice", () => {
   });
 
   it("count 0 returns no results", () => {
-    const merged = mergeResults(grid, { emitMergedFrom: true, count: 0 });
+    const merged = mergeResults(grid, { mode: "occurrence", emitMergedFrom: true, count: 0 });
     assert.deepStrictEqual(merged, []);
   });
 
   it("an absent count returns everything (slice is a no-op)", () => {
-    const merged = mergeResults(grid, { emitMergedFrom: true });
+    const merged = mergeResults(grid, { mode: "occurrence", emitMergedFrom: true });
     assert.strictEqual(merged.length, 3);
   });
 });
 
 // --- single-provider --merge golden (byte-identical to pre-fan-out) ------
 
-describe("single-provider --merge path: golden byte-identical output", () => {
+describe("single-provider --merge path: golden byte-identical output (occurrence mode — AC-4 legacy pin)", () => {
   it("produces today's exact merged data (no mergedFrom, no count slice)", async () => {
+    // Seed-24 T3: this pin guards LEGACY merge behavior (T4 re-scopes it);
+    // runSearch defaults to the occurrence mode.
     const { result, notices } = await runSearch(
       "a|b",
       { merge: true },
@@ -993,6 +1007,7 @@ describe("executeFanoutPlan: partial failure exit 0 with drop notices (D5/D6)", 
         env: {},
         query: "q",
         searchOptions: {},
+        fusionMode: "occurrence",
         dependencies: makeExecDepsForFanout(),
       },
       context,
@@ -1026,6 +1041,7 @@ describe("executeFanoutPlan: partial failure exit 0 with drop notices (D5/D6)", 
         env: {},
         query: "q",
         searchOptions: {},
+        fusionMode: "occurrence",
         dependencies: makeExecDepsForFanout(),
       },
       context,
@@ -1059,6 +1075,7 @@ describe("executeFanoutPlan: option-drop arm (D5)", () => {
         env: {},
         query: "q",
         searchOptions: { domain: "example.com" },
+        fusionMode: "occurrence",
         dependencies: makeExecDepsForFanout(),
       },
       context,
@@ -1089,6 +1106,7 @@ describe("executeFanoutPlan: all-fail exit 1 via boundary (D6)", () => {
             env: {},
             query: "q",
             searchOptions: { domain: "example.com" },
+            fusionMode: "occurrence",
             dependencies: makeExecDepsForFanout(),
           },
           context,
@@ -1123,6 +1141,7 @@ describe("executeFanoutPlan: zero arms → VALIDATION_ERROR (D6)", () => {
             env: {},
             query: "q",
             searchOptions: {},
+            fusionMode: "occurrence",
             dependencies: makeExecDepsForFanout(),
           },
           context,
@@ -1152,6 +1171,7 @@ describe("executeFanoutPlan: --no-cache forwarding to every arm", () => {
         env: {},
         query: "q",
         searchOptions: { noCache: true },
+        fusionMode: "occurrence",
         dependencies: makeExecDepsForFanout(),
       },
       context,
@@ -1735,6 +1755,7 @@ describe("executeFanoutPlan: --merge composes with fan-out (arms × sub-queries 
         env: {},
         query: "a|b",
         searchOptions: { merge: true },
+        fusionMode: "occurrence",
         dependencies: makeExecDepsForFanout(),
       },
       context,
@@ -1777,6 +1798,7 @@ describe("executeFanoutPlan: --merge composes with fan-out (arms × sub-queries 
         env: {},
         query: "x\\|y",
         searchOptions: { merge: true },
+        fusionMode: "occurrence",
         dependencies: makeExecDepsForFanout(),
       },
       makeFanoutContext().context,
@@ -1799,6 +1821,7 @@ describe("executeFanoutPlan: --merge composes with fan-out (arms × sub-queries 
         env: {},
         query: "a|b",
         searchOptions: {},
+        fusionMode: "occurrence",
         dependencies: makeExecDepsForFanout(),
       },
       makeFanoutContext().context,
@@ -1820,6 +1843,7 @@ describe("executeFanoutPlan: --merge composes with fan-out (arms × sub-queries 
             env: {},
             query: " | ",
             searchOptions: { merge: true },
+            fusionMode: "occurrence",
             dependencies: makeExecDepsForFanout(),
           },
           makeFanoutContext().context,
@@ -1850,6 +1874,7 @@ describe("executeFanoutPlan: consumption sink (review fix)", () => {
         env: {},
         query: "q",
         searchOptions: {},
+        fusionMode: "occurrence",
         dependencies: { ...makeExecDepsForFanout(), consume: sink, now: () => 4242 },
       },
       makeFanoutContext().context,

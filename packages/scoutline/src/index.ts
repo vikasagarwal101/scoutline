@@ -178,6 +178,8 @@ import {
   resolveEnvFromConfig,
   setConfigValue,
   unsetConfigValue,
+  resolveFusionMode,
+  type FusionMode,
   type ScoutlineConfig,
 } from "./lib/config-store.js";
 import {
@@ -305,6 +307,11 @@ SCOUTLINE_NO_FALLBACK=1) to restore the previous strict
 UNSUPPORTED_CAPABILITY behavior. Z.AI-only commands (tools, tool,
 call, code) carry the flag but ignore it. Quota and doctor report
 per-Provider; --provider picks the effective Provider for metadata.
+
+Merged-search ranking: fan-out and --merge results rank by reciprocal
+rank fusion (SCOUTLINE_FUSION=<rrf|occurrence>; default rrf; also the
+config \`fusion\` key, env wins). \`occurrence\` restores the legacy
+ordering byte-for-byte. See \`scoutline search --help\`.
 
 Global Options:
   --output-format <data|json|pretty|compact|markdown|refs|tty>  Output mode (default: data)
@@ -930,6 +937,15 @@ export interface HandlerDependencies {
    */
   readonly configFanout?: boolean;
   /**
+   * Effective merged-search ranking algorithm (fusion seed-24).
+   * Production derives this once per invocation via `resolveFusionMode`
+   * (SCOUTLINE_FUSION env > config `fusion` > default "rrf"); tests
+   * inject it directly so precedence/consumption assertions stay
+   * hermetic. Absent → the "rrf" default applies (byte-identical
+   * pre-fusion ranking).
+   */
+  readonly fusionMode?: FusionMode;
+  /**
    * save-artifacts T4: present only when this run will actually save
    * (save-capable command + --save + not a help invocation). Handlers
    * turn it into an invokeCommand save hook via createSaveArtifactHook;
@@ -1404,6 +1420,20 @@ async function handleSearch(
     );
   }
 
+  // Fusion seed-24 AC-1 pin: search takes NO --fusion flag — the
+  // algorithm is a standing setting, not a per-query option — so a
+  // query flag could never exist. parseArgs maps `--no-fusion` to BOTH
+  // flags.fusion=false and flags["no-fusion"]=true, so both spellings
+  // are caught by the fusion field test; rejection runs BEFORE the
+  // help-gate for the same reason as `--context` above (parseArgs
+  // swallows the value into flag state, and help would exit 0).
+  if (flags.fusion !== undefined || flags["no-fusion"] !== undefined) {
+    throw new ValidationError(
+      "search has no --fusion flag; the ranking algorithm is a standing setting, not a per-query option.",
+      "Use `scoutline config set fusion <rrf|occurrence>` or the SCOUTLINE_FUSION environment variable.",
+    );
+  }
+
   if (flags.help || flags.h || positional.length === 0) {
     deps.invocation.writeStdout(SEARCH_HELP);
     return 0;
@@ -1811,6 +1841,9 @@ async function handleSearch(
             env: deps.env,
             query: dispatchQuery,
             searchOptions,
+            // Seed-24 T3: the resolved ranking mode (env > config >
+            // "rrf") — the executor's merge names it explicitly.
+            fusionMode: deps.fusionMode ?? "rrf",
             dependencies: {
               cache: deps.searchCache,
               sleep: deps.searchSleep,
@@ -1859,6 +1892,10 @@ async function handleSearch(
               cache: deps.searchCache,
               sleep: deps.searchSleep,
               random: deps.searchRandom,
+              // Seed-24 T3: the resolved ranking mode (env > config >
+              // "rrf") reaches the single-provider --merge seam too, so
+              // one merge implementation serves both paths.
+              fusionMode: deps.fusionMode ?? "rrf",
               // PB-T2 parity with the fan-out path above (usage-ledger
               // DESIGN D7): thread the configured consumption sink +
               // clock so every billable sub-query on the single-pin path
@@ -5244,6 +5281,13 @@ export interface MainDependencies {
    */
   readonly configFanout?: boolean;
   /**
+   * Injectable fusion-mode override (fusion seed-24). When provided,
+   * this wins over the resolveFusionMode derivation (SCOUTLINE_FUSION
+   * env > config `fusion` > default "rrf") so precedence/consumption
+   * tests stay hermetic. Production leaves it undefined.
+   */
+  readonly fusionMode?: FusionMode;
+  /**
    * Injectable routing preference override (#72). When provided, this
    * wins over the config file's routing table — the injectable-wins
    * twin of configFanout, closing the last ambient-config leak into
@@ -5784,6 +5828,7 @@ export async function main(
     credFallback: boolean,
     credRouting: HandlerDependencies["routing"] = undefined,
     credFanout: boolean | undefined = undefined,
+    credFusion: HandlerDependencies["fusionMode"] = undefined,
   ): HandlerDependencies => ({
     invocation,
     env: credEnv,
@@ -5794,6 +5839,7 @@ export async function main(
     fallbackEnabled: credFallback,
     routing: credRouting,
     configFanout: credFanout,
+    fusionMode: credFusion,
     searchCache,
     searchSleep,
     searchRandom,
@@ -6353,6 +6399,11 @@ export async function main(
   // fan-out stays off.
   const configFanout =
     dependencies.configFanout ?? (config as { fanout?: unknown }).fanout === true;
+  // Fusion seed-24: resolve the effective ranking mode ONCE per
+  // invocation, injectable-wins exactly like configFanout above.
+  // Strict: a non-enum SCOUTLINE_FUSION throws here (exit 1) — typos
+  // never silently fall back to rrf.
+  const fusionMode = dependencies.fusionMode ?? resolveFusionMode(env, config);
   const handlerDeps = buildHandlerDeps(
     resolvedEnv,
     secrets,
@@ -6360,6 +6411,7 @@ export async function main(
     // #72: injectable-wins, mirroring configFanout above.
     dependencies.routing ?? config.routing,
     configFanout,
+    fusionMode,
   );
 
   // PB-T5 — derive Plan A verification records from the loaded config

@@ -1,6 +1,8 @@
 # Multi-Provider Search Fan-Out
 
-Status: accepted (2026-08-15; implemented 2026-08-16)
+Status: superseded by ADR-0012 (2026-09-19) — the merge clause
+(decision 4) and the default-off posture are replaced; the surviving
+decisions are carried forward enumerated in ADR-0012. Historical record below is unchanged.
 
 Ships in: the first release cut after 0.15.0 (see `CHANGELOG.md`
 "Unreleased"). Implemented by the search-fanout plan

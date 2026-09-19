@@ -69,9 +69,7 @@ export interface ConfigUnsetDependencies {
 function formatRoutingLines(routing: Readonly<Record<string, readonly string[]>>): string {
   const capabilities = Object.keys(routing).sort();
   if (capabilities.length === 0) return "(routing table is empty)";
-  return capabilities
-    .map((cap) => `${cap} → ${(routing[cap] ?? []).join(", ")}`)
-    .join("\n");
+  return capabilities.map((cap) => `${cap} → ${(routing[cap] ?? []).join(", ")}`).join("\n");
 }
 
 /** Render one non-routing value: `key → value`. */
@@ -91,9 +89,11 @@ function valueAtPath(config: ScoutlineConfig, path: string): unknown {
   if (trimmed.startsWith("routing.")) return config.routing?.[trimmed.slice("routing.".length)];
   if (trimmed === "fallbackEnabled") return config.fallbackEnabled;
   if (trimmed === "fanout") return config.fanout;
+  if (trimmed === "fusion") return config.fusion;
   if (trimmed === "journal") return config.journal;
   const providerMatch = /^providers\.([a-z0-9-]+)(?:\.[A-Za-z0-9-]+)*$/.exec(trimmed);
-  if (providerMatch?.[1]) return config.providers[providerMatch[1] as keyof typeof config.providers];
+  if (providerMatch?.[1])
+    return config.providers[providerMatch[1] as keyof typeof config.providers];
   return undefined;
 }
 
@@ -131,7 +131,7 @@ export async function configGetCommand(
       ? unknownConfigKeyError(path)
       : new ValidationError(
           `Unknown config key "${path}".`,
-          'Valid keys: routing, routing.<capability>, fallbackEnabled, fanout, journal, providers.<id>. Run "scoutline config --help".',
+          'Valid keys: routing, routing.<capability>, fallbackEnabled, fanout, fusion, journal, providers.<id>. Run "scoutline config --help".',
         );
   }
   const raw = valueAtPath(config, path);
@@ -165,6 +165,11 @@ export async function configSetCommand(
   const key = resolveConfigKey(path);
   if (key?.setTrueNotice !== undefined && raw === true) {
     deps.notify?.(key.setTrueNotice(updated, deps.noticeContext));
+  }
+  // Value-agnostic set notice (fusion seed-24 D1): every successful set
+  // of a key that carries one announces the consequence on stderr.
+  if (key?.setNotice !== undefined) {
+    deps.notify?.(key.setNotice(updated));
   }
   return {
     kind: "data",
@@ -208,6 +213,10 @@ Keys:
                              or the routing.search subset when routed).
                              Remove the standing switch with
                              \`scoutline config unset fanout\`.
+  fusion                      rrf|occurrence — sets how merged search results
+                             are ranked (default rrf; SCOUTLINE_FUSION
+                             overrides). Remove the explicit choice with
+                             \`scoutline config unset fusion\`.
   journal                     true|false — the always-on research journaling
                              switch (default true: every search/read/research
                              call records a local skeleton entry). Set false
@@ -227,7 +236,7 @@ Behaviour:
         arguments).
   unset Removes a routing capability (and the table when the last entry
         goes), the whole routing table, the fallbackEnabled switch, the
-        fanout switch, or the journal switch.
+        fanout switch, the fusion choice, or the journal switch.
 
 Routing semantics: when no --provider / SCOUTLINE_PROVIDER pin exists,
 the routed list orders provider selection for that capability — the

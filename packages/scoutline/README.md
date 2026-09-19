@@ -263,6 +263,15 @@ every arm runs every sub-query and occurrences span the arms ×
 sub-queries grid. Disable the standing switch with
 `scoutline config set fanout false`.
 
+**Ranking (fusion):** as of this release, merged lists — from fan-out
+and from `--merge` — no longer rank by raw occurrence count but by
+reciprocal rank fusion (Σ 1/(60 + rank) over every arm × sub-query
+occurrence; each row carries a fixed 3-decimal `fusionScore`, and
+near-duplicate cluster members travel on `clusterUrls`). If you need
+the old order back, `scoutline config set fusion occurrence` restores
+the pre-fusion ordering byte-for-byte (or set `SCOUTLINE_FUSION=occurrence`
+per invocation; the config key is `fusion`, default `rrf`).
+
 ### Local Context (`--context` / `--context-stdin`)
 
 Steer `research` and `search` with a local notes file (markdown headings and

@@ -145,6 +145,48 @@ scoutline config set routing.search tavily,brave   # STRICT: typos fail, not dro
 scoutline config unset routing.search
 ```
 
+## Fusion Ranking
+
+The optional `fusion` key in `config.json` selects how merged search
+results (multi-provider fan-out and `--merge`) are ranked. The value is
+a strict enum, `rrf` or `occurrence`; the default is `rrf`.
+
+```json
+{
+  "version": 1,
+  "fusion": "rrf"
+}
+```
+
+Precedence: `SCOUTLINE_FUSION` environment variable > config `fusion` >
+default `rrf`. The env door is strict — a value other than `rrf` or
+`occurrence` fails the invocation instead of falling back.
+
+- `rrf` (default): results rank by reciprocal rank fusion,
+  Σ 1/(60 + rank) over every arm × sub-query occurrence; each emitted
+  row carries a fixed 3-decimal `fusionScore`.
+- `occurrence`: the legacy ordering — the escape hatch for scripts
+  that pin the pre-fusion result order. The RANKING is byte-identical
+  to pre-fusion; the identity layers (`www.`/apex canonicalization and
+  near-duplicate clustering) apply in BOTH modes, so output rows can
+  still differ from pre-fusion when near-duplicates cluster. No
+  `fusionScore` is emitted.
+
+Near-duplicate clustering (3-word title shingles, Jaccard ≥ 0.8) and
+the `www`/apex identity-key collapse run in both modes; absorbed URLs
+travel verbatim on the representative's `clusterUrls`. `scoutline init`
+asks once with `rrf` as the default and writes the choice to this key.
+
+Set it scriptably:
+
+```bash
+scoutline config set fusion occurrence   # legacy byte-identical ordering
+scoutline config get fusion
+```
+
+Every successful `set` prints a stderr notice naming the ordering
+consequence; writes take effect on the next command invocation.
+
 ## `config` Command Family
 
 `scoutline config get [key]` / `set <key> <value>` / `unset <key>` is the

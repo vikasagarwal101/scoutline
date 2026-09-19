@@ -34,10 +34,16 @@
  * `https:///host/p`, `https:/\host/p`, `https:host/p` — collapse to a
  * single identity without duplicating host text or inventing userinfo.
  *
- * No other normalization in v1: `www.` and apex hosts are genuinely
- * different origins and stay distinct; `www.example.com` and
- * `example.com` will not dedupe to each other. Adding that is recorded
- * as a gate on the canonicalization table.
+ * One widening beyond the parser (fusion plan D3, resolving the gate
+ * formerly recorded here): the identity KEY collapses the direct www
+ * alias of a two-label apex host — `www.example.com` keys as
+ * `example.com`. The emitted `url` stays verbatim; only the Map key
+ * changes. Deeper subdomains stay distinct by the two-label rule:
+ * `www.blog.example.com`, `blog.example.com`, and `www.bbc.co.uk`
+ * keep their own keys (deterministic, no public-suffix-list
+ * dependency). Single-label remainders (`www.localhost`) do not
+ * strip. Origin semantics for every other consumer of these URLs are
+ * unchanged — this rule lives in `canonicalUrl` only.
  */
 
 /**
@@ -79,8 +85,17 @@ export function canonicalUrl(input: string): string {
   // WHATWG already lowercased the scheme+host and stripped an explicit
   // default port (`:443` on https, `:80` on http) from `host`, so the
   // canonical host is `parsed.host` as-is; only non-default ports
-  // survive the parser.
-  const host = parsed.host;
+  // survive the parser. Sole exception (fusion plan D3): strip a
+  // leading `www.` when the remainder is exactly two dot-separated
+  // labels — the `www.<sld>.<tld>` form — keeping any explicit
+  // non-default port. Three-label remainders (`www.blog.example.com`,
+  // `www.bbc.co.uk`) and single-label remainders (`www.localhost`)
+  // keep `parsed.host` byte-identically.
+  let host = parsed.host;
+  const hn = parsed.hostname;
+  if (/^www\.[^.\s]+\.[^.\s]+$/.test(hn)) {
+    host = hn.slice(4) + (parsed.port ? ":" + parsed.port : "");
+  }
 
   // Raw userinfo + path, re-sliced from the input between the
   // authority and the query/fragment. WHATWG normalization (dot-segment

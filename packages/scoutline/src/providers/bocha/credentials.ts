@@ -6,6 +6,9 @@
 
 import { ConfigurationError } from "../../lib/errors.js";
 
+/** Credential environment names read by this module (#232 derivation pin). */
+export const ENV_NAMES = ["BOCHA_API_KEY"] as const;
+
 export const MISSING_KEY_HELP = 'export BOCHA_API_KEY="your-bocha-api-key"';
 
 function pickTrimmedNonBlank(raw: unknown): string | undefined {

@@ -6,6 +6,9 @@
 
 import { ConfigurationError } from "../../lib/errors.js";
 
+/** Credential environment names read by this module (#232 derivation pin). */
+export const ENV_NAMES = ["PERPLEXITY_API_KEY"] as const;
+
 const MISSING_KEY_HELP = 'export PERPLEXITY_API_KEY="your-perplexity-api-key"';
 
 function pickNonBlank(raw: unknown): string | undefined {

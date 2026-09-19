@@ -1516,3 +1516,75 @@ describe("#232 — key-set and whitespace-loop gaps for provider env names", () 
     }
   });
 });
+
+// #232 derivation pin: the provider credentials modules are the source
+// of truth for credential env names; every name they read MUST reach
+// all four redact surfaces. A credentials module naming a var redact.ts
+// does not cover fails here at PR time — removing one derived name from
+// any surface REDs its row.
+async function discoverCredentialsModules() {
+  const providersDir = new URL("../dist/providers/", import.meta.url);
+  const entries = await fs.readdir(providersDir, { withFileTypes: true });
+  const out = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const credUrl = new URL(`../dist/providers/${entry.name}/credentials.js`, import.meta.url);
+    try {
+      await fs.access(credUrl);
+    } catch {
+      continue; // provider without a credentials module (science suppliers, minimax)
+    }
+    out.push({ provider: entry.name, mod: await import(credUrl.href) });
+  }
+  return out;
+}
+
+describe("#232 — derivation pin: credentials modules drive redact surfaces", () => {
+  it("every discovered credentials module exports a non-empty, env-shaped ENV_NAMES", async () => {
+    const modules = await discoverCredentialsModules();
+    assert.ok(modules.length >= 14, `expected >= 14 credentials modules, found ${modules.length}`);
+    for (const { provider, mod } of modules) {
+      assert.ok(
+        Array.isArray(mod.ENV_NAMES) && mod.ENV_NAMES.length > 0,
+        `${provider}/credentials.ts must export a non-empty ENV_NAMES array (#232)`,
+      );
+      for (const name of mod.ENV_NAMES) {
+        assert.match(
+          String(name),
+          /^[A-Z][A-Z0-9_]*$/,
+          `${provider}: env name ${name} must be an UPPER_SNAKE env var name`,
+        );
+      }
+    }
+  });
+
+  it("every derived env name reaches all four redact surfaces", async () => {
+    const modules = await discoverCredentialsModules();
+    for (const { provider, mod } of modules) {
+      for (const envName of mod.ENV_NAMES) {
+        // Fake value only — never a real credential. 8+ chars with a
+        // letter and a digit so the guarded ws-loop surface can fire.
+        const fake = `zzPin${String(envName.length).padStart(2, "0")}fake1Key2`;
+        assert.strictEqual(
+          redactSecrets({ [envName]: fake })[envName],
+          "[REDACTED]",
+          `${provider}/${envName}: CREDENTIAL_KEYS surface (object key) misses the name`,
+        );
+        assert.strictEqual(
+          redactCredentialString(`${envName}=${fake}`),
+          "[REDACTED]",
+          `${provider}/${envName}: [=:] assignment surface misses the name`,
+        );
+        assert.strictEqual(
+          redactCredentialString(`${envName} ${fake}`),
+          "[REDACTED]",
+          `${provider}/${envName}: whitespace-separator surface misses the name`,
+        );
+        assert.ok(
+          configuredSecrets({ [envName]: fake }).includes(fake),
+          `${provider}/${envName}: configuredSecrets env scan misses the name`,
+        );
+      }
+    }
+  });
+});

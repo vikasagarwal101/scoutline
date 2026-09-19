@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- **Registry completeness gates (#231, #236):** the init wizard's `PROVIDER_PROMPT_META` map gained an offline completeness gate (a missing provider row now fails the suite instead of exploding only inside `scoutline init`), and `SCIENCE_SEAT_IDS` in `tests/provider-enum-help.test.js` — the last hand-maintained registry mirror — now derives from the science seam (`science-registry.test.js` keeps its independent membership pin).
+- **`scripts/rebaseline-skill-hash.mjs` (#235):** one command replaces the manual `SKILL_BODY_SHA256` rebaseline ritual (16 hand-rebaselines, 2 cross-lane collision surgeries); `--check` is the CI-guard shape.
 ### Added
 
 - **Bocha AI provider (`--provider bocha`)** — Search and Diagnostics against the Bocha AI API (`BOCHA_API_KEY`): search unwraps the Bing-compatible `data.webPages.value[]` envelope (`name` → title, `summary` preferred over `snippet`, rows without a URL dropped), maps `--domain` to a `site:` query prefix, `--recency` to the pass-through `freshness` field, `--content-size high` to `summary: true`, and `--topic` to a query keyword append — `--location` and `--type` are rejected with `UNSUPPORTED_OPTION` before any I/O; an HTTP 200 response carrying application `code: 401` is still a `CONFIGURATION_ERROR`. The diagnostics probe issues a single `count: 1` search. Quota authority is always-unknown (no `quota` capability, no spend endpoint). Wired into the static registry, the init wizard, the controls-conformance table (six search control rows), and the provider docs.

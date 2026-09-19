@@ -101,7 +101,7 @@ single-provider behavior; see
 for the rationale and the accepted async double-charge risk.
 
 | Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Parallel | Perplexity | Jina AI | You.com | Linkup | Spider.cloud | Bocha AI | SearchApi | Kagi | arXiv | OpenAlex | Crossref | PubMed | Europe PMC | Command |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---| --- |---|---|---|---|---|---|
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | `search` | Yes | Yes | Yes | Yes | Yes (web/news/video; `--content-size high` → LLM Context) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No | No | No | No | No | `scoutline search` |
 | `vision.interpret-image` | Yes | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline vision analyze` |
 | Specialized Vision operations | Yes | 4 of 5 (`ui-to-code`, `extract-text`, `diagnose-error`, `diagram` live-attested; `chart` pending) | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline vision ui-to-code`, `extract-text`, `diagnose-error`, `diagram`, `chart` |
@@ -178,6 +178,16 @@ current control matrix:
 - Spider.cloud — domain (→ `whitelist`), recency (→ Google-style `tbs`
   filters), location (→ `country_code`), content-size (observes the
   markdown return format), topic via keyword; `type` is rejected.
+- Bocha — domain (→ `site:` prefix), recency (→ `freshness`),
+  content-size (`high` always pins a `summary: true` body flag);
+  `location` and `type` are rejected; topic via keyword.
+- SearchApi — domain (→ `site:` operator appended to the query),
+  recency (→ `time_period`), location (→ `gl`); `news` routes to the
+  `google_news` engine (no keyword append); content-size and `type` are
+  rejected.
+- Kagi — domain (→ `site:` prefix); `news` routes natively to the
+  enrich/news endpoint, every other topic via keyword; recency,
+  content-size, `location`, and `type` are rejected.
 
 **Multi-provider fan-out** (ADR-0004, search only): one query may
 execute in parallel across several providers — arms. Activation, in

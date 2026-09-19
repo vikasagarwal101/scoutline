@@ -1616,7 +1616,7 @@ describe("config toggle: fanout on → off restores the single path (golden)", (
 // The Tier-1 comma-list pin (`--provider tavily,exa`) is the one
 // activation tier that must survive the REAL main wire: global option
 // extraction → handleSearch → resolveFanoutPlan → executeFanoutPlan →
-// mergeResults → outputSuccess. Hermetic: fake descriptors, injected
+// mergeResults → handleSearch data envelope. Hermetic: fake descriptors, injected
 // config loader (empty config — no fanout switch needed, Tier 1 wins),
 // in-memory cache, deterministic sleep/random. stderr carries the D5
 // fan-out summary notice ONLY — no other notices on the happy path.
@@ -1721,6 +1721,105 @@ describe("Ticket 5 — main-driven hermetic wire test (fan-out end-to-end)", () 
     // Both arms really executed exactly once (one client per arm).
     assert.strictEqual(tav.invokes.length, 1);
     assert.strictEqual(exa.invokes.length, 1);
+  });
+
+  it("--merge with --count: notice reports shown + PRE-slice unique (Issue #243)", async () => {
+    // Per-query fixtures: the executor truncates each (arm × sub-query)
+    // list to --count 1, so 4 raw survive; the shared URL dedupes
+    // across arms → 3 unique; the post-merge cap keeps 1 shown. The
+    // old notice printed the post-slice length as "unique".
+    function makeQueryDescriptor(id, resultsByQuery) {
+      const invokes = [];
+      return {
+        descriptor: {
+          id,
+          isConfigured: () => true,
+          capabilities: () => new Set(["search"]),
+          create: () => ({
+            id,
+            search: {
+              validate() {},
+              cacheIdentity(r) {
+                return {
+                  provider: id,
+                  capability: "search",
+                  credentialFingerprint: "fp-" + id,
+                  request: r,
+                  legacyCandidates: [],
+                };
+              },
+              async invoke(r) {
+                invokes.push(r);
+                return (resultsByQuery[r.query] ?? []).map((entry) => ({ ...entry }));
+              },
+            },
+          }),
+        },
+        invokes,
+      };
+    }
+    const tav = makeQueryDescriptor("tavily", {
+      a: [
+        { title: "Shared (tavily)", url: "https://e/shared", summary: "tavily's copy" },
+        { title: "Tav-only", url: "https://e/tav-only", summary: "t" },
+      ],
+      b: [{ title: "Tav-b", url: "https://e/tav-b", summary: "tb" }],
+    });
+    const exa = makeQueryDescriptor("exa", {
+      a: [
+        { title: "Shared (exa)", url: "https://e/shared/?utm_source=x#frag", summary: "exa's copy" },
+        { title: "Exa-only", url: "https://e/exa-only", summary: "x" },
+      ],
+      b: [{ title: "Exa-b", url: "https://e/exa-b", summary: "eb" }],
+    });
+    const stdout = [];
+    const stderr = [];
+    const adapter = {
+      stdoutIsTTY: false,
+      stdinIsTTY: false,
+      environmentOutputMode: "data",
+      readStdin: async () => "",
+      writeStdout: (v) => stdout.push(v),
+      writeStderr: (v) => stderr.push(v),
+      runQuietly: async (op) => op(),
+      setExitCode: () => {},
+    };
+    const freshCache = () => {
+      const store = new Map();
+      return {
+        async get(k) {
+          return store.has(k) ? store.get(k) : null;
+        },
+        async set(k, v) {
+          store.set(k, v);
+        },
+      };
+    };
+    const status = await main(
+      ["--provider", "tavily,exa", "search", "a|b", "--merge", "--count", "1"],
+      {
+        invocation: adapter,
+        env: { SCOUTLINE_ARTIFACTS_DIR: getHermeticArtifactsDir() },
+        providerDescriptors: [tav.descriptor, exa.descriptor],
+        loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
+        searchCache: freshCache(),
+        searchSleep: async () => {},
+        searchRandom: () => 0.5,
+      },
+    );
+    assert.strictEqual(status, 0, `exit 0 expected, stderr: ${JSON.stringify(stderr)}`);
+    // The full new notice: shown is post-count, unique is pre-slice.
+    assert.deepStrictEqual(stderr, [
+      "fanned out to 2 providers (tavily, exa) → 1 shown of 3 unique of 4 results",
+    ]);
+    // The post-merge --count slice still fired.
+    const data = JSON.parse(stdout[0]);
+    assert.strictEqual(data.length, 1, "post-merge --count slice still fires");
+    // Each arm ran BOTH sub-queries (merge composes with the cap).
+    assert.deepStrictEqual(
+      tav.invokes.map((r) => r.query),
+      ["a", "b"],
+    );
   });
 });
 

@@ -20,6 +20,9 @@
 
 import { ConfigurationError } from "../../lib/errors.js";
 
+/** Credential environment names read by this module (#232 derivation pin). */
+export const ENV_NAMES = ["SPIDER_API_KEY"] as const;
+
 const MISSING_KEY_HELP = 'export SPIDER_API_KEY="your-api-key"';
 
 /**

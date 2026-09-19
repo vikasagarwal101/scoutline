@@ -1477,3 +1477,114 @@ describe("#180 — SigV4 Credential= pass and cross-quote lookahead narrowing", 
   });
 });
 
+
+describe("#232 — key-set and whitespace-loop gaps for provider env names", () => {
+  // #232: LINKUP/SPIDER/YDC/YOU env names are read by their credentials
+  // modules but never joined CREDENTIAL_KEYS, so a structured value
+  // carrying one of those keys crossed redaction intact.
+  it("redacts v3 provider env names as object keys (CREDENTIAL_KEYS surface)", () => {
+    for (const name of ["LINKUP_API_KEY", "SPIDER_API_KEY", "YDC_API_KEY", "YOU_API_KEY"]) {
+      assert.strictEqual(
+        redactSecrets({ [name]: "zz-fake-0-secret" })[name],
+        "[REDACTED]",
+        `object key ${name} must redact`,
+      );
+    }
+  });
+
+  // #232: the whitespace-separator loop covered only the v3 + searchapi +
+  // kagi rows; the incumbent providers' env names missed the surface
+  // entirely (e.g. "TAVILY_API_KEY tvlyFake1Key2" survived).
+  it("redacts incumbent provider env names with a whitespace separator (ws-loop surface)", () => {
+    const names = [
+      "Z_AI_API_KEY",
+      "ZAI_API_KEY",
+      "TAVILY_API_KEY",
+      "EXA_API_KEY",
+      "BRAVE_SEARCH_API_KEY",
+      "FIRECRAWL_API_KEY",
+      "PARALLEL_API_KEY",
+      "PERPLEXITY_API_KEY",
+      "JINA_API_KEY",
+    ];
+    for (const name of names) {
+      assert.strictEqual(
+        redactCredentialString(`${name} zzFake1Key2Xyz`),
+        "[REDACTED]",
+        `whitespace form "${name} <value>" must redact`,
+      );
+    }
+  });
+});
+
+// #232 derivation pin: the provider credentials modules are the source
+// of truth for credential env names; every name they read MUST reach
+// all four redact surfaces. A credentials module naming a var redact.ts
+// does not cover fails here at PR time — removing one derived name from
+// any surface REDs its row.
+async function discoverCredentialsModules() {
+  const providersDir = new URL("../dist/providers/", import.meta.url);
+  const entries = await fs.readdir(providersDir, { withFileTypes: true });
+  const out = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const credUrl = new URL(`../dist/providers/${entry.name}/credentials.js`, import.meta.url);
+    try {
+      await fs.access(credUrl);
+    } catch {
+      continue; // provider without a credentials module (science suppliers, minimax)
+    }
+    out.push({ provider: entry.name, mod: await import(credUrl.href) });
+  }
+  return out;
+}
+
+describe("#232 — derivation pin: credentials modules drive redact surfaces", () => {
+  it("every discovered credentials module exports a non-empty, env-shaped ENV_NAMES", async () => {
+    const modules = await discoverCredentialsModules();
+    assert.ok(modules.length >= 14, `expected >= 14 credentials modules, found ${modules.length}`);
+    for (const { provider, mod } of modules) {
+      assert.ok(
+        Array.isArray(mod.ENV_NAMES) && mod.ENV_NAMES.length > 0,
+        `${provider}/credentials.ts must export a non-empty ENV_NAMES array (#232)`,
+      );
+      for (const name of mod.ENV_NAMES) {
+        assert.match(
+          String(name),
+          /^[A-Z][A-Z0-9_]*$/,
+          `${provider}: env name ${name} must be an UPPER_SNAKE env var name`,
+        );
+      }
+    }
+  });
+
+  it("every derived env name reaches all four redact surfaces", async () => {
+    const modules = await discoverCredentialsModules();
+    for (const { provider, mod } of modules) {
+      for (const envName of mod.ENV_NAMES) {
+        // Fake value only — never a real credential. 8+ chars with a
+        // letter and a digit so the guarded ws-loop surface can fire.
+        const fake = `zzPin${String(envName.length).padStart(2, "0")}fake1Key2`;
+        assert.strictEqual(
+          redactSecrets({ [envName]: fake })[envName],
+          "[REDACTED]",
+          `${provider}/${envName}: CREDENTIAL_KEYS surface (object key) misses the name`,
+        );
+        assert.strictEqual(
+          redactCredentialString(`${envName}=${fake}`),
+          "[REDACTED]",
+          `${provider}/${envName}: [=:] assignment surface misses the name`,
+        );
+        assert.strictEqual(
+          redactCredentialString(`${envName} ${fake}`),
+          "[REDACTED]",
+          `${provider}/${envName}: whitespace-separator surface misses the name`,
+        );
+        assert.ok(
+          configuredSecrets({ [envName]: fake }).includes(fake),
+          `${provider}/${envName}: configuredSecrets env scan misses the name`,
+        );
+      }
+    }
+  });
+});

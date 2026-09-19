@@ -18,6 +18,9 @@
 
 import type { ProviderCapability } from "../types.js";
 
+/** Credential environment names read by this module (#232 derivation pin). */
+export const ENV_NAMES = ["JINA_API_KEY"] as const;
+
 function pickNonBlank(raw: unknown): string | undefined {
   if (typeof raw !== "string") return undefined;
   const trimmed = raw.trim();

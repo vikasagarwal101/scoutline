@@ -45,6 +45,13 @@ const CREDENTIAL_KEYS: ReadonlySet<string> = new Set([
   "perplexity_api_key",
   "jina_api_key",
   "bocha_api_key",
+  // #232: the v3 provider env names their credentials modules read —
+  // the key-set surface had missed all four (only the [=:] rows and the
+  // env scan carried them).
+  "linkup_api_key",
+  "spider_api_key",
+  "ydc_api_key",
+  "you_api_key",
   "searchapi_api_key",
   "serpapi_api_key",
   "kagi_api_key",
@@ -244,8 +251,10 @@ export function redactCredentialString(input: string, extraSecrets?: string | st
   // closing quote and redacted a value carrying no digit of its own. The
   // capture below already terminated at `"` (#174); only the lookaheads
   // still crossed it.
-  // #185 review: one guarded pattern, nine key names — kept as a loop so
-  // the lookahead/capture boundary can never drift between rows again.
+  // #185 review: one guarded pattern, every provider credential env
+  // name — kept as a loop so the lookahead/capture boundary can never
+  // drift between rows again. #232 widened the list from nine rows to
+  // cover the incumbent providers alongside the v3/searchapi/kagi rows.
   for (const key of [
     "YDC_API_KEY",
     "YOU_API_KEY",
@@ -256,6 +265,15 @@ export function redactCredentialString(input: string, extraSecrets?: string | st
     "SERPAPI_API_KEY",
     "KAGI_API_KEY",
     "KAGI_TOKEN",
+    "Z_AI_API_KEY",
+    "ZAI_API_KEY",
+    "TAVILY_API_KEY",
+    "EXA_API_KEY",
+    "BRAVE_SEARCH_API_KEY",
+    "FIRECRAWL_API_KEY",
+    "PARALLEL_API_KEY",
+    "PERPLEXITY_API_KEY",
+    "JINA_API_KEY",
   ]) {
     result = result.replace(
       new RegExp(`(?<![A-Za-z0-9_])${key}\\s+(?=[^\\s"]*\\d)(?=[^\\s"]*[A-Za-z])[^\\s"]{8,}`, "gi"),

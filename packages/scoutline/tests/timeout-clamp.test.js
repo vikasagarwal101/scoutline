@@ -10,9 +10,10 @@
  *
  * This table is the guardrail for every resolver it lists: reverting a
  * listed resolver's clamp fails its row, and dropping a row fails the
- * count guard below. It cannot catch a resolver it has never heard of —
- * a new client must add its row here when it gains a *_TIMEOUT env
- * resolver.
+ * count guard below. A resolver the table has never heard of is caught
+ * by the "source-sweep guard #233" describe below: any src file whose
+ * line combines `parseInt` with a `*_TIMEOUT` identifier must import
+ * `clampTimeoutMs`.
  *
  * Teeth are by mutation — reverting one provider's clamp (restoring
  * its ad-hoc `Number.isFinite(raw) && raw > 0 ? raw : DEFAULT` return)
@@ -26,6 +27,9 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import { fileURLToPath } from "node:url";
+import { join, relative, sep } from "node:path";
 import { clampTimeoutMs, TIMEOUT_MS_MAX } from "../dist/lib/timeout.js";
 import * as zaiMcpClient from "../dist/lib/mcp-client.js";
 import * as zaiCodeModeClient from "../dist/lib/code-mode.js";
@@ -245,4 +249,78 @@ describe("cross-provider timeout clamp conformance (#214)", () => {
       });
     });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Source-sweep guard (#233): the table above pins only the resolvers it
+// lists. This sweep walks src/**/*.ts and asserts that every file with a
+// line combining `parseInt` with a `*_TIMEOUT` identifier imports
+// `clampTimeoutMs`. A NEW provider client that parses a *_TIMEOUT env var
+// without clamping therefore fails deterministically here.
+//
+// Known honest gap (documented, not fixed): src/lib/code-mode.ts reads
+// Z_AI_TIMEOUT on a line separate from its parseInt call, so a same-line
+// sweep does not match that file — it clamps anyway (verified by the
+// zai-code-mode rows above). The sweep is a guard (matched ⇒ must clamp),
+// not a proof of coverage.
+describe("source-sweep guard #233 (parseInt-on-*_TIMEOUT must import clampTimeoutMs)", () => {
+  const srcRoot = fileURLToPath(new URL("../src", import.meta.url));
+  const LINE_RE = /parseInt/;
+  const TIMEOUT_ID_RE = /[A-Z][A-Z0-9_]*_TIMEOUT/;
+  const IMPORT_RE = /import\s*\{[^}]*\bclampTimeoutMs\b[^}]*\}/;
+
+  const walk = (dir) =>
+    fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) return walk(full);
+      return entry.name.endsWith(".ts") && !entry.name.endsWith(".d.ts")
+        ? [full]
+        : [];
+    });
+
+  const sweep = () => {
+    const offenders = [];
+    for (const file of walk(srcRoot)) {
+      const lines = fs.readFileSync(file, "utf8").split("\n");
+      const matching = lines
+        .map((text, i) => ({ text, line: i + 1 }))
+        .filter(({ text }) => LINE_RE.test(text) && TIMEOUT_ID_RE.test(text));
+      if (matching.length > 0 && !IMPORT_RE.test(fs.readFileSync(file, "utf8"))) {
+        offenders.push({
+          file: relative(srcRoot, file).split(sep).join("/"),
+          lines: matching.map(({ text, line }) => `${line}: ${text.trim()}`),
+        });
+      }
+    }
+    return offenders;
+  };
+
+  it("every parseInt-on-*_TIMEOUT resolver file imports clampTimeoutMs", () => {
+    const offenders = sweep();
+    assert.deepStrictEqual(
+      offenders,
+      [],
+      `Files parse a *_TIMEOUT value without importing clampTimeoutMs:\n${offenders
+        .map((o) => `  ${o.file}\n${o.lines.map((l) => `    ${l}`).join("\n")}`)
+        .join("\n")}`,
+    );
+  });
+
+  it("sweep still matches the canary files (rot-to-zero guard)", () => {
+    const matched = new Set();
+    for (const file of walk(srcRoot)) {
+      const content = fs.readFileSync(file, "utf8");
+      if (
+        content.split("\n").some((text) => LINE_RE.test(text) && TIMEOUT_ID_RE.test(text))
+      ) {
+        matched.add(relative(srcRoot, file).split(sep).join("/"));
+      }
+    }
+    for (const canary of ["providers/firecrawl/client.ts", "lib/config.ts"]) {
+      assert.ok(
+        matched.has(canary),
+        `canary ${canary} no longer matched by the sweep — pattern rotted?`,
+      );
+    }
+  });
 });

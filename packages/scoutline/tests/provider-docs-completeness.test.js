@@ -78,6 +78,23 @@ describe("doc completeness — architecture.md and SKILL.md follow PROVIDER_IDS 
       `SKILL.md capability matrix must include: ${expectedMatrixHeader()}`,
     );
   });
+
+  it("architecture.md capability matrix delimiter row has exactly one --- per column", async () => {
+    const text = await architecture;
+    const idx = text.indexOf(expectedMatrixHeader());
+    assert.ok(idx >= 0, "architecture.md capability matrix header not found");
+    const delimiter = text.slice(idx).split("\n")[1] ?? "";
+    const cells = delimiter.split("|").map((c) => c).filter((c) => c !== "");
+    assert.equal(
+      cells.length,
+      expectedMatrixHeader().split("|").length - 2,
+      "delimiter row must have one cell per header column",
+    );
+    assert.ok(
+      cells.every((c) => c === "---"),
+      `architecture.md delimiter row cells must be exactly --- (no spaces): ${delimiter}`,
+    );
+  });
 });
 
 const troubleshooting = fs.readFile(

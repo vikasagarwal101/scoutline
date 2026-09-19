@@ -5,7 +5,7 @@
  * every always-configured science supplier, so the Crossref probe is
  * ONE minimal keyless wire call on the works endpoint — still one
  * call, still `rows=1`, but it exercises the SEARCH capability
- * (`query=test`). #163: a bare works list can stay green while the
+ * (`query=scoutline-doctor-probe`). #163: a bare works list can stay green while the
  * search surface degrades, so a works-list-only probe reports
  * capability health it never tested. Red on a degraded search is
  * INTENDED — the row reports the search capability, not bare
@@ -38,7 +38,7 @@ export function createCrossrefDiagnosticsCapability(
         // One minimal keyless wire call, exercising the search
         // capability (#163): `query` is the Crossref-native search
         // param the Adapter itself sends (buildSearchParams).
-        await fetchCrossrefJson({ query: "test", rows: "1" }, transport);
+        await fetchCrossrefJson({ query: "scoutline-doctor-probe", rows: "1" }, transport);
       } catch (error) {
         throw normalizeProbeError(error);
       }

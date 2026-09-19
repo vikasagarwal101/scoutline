@@ -365,6 +365,16 @@ function parseArgs(args: string[]): {
     if (arg.startsWith("--")) {
       const key = arg.slice(2);
 
+      // TWO-SPELLING CONTRACT (#242): this branch maps `--no-X` to BOTH
+      // `flags.X = false` AND `flags["no-X"] = true`. A feature that
+      // must reject a flag therefore has to reject BOTH spellings — a
+      // handler checking only `flags.X` silently accepts `--no-X`, and
+      // one checking only `flags["no-X"]` misses the plain form. Use
+      // `rejectFlagPair(flags, name, makeError)` (below) for every
+      // flag-forbidden surface; the fusion rejection is the reference
+      // retrofit. (A structural fix — making `--no-X` set a single
+      // `flags.noX` key — would break every existing `--no-*`
+      // consumer.)
       if (key.startsWith("no-")) {
         flags[key.slice(3)] = false;
         flags[key] = true;
@@ -397,6 +407,25 @@ function parseArgs(args: string[]): {
   }
 
   return { flags, positional };
+}
+
+/**
+ * Guard for flag-forbidden features (#242): parseArgs maps `--no-X` to
+ * BOTH `flags.X = false` AND `flags["no-X"] = true`, so a feature that
+ * must reject a flag has to reject both spellings — checking one
+ * silently accepts the other (the footgun the fusion lane hit when its
+ * `--fusion` rejection had to know to test both). Throws the CALLER's
+ * error (built lazily, so the no-reject path allocates nothing) when
+ * either spelling of `--<name>` / `--no-<name>` is present.
+ */
+export function rejectFlagPair(
+  flags: Record<string, string | boolean>,
+  name: string,
+  makeError: () => Error,
+): void {
+  if (flags[name] !== undefined || flags[`no-${name}`] !== undefined) {
+    throw makeError();
+  }
 }
 
 /**
@@ -1652,17 +1681,20 @@ async function handleSearch(
 
   // Fusion seed-24 AC-1 pin: search takes NO --fusion flag — the
   // algorithm is a standing setting, not a per-query option — so a
-  // query flag could never exist. parseArgs maps `--no-fusion` to BOTH
-  // flags.fusion=false and flags["no-fusion"]=true, so both spellings
-  // are caught by the fusion field test; rejection runs BEFORE the
-  // help-gate for the same reason as `--context` above (parseArgs
-  // swallows the value into flag state, and help would exit 0).
-  if (flags.fusion !== undefined || flags["no-fusion"] !== undefined) {
-    throw new ValidationError(
-      "search has no --fusion flag; the ranking algorithm is a standing setting, not a per-query option.",
-      "Use `scoutline config set fusion <rrf|occurrence>` or the SCOUTLINE_FUSION environment variable.",
-    );
-  }
+  // query flag could never exist. rejectFlagPair (#242) guards BOTH
+  // spellings (parseArgs maps `--no-fusion` to flags.fusion=false AND
+  // flags["no-fusion"]=true); rejection runs BEFORE the help-gate for
+  // the same reason as `--context` above (parseArgs swallows the value
+  // into flag state, and help would exit 0).
+  rejectFlagPair(
+    flags,
+    "fusion",
+    () =>
+      new ValidationError(
+        "search has no --fusion flag; the ranking algorithm is a standing setting, not a per-query option.",
+        "Use `scoutline config set fusion <rrf|occurrence>` or the SCOUTLINE_FUSION environment variable.",
+      ),
+  );
 
   if (flags.help || flags.h || positional.length === 0) {
     deps.invocation.writeStdout(SEARCH_HELP);

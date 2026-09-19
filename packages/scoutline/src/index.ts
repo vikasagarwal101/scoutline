@@ -298,8 +298,9 @@ advertises search, research, and reader; Perplexity advertises search
 and research; Jina AI advertises search, reader, and research (keyless
 supported); You.com advertises search, reader, and research; Linkup advertises search, reader, and research; Spider.cloud
 advertises search, reader, crawl, and map; Bocha AI advertises and
-supplies search; MiniMax advertises and supplies none of those
-Provider-only Capabilities.
+supplies search; SearchApi advertises and supplies search; Kagi
+advertises and supplies search; MiniMax advertises and supplies none of
+those Provider-only Capabilities.
 Provider fallback is always-on by default (0.11.0+): selecting a
 non-supplier emits a stderr notice and silently reroutes to the next
 eligible configured Provider in registry order. Use --no-fallback (or
@@ -312,6 +313,11 @@ Merged-search ranking: fan-out and --merge results rank by reciprocal
 rank fusion (SCOUTLINE_FUSION=<rrf|occurrence>; default rrf; also the
 config \`fusion\` key, env wins). \`occurrence\` restores the legacy
 ordering byte-for-byte. See \`scoutline search --help\`.
+
+Flag strictness: unknown command flags are silently ignored by default
+(a typo like --fusio runs as if the flag were absent). Set
+SCOUTLINE_STRICT_FLAGS=1 to reject unknown flags on every command with
+a VALIDATION_ERROR naming the offender.
 
 Global Options:
   --output-format <data|json|pretty|compact|markdown|refs|tty>  Output mode (default: data)
@@ -415,6 +421,230 @@ function collectLongFlagValues(args: string[], name: string): (string | true)[] 
     }
   }
   return values;
+}
+
+// ---------------------------------------------------------------------------
+// Strict flag mode (#241). Outside `batch` (and `vision batch` /
+// `history clear`, which carry their own gates) unknown CLI flags are
+// silently ignored — `search "q" --fusio rrf` runs as if the flag were
+// absent and parseArgs swallows the value into flag state. Global
+// strictness would break users passing redundant flags, so rejection is
+// OPT-IN: SCOUTLINE_STRICT_FLAGS set to any non-empty value (the
+// SCOUTLINE_NO_FALLBACK idiom) makes the dispatcher reject every flag
+// token the command's allowlist does not name, with the batch-style
+// error naming the offender.
+//
+// Semantics of the scan (deliberate rulings):
+//   - Exact spellings: `--no-journal` is accepted only as the literal
+//     `no-journal` row; it does NOT license a bare `--journal`. The
+//     parseArgs `--no-X` double-map never participates — the scan reads
+//     raw argv tokens, not parsed flag state.
+//   - Short flags are checked too (`-h` everywhere; fetch's `-A/-X/-H`).
+//     A multi-dash-letter token like `-ab` (which parseArgs would treat
+//     as positional) rejects under strict mode — strict means strict.
+//   - Global flags (`--provider`, `--output-format`, `--save*`, ...) are
+//     stripped by extractGlobalOptions BEFORE this gate, so they are not
+//     listed; a few commands (cache/usage) keep `provider` rows anyway
+//     for direct in-process callers whose argv was never extracted.
+//   - Flags a command's handler REJECTS with a specific error (e.g.
+//     search's `--fusion`, map's `--max-chars`) are absent from the set
+//     on purpose: under strict mode the generic rejection fires first;
+//     under the lenient default the handler's specific error still does.
+//   - When you add a flag to a command, add its spelling here — a miss
+//     only bites strict-mode users, but it bites them loudly.
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-command accepted flag spellings for SCOUTLINE_STRICT_FLAGS mode
+ * (#241). Keys are post-dash spellings (`no-journal`, not
+ * `--no-journal`); sets are the UNION across a command's subcommands.
+ * Exported for the strict-mode tests and the DISPATCHED_COMMANDS
+ * coverage pin.
+ */
+export const STRICT_FLAG_ALLOWLIST: Readonly<Record<string, ReadonlySet<string>>> = {
+  vision: new Set([
+    "help",
+    "h",
+    "context",
+    "focus",
+    "language",
+    "output",
+    "type",
+    // `vision batch` wrapper (the VISION_BATCH_FLAGS surface)
+    "out",
+    "prompt",
+    "concurrency",
+    "dry-run",
+  ]),
+  search: new Set([
+    "help",
+    "h",
+    "count",
+    "domain",
+    "fields",
+    "recency",
+    "topic",
+    "type",
+    "location",
+    "content-size",
+    "merge",
+    "max-summary",
+    "no-cache",
+    "max-chars",
+    "context",
+    "context-stdin",
+    "no-journal",
+  ]),
+  read: new Set([
+    "help",
+    "h",
+    "extract",
+    "format",
+    "full-envelope",
+    "keep-img-data-url",
+    "no-cache",
+    "no-gfm",
+    "no-images",
+    "timeout",
+    "with-images-summary",
+    "with-links",
+    "max-chars",
+    "no-journal",
+  ]),
+  crawl: new Set([
+    "help",
+    "h",
+    "breadth",
+    "content-size",
+    "depth",
+    "exclude-paths",
+    "format",
+    "instructions",
+    "limit",
+    "no-cache",
+    "select-paths",
+    "timeout",
+    "max-chars",
+  ]),
+  map: new Set([
+    "help",
+    "h",
+    "breadth",
+    "depth",
+    "exclude-paths",
+    "instructions",
+    "limit",
+    "no-cache",
+    "select-paths",
+  ]),
+  research: new Set([
+    "help",
+    "h",
+    "citation-format",
+    "context",
+    "context-mode",
+    "context-stdin",
+    "domain",
+    "model",
+    "no-cache",
+    "output-length",
+    "timeout",
+    "max-chars",
+    "no-journal",
+  ]),
+  repo: new Set([
+    "help",
+    "h",
+    "depth",
+    "focus",
+    "lang",
+    "language",
+    "max-chars",
+    "no-cache",
+    "no-focus",
+    "path",
+  ]),
+  batch: new Set(["help", "h", "concurrency", "fail-fast", "dry-run"]),
+  tools: new Set(["help", "h", "filter", "full", "ts", "typescript", "vision", "no-vision"]),
+  tool: new Set(["help", "h", "vision", "no-vision"]),
+  call: new Set(["help", "h", "dry-run", "file", "json", "stdin", "vision", "no-vision"]),
+  doctor: new Set(["help", "h", "available", "health", "no-tools"]),
+  quota: new Set(["help", "h", "all-providers"]),
+  code: new Set(["help", "h", "logs", "timeout"]),
+  cache: new Set(["help", "h", "capability", "older-than", "provider"]),
+  usage: new Set(["help", "h", "days", "provider"]),
+  history: new Set([
+    "help",
+    "h",
+    "all",
+    "as-of",
+    "capability",
+    "command",
+    "kind",
+    "limit",
+    "repeats",
+    "since",
+    "tags",
+  ]),
+  init: new Set(["help", "h", "unregister"]),
+  config: new Set(["help", "h"]),
+  fetch: new Set([
+    "help",
+    "h",
+    "md5",
+    "sha256",
+    "raw",
+    "out",
+    "ua",
+    "user-agent",
+    "A",
+    "method",
+    "X",
+    "data",
+    "header",
+    "H",
+    "pdf",
+    "pdf-repair",
+    "timeout",
+  ]),
+  archive: new Set(["help", "h", "at", "from", "limit", "raw", "since", "status", "timeout", "to"]),
+  watch: new Set(["help", "h", "all", "format", "keep", "name", "purge", "timeout"]),
+  science: new Set([
+    "help",
+    "h",
+    "author",
+    "year",
+    "venue",
+    "type",
+    "provider",
+    "no-cache",
+    "max-chars",
+    "no-journal",
+  ]),
+};
+
+/**
+ * The strict-mode gate (#241): scan a command's argv (the tokens AFTER
+ * the command name — global options were already extracted) and return
+ * the first flag token the command's allowlist does not name, or
+ * `undefined` when every token is accepted. Pure; throws never; the
+ * caller owns the error envelope. Commands without an allowlist row
+ * (unknown commands — the dispatcher's own `Unknown command` path) scan
+ * nothing.
+ */
+export function findUnknownStrictFlag(
+  command: string,
+  args: readonly string[],
+): string | undefined {
+  const allowed = STRICT_FLAG_ALLOWLIST[command];
+  if (allowed === undefined) return undefined;
+  for (const arg of args) {
+    if (typeof arg !== "string" || !arg.startsWith("-") || arg.length < 2) continue;
+    const key = arg.startsWith("--") ? arg.slice(2) : arg.slice(1);
+    if (key.length === 0) continue; // a bare `--` token: never a flag name
+    if (!allowed.has(key)) return arg;
+  }
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -4923,7 +5153,6 @@ function buildSaveWiring(
   };
 }
 
-
 // Save-artifact hook construction lives in lib/save-artifacts.ts
 // (ruling round): artifactHeaderComment, renderMarkdownArtifactBody,
 // exportTargetExists, createSaveArtifactHook. The existing call sites
@@ -5020,7 +5249,6 @@ function parseMaxCharsFlag(flags: Record<string, unknown>): number | undefined {
   }
   return parseBriefMaxChars(raw);
 }
-
 
 // ---------------------------------------------------------------------------
 // History-journal merge T2a — the ALWAYS-ON journal hook at the same
@@ -5673,6 +5901,29 @@ export async function main(
   const command = rest[0] ?? "";
   const commandArgs = rest.slice(1);
 
+  // #241: opt-in strict flag mode. Fires before every other pre-dispatch
+  // gate (and before the agent-registration disk check) so a doomed run
+  // costs nothing: with SCOUTLINE_STRICT_FLAGS set to any non-empty
+  // value, a flag token the command's allowlist does not name rejects
+  // with the batch-style error. The lenient default (unset/empty env)
+  // stays byte-identical — unknown flags are accepted and dropped.
+  if (typeof env.SCOUTLINE_STRICT_FLAGS === "string" && env.SCOUTLINE_STRICT_FLAGS.length > 0) {
+    const unknownFlag = findUnknownStrictFlag(command, commandArgs);
+    if (unknownFlag !== undefined) {
+      invocation.writeStderr(
+        formatErrorOutput(
+          new ValidationError(
+            `unknown flag "${unknownFlag}" for command "${command}" (SCOUTLINE_STRICT_FLAGS is enabled)`,
+            `Run "scoutline ${command} --help" for the accepted flags, or unset SCOUTLINE_STRICT_FLAGS to restore lenient flag handling.`,
+          ),
+          outputMode,
+          envSecrets,
+        ),
+      );
+      return 1;
+    }
+  }
+
   // Lazy agent-registration stamp check (agent registration D5/D6):
   // fires exactly once per CLI run, before command dispatch. Stamp-absent
   // runs are zero-cost no-ops; drift refreshes the registered tools. A
@@ -5801,9 +6052,7 @@ export async function main(
           // SCOUTLINE_CONFIG_DIR sees its recorded usage in the root the
           // `usage` command reports from (review P2).
           createUsageLedgerSink({
-            filePath: resolveUsageLedgerPath(
-              resolveConfigRootPure(env, { homedir: os.homedir() }),
-            ),
+            filePath: resolveUsageLedgerPath(resolveConfigRootPure(env, { homedir: os.homedir() })),
           }),
         )
       : undefined);

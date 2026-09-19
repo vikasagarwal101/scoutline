@@ -167,9 +167,6 @@ function mapStatusError(status: number, timeoutMs: number, hintMs?: number): Err
   if (status === 400 || status === 404 || status === 410 || status === 422) {
     return new ApiError("Brave request failed", status, retryHintOptions(hintMs));
   }
-  if (status >= 500) {
-    return new ApiError("Brave request failed", status, retryHintOptions(hintMs));
-  }
   return new ApiError("Brave request failed", status, retryHintOptions(hintMs));
 }
 

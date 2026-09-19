@@ -487,6 +487,7 @@ Every request authenticates against `https://api.spider.cloud` with an
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `SPIDER_API_KEY` | (none) | Required for Spider.cloud. Spider.cloud API key. |
+| `SPIDER_TIMEOUT` | `30000` | Request timeout in milliseconds. |
 
 - `SPIDER_API_KEY` is required and non-empty. Whitespace-only values are
   treated as absent.
@@ -507,6 +508,7 @@ Every request authenticates against `https://api.spider.cloud` with an
 
 ```bash
 export SPIDER_API_KEY="your-spider-key"
+export SPIDER_TIMEOUT=45000            # optional: request timeout override
 
 scoutline --provider spider search "AI policy news"
 scoutline --provider spider read https://example.com/
@@ -636,6 +638,14 @@ optional upgrade tiers exist — neither is ever required.
 | --- | --- | --- |
 | `OPENALEX_API_KEY` | (none — keyless) | Optional OpenAlex tier; raises the keyless ~1000 credits/day ceiling. |
 | `NCBI_API_KEY` | (none — keyless) | Optional PubMed tier; 10 requests/s keyed vs 3/s keyless. |
+| `ARXIV_TIMEOUT` | `30000` | Per-request timeout in milliseconds for arXiv HTTP calls. Invalid values fall back to the default. |
+| `CROSSREF_TIMEOUT` | `30000` | Per-request timeout in milliseconds for Crossref HTTP calls. Invalid values fall back to the default. |
+| `PUBMED_TIMEOUT` | `30000` | Per-request timeout in milliseconds for PubMed HTTP calls. Invalid values fall back to the default. |
+| `EUROPEPMC_TIMEOUT` | `30000` | Per-request timeout in milliseconds for Europe PMC HTTP calls. Invalid values fall back to the default. |
+| `OPENALEX_TIMEOUT` | `30000` | Per-request timeout in milliseconds for OpenAlex HTTP calls. Invalid values fall back to the default. |
+
+Every science `*_TIMEOUT` override is clamped to the `setTimeout`
+32-bit signed maximum by the shared `clampTimeoutMs` helper.
 
 - arXiv, Crossref, and Europe PMC have no credential tier at all —
   Crossref's `mailto` is a politeness parameter, not billing.

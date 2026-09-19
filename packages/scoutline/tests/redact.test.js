@@ -850,15 +850,14 @@ describe("tools list/show — file-only key redaction via configuredSecrets (1.1
   });
 });
 
-
 describe("audit 2026-08 #44", () => {
   it("redacts Digest parameters after a quoted realm containing an internal space", () => {
     const header =
       'Authorization: Digest username="admin", realm="My App", nonce="abc123", response="def456"';
     const redacted = redactCredentialString(header);
 
-    assert.ok(!redacted.includes('nonce='), `nonce residue leaked: ${redacted}`);
-    assert.ok(!redacted.includes('response='), `response residue leaked: ${redacted}`);
+    assert.ok(!redacted.includes("nonce="), `nonce residue leaked: ${redacted}`);
+    assert.ok(!redacted.includes("response="), `response residue leaked: ${redacted}`);
   });
 
   it("does not redact ordinary prose after Token or Basic schemes", () => {
@@ -884,36 +883,18 @@ describe("v3 provider keys (2026-08 #78)", () => {
   // Incumbent convention (see the Z_AI_API_KEY pins above): the whole
   // VAR=value token is replaced, not just the value.
   it("redacts YDC_API_KEY and YOU_API_KEY assignments", () => {
-    assert.strictEqual(
-      redactCredentialString("YDC_API_KEY=ydc-secret-123"),
-      "[REDACTED]",
-    );
-    assert.strictEqual(
-      redactCredentialString("YOU_API_KEY: you-secret-456"),
-      "[REDACTED]",
-    );
+    assert.strictEqual(redactCredentialString("YDC_API_KEY=ydc-secret-123"), "[REDACTED]");
+    assert.strictEqual(redactCredentialString("YOU_API_KEY: you-secret-456"), "[REDACTED]");
   });
 
   it("redacts LINKUP_API_KEY and SPIDER_API_KEY assignments", () => {
-    assert.strictEqual(
-      redactCredentialString("LINKUP_API_KEY=linkup-secret-789"),
-      "[REDACTED]",
-    );
-    assert.strictEqual(
-      redactCredentialString("SPIDER_API_KEY: spider-secret-012"),
-      "[REDACTED]",
-    );
+    assert.strictEqual(redactCredentialString("LINKUP_API_KEY=linkup-secret-789"), "[REDACTED]");
+    assert.strictEqual(redactCredentialString("SPIDER_API_KEY: spider-secret-012"), "[REDACTED]");
   });
 
   it("redacts BOCHA_API_KEY assignments (env-var-name form)", () => {
-    assert.strictEqual(
-      redactCredentialString("BOCHA_API_KEY: sk-test-bocha-345"),
-      "[REDACTED]",
-    );
-    assert.strictEqual(
-      redactCredentialString("BOCHA_API_KEY sk-test-bocha-345"),
-      "[REDACTED]",
-    );
+    assert.strictEqual(redactCredentialString("BOCHA_API_KEY: sk-test-bocha-345"), "[REDACTED]");
+    assert.strictEqual(redactCredentialString("BOCHA_API_KEY sk-test-bocha-345"), "[REDACTED]");
   });
 
   it("redacts SEARCHAPI_API_KEY and SERPAPI_API_KEY assignments (#216)", () => {
@@ -929,21 +910,12 @@ describe("v3 provider keys (2026-08 #78)", () => {
       redactCredentialString("SEARCHAPI_API_KEY sk-searchapi-1a2b3c"),
       "[REDACTED]",
     );
-    assert.strictEqual(
-      redactCredentialString("SERPAPI_API_KEY sk-serpapi-9z8y7x"),
-      "[REDACTED]",
-    );
+    assert.strictEqual(redactCredentialString("SERPAPI_API_KEY sk-serpapi-9z8y7x"), "[REDACTED]");
   });
 
   it("redacts science credential env-var assignments (#208)", () => {
-    assert.strictEqual(
-      redactCredentialString("NCBI_API_KEY: k"),
-      "[REDACTED]",
-    );
-    assert.strictEqual(
-      redactCredentialString("OPENALEX_API_KEY=alex-key-123"),
-      "[REDACTED]",
-    );
+    assert.strictEqual(redactCredentialString("NCBI_API_KEY: k"), "[REDACTED]");
+    assert.strictEqual(redactCredentialString("OPENALEX_API_KEY=alex-key-123"), "[REDACTED]");
     assert.strictEqual(
       redactSecrets({ NCBI_API_KEY: "n", OPENALEX_API_KEY: "o" }).NCBI_API_KEY,
       "[REDACTED]",
@@ -951,49 +923,33 @@ describe("v3 provider keys (2026-08 #78)", () => {
   });
 
   it("masks searchapi/serpapi credential object keys by name (#216)", () => {
-    assert.deepStrictEqual(
-      redactSecrets({ searchapi_api_key: "sk-searchapi-6789" }),
-      { searchapi_api_key: "[REDACTED]" },
-    );
-    assert.deepStrictEqual(
-      redactSecrets({ SERPAPI_API_KEY: "sk-serpapi-4321" }),
-      { SERPAPI_API_KEY: "[REDACTED]" },
-    );
+    assert.deepStrictEqual(redactSecrets({ searchapi_api_key: "sk-searchapi-6789" }), {
+      searchapi_api_key: "[REDACTED]",
+    });
+    assert.deepStrictEqual(redactSecrets({ SERPAPI_API_KEY: "sk-serpapi-4321" }), {
+      SERPAPI_API_KEY: "[REDACTED]",
+    });
   });
 
   it("leaves ordinary prose naming the searchapi/serpapi variables intact (#216, #44 bar)", () => {
-    for (const prose of [
-      "SEARCHAPI_API_KEY is not set",
-      "configure SERPAPI_API_KEY before use",
-    ]) {
+    for (const prose of ["SEARCHAPI_API_KEY is not set", "configure SERPAPI_API_KEY before use"]) {
       assert.strictEqual(redactCredentialString(prose), prose);
     }
   });
 
   it("redacts KAGI_API_KEY and KAGI_TOKEN assignments (kagi amendment)", () => {
-    assert.strictEqual(
-      redactCredentialString("KAGI_API_KEY=kagi-secret-1357"),
-      "[REDACTED]",
-    );
-    assert.strictEqual(
-      redactCredentialString("KAGI_TOKEN: kagi-legacy-token-2468"),
-      "[REDACTED]",
-    );
-    assert.strictEqual(
-      redactCredentialString("KAGI_API_KEY kagi-key-9a8b7c6d"),
-      "[REDACTED]",
-    );
+    assert.strictEqual(redactCredentialString("KAGI_API_KEY=kagi-secret-1357"), "[REDACTED]");
+    assert.strictEqual(redactCredentialString("KAGI_TOKEN: kagi-legacy-token-2468"), "[REDACTED]");
+    assert.strictEqual(redactCredentialString("KAGI_API_KEY kagi-key-9a8b7c6d"), "[REDACTED]");
   });
 
   it("masks kagi credential object keys by name (kagi amendment)", () => {
-    assert.deepStrictEqual(
-      redactSecrets({ kagi_api_key: "kagi-secret-1357" }),
-      { kagi_api_key: "[REDACTED]" },
-    );
-    assert.deepStrictEqual(
-      redactSecrets({ KAGI_TOKEN: "kagi-legacy-token-2468" }),
-      { KAGI_TOKEN: "[REDACTED]" },
-    );
+    assert.deepStrictEqual(redactSecrets({ kagi_api_key: "kagi-secret-1357" }), {
+      kagi_api_key: "[REDACTED]",
+    });
+    assert.deepStrictEqual(redactSecrets({ KAGI_TOKEN: "kagi-legacy-token-2468" }), {
+      KAGI_TOKEN: "[REDACTED]",
+    });
   });
 
   it("leaves ordinary prose naming the kagi variables intact (kagi amendment, #44 bar)", () => {
@@ -1027,29 +983,14 @@ describe("v3 provider keys (2026-08 #78)", () => {
       redactCredentialString("SEARCHAPI_API_KEY=searchapi-secret-6789"),
       "[REDACTED]",
     );
-    assert.strictEqual(
-      redactCredentialString("KAGI_TOKEN kagi-legacy-2468"),
-      "[REDACTED]",
-    );
-    assert.strictEqual(
-      redactCredentialString("TAVILY_API_KEY: sk-tvly-9988"),
-      "[REDACTED]",
-    );
+    assert.strictEqual(redactCredentialString("KAGI_TOKEN kagi-legacy-2468"), "[REDACTED]");
+    assert.strictEqual(redactCredentialString("TAVILY_API_KEY: sk-tvly-9988"), "[REDACTED]");
   });
 
   it("redacts whitespace-separated v3 key assignments (x-api-key separator convention)", () => {
-    assert.strictEqual(
-      redactCredentialString("SPIDER_API_KEY sk-abc123xyz"),
-      "[REDACTED]",
-    );
-    assert.strictEqual(
-      redactCredentialString("LINKUP_API_KEY lk_9f8e7d6c5b"),
-      "[REDACTED]",
-    );
-    assert.strictEqual(
-      redactCredentialString("YDC_API_KEY ydc-AA11bb22cc"),
-      "[REDACTED]",
-    );
+    assert.strictEqual(redactCredentialString("SPIDER_API_KEY sk-abc123xyz"), "[REDACTED]");
+    assert.strictEqual(redactCredentialString("LINKUP_API_KEY lk_9f8e7d6c5b"), "[REDACTED]");
+    assert.strictEqual(redactCredentialString("YDC_API_KEY ydc-AA11bb22cc"), "[REDACTED]");
   });
 
   it("leaves ordinary prose naming the v3 variables intact (#44 bar)", () => {
@@ -1063,14 +1004,8 @@ describe("v3 provider keys (2026-08 #78)", () => {
   });
 
   it("redacts the v3 keys case-insensitively like the incumbents", () => {
-    assert.strictEqual(
-      redactCredentialString("ydc_api_key = mixed-case-secret"),
-      "[REDACTED]",
-    );
-    assert.strictEqual(
-      redactCredentialString("spider_api_key=another-secret"),
-      "[REDACTED]",
-    );
+    assert.strictEqual(redactCredentialString("ydc_api_key = mixed-case-secret"), "[REDACTED]");
+    assert.strictEqual(redactCredentialString("spider_api_key=another-secret"), "[REDACTED]");
   });
 });
 
@@ -1123,7 +1058,10 @@ describe("scheme-pass JSON boundary termination (#171)", () => {
 
     const jsonH = JSON.stringify({ header: h2, code: 401 });
     const outJsonH = redactCredentialString(jsonH);
-    assert.deepStrictEqual(JSON.parse(outJsonH), { header: "Authorization: [REDACTED]", code: 401 });
+    assert.deepStrictEqual(JSON.parse(outJsonH), {
+      header: "Authorization: [REDACTED]",
+      code: 401,
+    });
   });
 
   it("prose guard: trailing punctuation stripped before credential check (d)", () => {
@@ -1145,7 +1083,10 @@ describe("scheme-pass JSON boundary termination (#171)", () => {
   });
 
   it("openrouter shape: trailing punctuation stripped so generation survives (f1)", () => {
-    const input = JSON.stringify({ model: "foo", description: "faster token generation, and better performance" });
+    const input = JSON.stringify({
+      model: "foo",
+      description: "faster token generation, and better performance",
+    });
     const out = redactCredentialString(input);
     assert.ok(out.includes("generation"), `generation should survive in: ${out}`);
     const parsed = JSON.parse(out);
@@ -1163,7 +1104,8 @@ describe("scheme-pass JSON boundary termination (#171)", () => {
   });
 
   it("genuine credentials still redacted in prose and JSON (f3)", () => {
-    const bearerJwt = "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.e30.t-IDcSemACt8x4iTMCda8Yhe3iZaWbvV5XKSTbuAn0M";
+    const bearerJwt =
+      "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.e30.t-IDcSemACt8x4iTMCda8Yhe3iZaWbvV5XKSTbuAn0M";
     const tokenGhp = "Token ghp_16C7e42F292c6912E7710c838347Ae178B4a";
     const apiKeySk = "ApiKey sk-abc1234567890def";
 
@@ -1208,10 +1150,7 @@ describe("scheme-pass JSON boundary termination (#171)", () => {
       redactCredentialString("MiniMax Token Plan subscription"),
       "MiniMax Token Plan subscription",
     );
-    assert.strictEqual(
-      redactCredentialString("The bearer of bad news"),
-      "The bearer of bad news",
-    );
+    assert.strictEqual(redactCredentialString("The bearer of bad news"), "The bearer of bad news");
   });
 
   it("class guard: JSON bodies with scheme-words near boundaries parse cleanly (f5)", () => {
@@ -1267,14 +1206,8 @@ describe("quoted-scheme recovery and family-wide boundary invariants (#171 revie
   });
 
   it("F3 Part A: quoted prose guard preserves ordinary quoted words in prose and JSON", () => {
-    assert.strictEqual(
-      redactCredentialString('Token "subscription"'),
-      'Token "subscription"',
-    );
-    assert.strictEqual(
-      redactCredentialString('Token "subscription."'),
-      'Token "subscription."',
-    );
+    assert.strictEqual(redactCredentialString('Token "subscription"'), 'Token "subscription"');
+    assert.strictEqual(redactCredentialString('Token "subscription."'), 'Token "subscription."');
 
     const jsonSubscription = JSON.stringify({ note: 'Token "subscription"', valid: true });
     const outJson = redactCredentialString(jsonSubscription);
@@ -1295,7 +1228,10 @@ describe("quoted-scheme recovery and family-wide boundary invariants (#171 revie
     const jsonAnchored = JSON.stringify({ auth: anchored, code: 401 });
     const outJsonAnchored = redactCredentialString(jsonAnchored);
     assert.ok(!outJsonAnchored.includes(basicCred));
-    assert.deepStrictEqual(JSON.parse(outJsonAnchored), { auth: "Authorization: [REDACTED]", code: 401 });
+    assert.deepStrictEqual(JSON.parse(outJsonAnchored), {
+      auth: "Authorization: [REDACTED]",
+      code: 401,
+    });
 
     const jsonBare = JSON.stringify({ auth: bare, code: 401 });
     const outJsonBare = redactCredentialString(jsonBare);
@@ -1303,10 +1239,7 @@ describe("quoted-scheme recovery and family-wide boundary invariants (#171 revie
     assert.deepStrictEqual(JSON.parse(outJsonBare), { auth: "[REDACTED]", code: 401 });
 
     // Prose guards
-    assert.strictEqual(
-      redactCredentialString("Basic understanding"),
-      "Basic understanding",
-    );
+    assert.strictEqual(redactCredentialString("Basic understanding"), "Basic understanding");
     assert.strictEqual(
       redactCredentialString("Basic understanding, and more"),
       "Basic understanding, and more",
@@ -1317,11 +1250,24 @@ describe("quoted-scheme recovery and family-wide boundary invariants (#171 revie
 
   it("M2 Env-vars: [=:] assignments terminate at quotes so JSON string boundaries survive", () => {
     const envVars = [
-      "Z_AI_API_KEY", "ZAI_API_KEY", "MINIMAX_API_KEY", "TAVILY_API_KEY",
-      "EXA_API_KEY", "BRAVE_SEARCH_API_KEY", "FIRECRAWL_API_KEY", "PARALLEL_API_KEY",
-      "PERPLEXITY_API_KEY", "JINA_API_KEY", "YDC_API_KEY", "YOU_API_KEY",
-      "LINKUP_API_KEY", "SPIDER_API_KEY", "SEARCHAPI_API_KEY", "SERPAPI_API_KEY",
-      "KAGI_API_KEY", "KAGI_TOKEN",
+      "Z_AI_API_KEY",
+      "ZAI_API_KEY",
+      "MINIMAX_API_KEY",
+      "TAVILY_API_KEY",
+      "EXA_API_KEY",
+      "BRAVE_SEARCH_API_KEY",
+      "FIRECRAWL_API_KEY",
+      "PARALLEL_API_KEY",
+      "PERPLEXITY_API_KEY",
+      "JINA_API_KEY",
+      "YDC_API_KEY",
+      "YOU_API_KEY",
+      "LINKUP_API_KEY",
+      "SPIDER_API_KEY",
+      "SEARCHAPI_API_KEY",
+      "SERPAPI_API_KEY",
+      "KAGI_API_KEY",
+      "KAGI_TOKEN",
     ];
 
     for (const key of envVars) {
@@ -1388,7 +1334,8 @@ describe("quoted-scheme recovery and family-wide boundary invariants (#171 revie
 
   it("M4a Digest: escaped-quote tolerance in quoted parameters and bare-token boundary protection", () => {
     // Full Digest with space in quoted realm inside JSON
-    const digestFull = 'Digest username="user", realm="My App", nonce="abc123nonce", response="def456response"';
+    const digestFull =
+      'Digest username="user", realm="My App", nonce="abc123nonce", response="def456response"';
     const jsonFull = JSON.stringify({ auth: digestFull, attempts: 1 });
     const outJsonFull = redactCredentialString(jsonFull);
     assert.ok(!outJsonFull.includes("abc123nonce"), "nonce must not leak");
@@ -1404,7 +1351,8 @@ describe("quoted-scheme recovery and family-wide boundary invariants (#171 revie
     assert.deepStrictEqual(JSON.parse(outJsonBare), { header: "[REDACTED]", count: 1 });
 
     // Mixed Digest parameters in JSON
-    const digestMixed = 'Digest username="user", algorithm=MD5, realm="Test Realm", qop=auth, nc=00000001, cnonce="0a4f113b", response="6629fae49393a05397450978507c4ef1", opaque="5ccc069c403ebaf9f0171e9517f40e41"';
+    const digestMixed =
+      'Digest username="user", algorithm=MD5, realm="Test Realm", qop=auth, nc=00000001, cnonce="0a4f113b", response="6629fae49393a05397450978507c4ef1", opaque="5ccc069c403ebaf9f0171e9517f40e41"';
     const jsonMixed = JSON.stringify({ header: digestMixed, ok: true });
     const outJsonMixed = redactCredentialString(jsonMixed);
     assert.deepStrictEqual(JSON.parse(outJsonMixed), { header: "[REDACTED]", ok: true });
@@ -1455,10 +1403,7 @@ describe("#180 — SigV4 Credential= pass and cross-quote lookahead narrowing", 
   it("documented judgment: a bare Credential= in prose is redacted (the pass is context-free)", () => {
     // Ruling: no `Authorization:` context gate — a bare `Credential=` in prose
     // is rare and redaction errs toward redacting.
-    assert.strictEqual(
-      redactCredentialString("Credential=foobar123"),
-      "Credential=[REDACTED]",
-    );
+    assert.strictEqual(redactCredentialString("Credential=foobar123"), "Credential=[REDACTED]");
   });
 
   it("false positive: a JSON sibling digit no longer crosses the closing quote (#180 gap 2)", () => {
@@ -1477,3 +1422,41 @@ describe("#180 — SigV4 Credential= pass and cross-quote lookahead narrowing", 
   });
 });
 
+describe("#232 — key-set and whitespace-loop gaps for provider env names", () => {
+  // #232: LINKUP/SPIDER/YDC/YOU env names are read by their credentials
+  // modules but never joined CREDENTIAL_KEYS, so a structured value
+  // carrying one of those keys crossed redaction intact.
+  it("redacts v3 provider env names as object keys (CREDENTIAL_KEYS surface)", () => {
+    for (const name of ["LINKUP_API_KEY", "SPIDER_API_KEY", "YDC_API_KEY", "YOU_API_KEY"]) {
+      assert.strictEqual(
+        redactSecrets({ [name]: "zz-fake-0-secret" })[name],
+        "[REDACTED]",
+        `object key ${name} must redact`,
+      );
+    }
+  });
+
+  // #232: the whitespace-separator loop covered only the v3 + searchapi +
+  // kagi rows; the incumbent providers' env names missed the surface
+  // entirely (e.g. "TAVILY_API_KEY tvlyFake1Key2" survived).
+  it("redacts incumbent provider env names with a whitespace separator (ws-loop surface)", () => {
+    const names = [
+      "Z_AI_API_KEY",
+      "ZAI_API_KEY",
+      "TAVILY_API_KEY",
+      "EXA_API_KEY",
+      "BRAVE_SEARCH_API_KEY",
+      "FIRECRAWL_API_KEY",
+      "PARALLEL_API_KEY",
+      "PERPLEXITY_API_KEY",
+      "JINA_API_KEY",
+    ];
+    for (const name of names) {
+      assert.strictEqual(
+        redactCredentialString(`${name} zzFake1Key2Xyz`),
+        "[REDACTED]",
+        `whitespace form "${name} <value>" must redact`,
+      );
+    }
+  });
+});

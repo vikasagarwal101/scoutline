@@ -48,8 +48,11 @@ Run `npx scoutline init` once to record API keys in
 `~/.scoutline/config.json` (mode 0600). The wizard:
 
 - offers to import a key already present in your environment;
-- walks a provider checklist (Z.AI, MiniMax, Tavily, Exa, Brave,
-  Firecrawl, Parallel AI, Perplexity, Jina AI, You.com, Linkup, and Spider.cloud — none pre-checked);
+- walks a provider checklist covering every registry entry (Z.AI,
+  MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity,
+  Jina AI, You.com, Linkup, Spider.cloud, Bocha AI, SearchApi.io,
+  Kagi, and the five keyless science suppliers — arXiv, OpenAlex,
+  Crossref, PubMed, and Europe PMC — none pre-checked);
 - validates each key with a single inline probe against an ephemeral
   environment (the candidate never touches disk until the final
   atomic write);
@@ -382,13 +385,13 @@ Stateful commands refuse at parse time (`VALIDATION_ERROR`, exit 1) rather than 
 
 ### Search Controls
 
-`--topic <general|news|finance>` is accepted by all providers. Tavily passes it natively; Z.AI, MiniMax, Parallel AI, Perplexity, Jina AI, You.com, Linkup, and Spider.cloud append a keyword to the query; Exa maps it to a category; Firecrawl maps `news` to a news source type; Brave routes `news` to a dedicated news endpoint.
+`--topic <general|news|finance>` is accepted by all providers. Tavily passes it natively; Z.AI, MiniMax, Bocha AI, Parallel AI, Perplexity, Jina AI, You.com, Linkup, and Spider.cloud append a keyword to the query; Exa maps it to a category; Firecrawl maps `news` to a news source type; Brave routes `news` to a dedicated news endpoint; SearchApi.io routes `news` to the `google_news` engine; Kagi routes `news` natively to its enrich/news endpoint and appends a keyword for `finance`.
 
 `--type <video>` is Brave-only (mutually exclusive with `--topic`).
 
-`--domain` and `--recency` are honored by Z.AI, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, and You.com (Brave maps `--domain` → `site:`, `--recency` → `freshness`; Parallel forwards both through `advanced_settings`; Perplexity forwards both as native search filters). Jina honors `--domain` (`X-Site`) but not `--recency`; Linkup honors both (`includeDomains`, `fromDate` date window); Spider.cloud honors both (`whitelist`, Google-style `tbs` filter). `--location` is honored by Z.AI, Brave (`country`), Parallel AI (`us` only), Jina (`gl`), You.com (`country`), Linkup (locale keyword appended to the query), and Spider.cloud (`country_code`); MiniMax rejects these controls. SearchApi.io honors `--domain` (a `site:` operator appended to the query), `--recency` (`time_period`), and `--location` (`gl`), and routes `--topic news` to the `google_news` engine (every other topic stays on the default `google` engine — no keyword appendage).
+`--domain` and `--recency` are honored by Z.AI, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, and You.com (Brave maps `--domain` → `site:`, `--recency` → `freshness`; Parallel forwards both through `advanced_settings`; Perplexity forwards both as native search filters). Jina honors `--domain` (`X-Site`) but not `--recency`; Linkup honors both (`includeDomains`, `fromDate` date window); Spider.cloud honors both (`whitelist`, Google-style `tbs` filter). `--location` is honored by Z.AI, Brave (`country`), Parallel AI (`us` only), Jina (`gl`), You.com (`country`), Linkup (locale keyword appended to the query), and Spider.cloud (`country_code`); MiniMax rejects these controls. SearchApi.io honors `--domain` (a `site:` operator appended to the query), `--recency` (`time_period`), and `--location` (`gl`), and routes `--topic news` to the `google_news` engine (every other topic stays on the default `google` engine — no keyword appendage). Bocha AI honors `--domain` (`site:` prefix) and `--recency` (`freshness`) but rejects `--location`; Kagi honors `--domain` (`site:` prefix) but rejects `--recency` and `--location`.
 
-`--content-size` is a deliberate per-provider overload: `high` maps to Z.AI `content_size`, Tavily `search_depth=advanced`, Brave's LLM Context endpoint (extracted passages joined into summaries), and Parallel AI's per-result excerpt budget; Exa accepts it; You.com maps it to an extraction mode (`full_page`/`highlights`); Firecrawl returns scraped markdown summaries (+1 credit/result); MiniMax and Jina reject it (`UNSUPPORTED_OPTION`); Linkup maps it to a `depth` search parameter (`high` -> `deep`); Spider.cloud pins the markdown `return_format` (the canonical payload is the observation).
+`--content-size` is a deliberate per-provider overload: `high` maps to Z.AI `content_size`, Tavily `search_depth=advanced`, Brave's LLM Context endpoint (extracted passages joined into summaries), and Parallel AI's per-result excerpt budget; Exa accepts it; You.com maps it to an extraction mode (`full_page`/`highlights`); Firecrawl returns scraped markdown summaries (+1 credit/result); Linkup maps it to a `depth` search parameter (`high` -> `deep`); Spider.cloud pins the markdown `return_format` (the canonical payload is the observation); Bocha AI always pins a `summary: true` body flag (AI summaries in place of plain snippets); MiniMax, Jina, SearchApi.io, and Kagi reject it (`UNSUPPORTED_OPTION`).
 
 ## Science
 

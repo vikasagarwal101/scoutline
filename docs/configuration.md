@@ -1085,7 +1085,7 @@ production wires a stderr writer, tests inject a recorder):
 
 | Reason / warning code | Trigger |
 | --- | --- |
-| `PROVIDER_NON_AUTHORITATIVE` | Brave, Exa, Parallel, Perplexity, Jina, You.com, Linkup, and Spider.cloud — always-unknown by policy, regardless of snapshot. |
+| `PROVIDER_NON_AUTHORITATIVE` | Brave, Exa, Parallel, Perplexity, Jina, You.com, Linkup, Spider.cloud, Bocha AI, and Kagi — always-unknown by policy, regardless of snapshot. |
 | `MAPPING_MISSING` | `(provider, capability)` has no row in the table (e.g. `quota`, `diagnostics`). |
 | `SNAPSHOT_MISSING` | Provider has no snapshot in `~/.scoutline/state.json`. |
 | `SNAPSHOT_EMPTY` | Snapshot exists but its `categories` array is empty. |

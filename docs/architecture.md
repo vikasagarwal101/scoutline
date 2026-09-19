@@ -15,10 +15,10 @@ scoutline executable
   -> dist/index.js command dispatcher
   -> command handler
   -> Provider selection (--provider / SCOUTLINE_PROVIDER / default "zai")
-  -> Provider Adapter (zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, or spider)
+  -> Provider Adapter (zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider, bocha, searchapi, kagi, arxiv, openalex, crossref, pubmed, or europepmc)
   -> shared execution (cache + retry)
-  -> Provider transport (Z.AI MCP / MiniMax direct HTTP / Tavily direct HTTP / Exa direct HTTP / Brave direct HTTP / Firecrawl direct HTTP / Parallel direct HTTP / Perplexity direct HTTP / Jina direct HTTP / You.com direct HTTP / Linkup direct HTTP / Spider.cloud direct HTTP)
-  -> Provider service (Z.AI, ZRead, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, You.com, Linkup, or Spider.cloud)
+  -> Provider transport (Z.AI MCP / MiniMax direct HTTP / Tavily direct HTTP / Exa direct HTTP / Brave direct HTTP / Firecrawl direct HTTP / Parallel direct HTTP / Perplexity direct HTTP / Jina direct HTTP / You.com direct HTTP / Linkup direct HTTP / Spider.cloud direct HTTP / Bocha direct HTTP / SearchApi direct HTTP / Kagi direct HTTP / arXiv direct HTTP / OpenAlex direct HTTP / Crossref direct HTTP / PubMed direct HTTP / Europe PMC direct HTTP)
+  -> Provider service (Z.AI, ZRead, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, You.com, Linkup, Spider.cloud, Bocha AI, SearchApi, Kagi, arXiv, OpenAlex, Crossref, PubMed, or Europe PMC)
 ```
 
 `packages/scoutline/bin/scoutline.js` is the published executable. It dynamically loads the compiled `dist/index.js` entry point and emits a structured load error if the package was not built.

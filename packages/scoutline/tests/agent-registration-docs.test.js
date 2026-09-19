@@ -100,7 +100,18 @@ const changelog = fs.readFile(new URL("../../../CHANGELOG.md", import.meta.url),
 // integration merge: SKILL.md carries BOTH the Kagi column/rows AND the
 // Bocha count-exception sentence; hash recomputed once over the merged
 // body.
-const SKILL_BODY_SHA256 = "8fde3957dbf499226120de059d6f7d33cf222d97c55ca995ee8a8d0ab1e50633";
+// Rebaselined at #225 (skill registry truth): the body's stale
+// 12-provider enumerations (intro list, --provider enum, registry-order
+// brackets, capability-coverage bullets, Which-provider-when rows,
+// Quick Start blocks, Bocha/SearchApi matrix cells) widened to the
+// 15-shared registry (bocha, searchapi, kagi); references/advanced.md
+// enums fixed in kind. No unrelated copy changed.
+// Rebaselined at the #225 adversarial-review fix round: the same sweep
+// caught two further stale lists (the Reader-section supplier list,
+// widened to the nine reader suppliers, and the quota no-capability
+// set, extended with Bocha AI and Kagi) plus the every-Provider
+// --topic claim, now scoped for Firecrawl's `finance` rejection.
+const SKILL_BODY_SHA256 = "fc762753678a372ecf9326cf99186bf61ed52131ee14f377f3dd662a753eaf0e";
 
 // AC-10 budget: codex/qwen load name+description before any body
 // byte; the old enumeration (~1500 chars) blows the disclosure

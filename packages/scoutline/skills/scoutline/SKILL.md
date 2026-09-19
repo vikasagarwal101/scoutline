@@ -2,20 +2,20 @@
 name: scoutline
 description: |
   Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, You.com,
-  Linkup, and Spider.cloud CLI for: web search (multi-provider, domain/recency/topic
-  filters), reading pages to markdown, evidentiary HTTP fetch with MD5/SHA-256 digests,
-  Wayback archive lookups and snapshot-vs-live diffing, keyless page monitoring,
-  image/video vision analysis, multi-page site crawls, URL-set mapping, deep research
-  with citations, GitHub repo exploration, and raw MCP tool calls. Select per command
-  with --provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|
-  you|linkup|spider>; always-on provider fallback reroutes to the next configured
-  supplier when one is unavailable.
+  Linkup, Spider.cloud, Bocha AI, SearchApi, and Kagi CLI for: web search (multi-provider,
+  domain/recency/topic filters), reading pages to markdown, evidentiary HTTP fetch with
+  MD5/SHA-256 digests, Wayback archive lookups and snapshot-vs-live diffing, keyless page
+  monitoring, image/video vision analysis, multi-page site crawls, URL-set mapping, deep
+  research with citations, GitHub repo exploration, and raw MCP tool calls. Select per
+  command with --provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|
+  jina|you|linkup|spider|bocha|searchapi|kagi>; always-on provider fallback reroutes to
+  the next configured supplier when one is unavailable.
 ---
 
 # Scoutline
 
 Access Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, You.com,
-Linkup, and Spider.cloud capabilities via `scoutline`. The
+Linkup, Spider.cloud, Bocha AI, SearchApi, and Kagi capabilities via `scoutline`. The
 CLI is self-documenting — use `--help` at any level.
 
 ## Setup
@@ -56,6 +56,15 @@ export LINKUP_API_KEY="your-linkup-key"
 
 # OR Spider.cloud (Search, Reader, Crawl, Map)
 export SPIDER_API_KEY="your-spider-key"
+
+# OR Bocha AI (Search)
+export BOCHA_API_KEY="your-bocha-key"
+
+# OR SearchApi (Search, Quota)
+export SEARCHAPI_API_KEY="your-searchapi-key"
+
+# OR Kagi (Search)
+export KAGI_API_KEY="your-kagi-key"
 ```
 
 Get a Z.AI key at: https://z.ai/manage-apikey/apikey-list
@@ -70,6 +79,9 @@ Get a Jina AI key at: https://jina.ai
 Get a You.com key at: https://you.com/api
 Get a Linkup key at: https://app.linkup.so
 Get a Spider.cloud key at: https://spider.cloud
+Get a Bocha AI key at: https://open.bochaai.com
+Get a SearchApi key at: https://www.searchapi.io
+Get a Kagi key at: https://kagi.com/settings/api
 
 ### Interactive onboarding (`scoutline init`)
 
@@ -101,7 +113,7 @@ or env vars; API keys never belong in command arguments.
 
 Shared commands (`search`, `vision analyze`, `quota`, `doctor`),
 **`repo`**, **`read`**, **`crawl`**, **`map`**, and **`research`**
-accept the global `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider>` flag. Precedence
+accept the global `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|bocha|searchapi|kagi>` flag. Precedence
 is the flag, then the `SCOUTLINE_PROVIDER` environment variable, then
 the default `zai`. Provider selection is never inferred from
 credentials. Unknown values fail fast with `VALIDATION_ERROR`.
@@ -110,12 +122,13 @@ credentials. Unknown values fail fast with `VALIDATION_ERROR`.
 remain Z.AI-only.
 
 Capability coverage at launch (generated from the production registry
-in registry order `[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider]`):
+in registry order `[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider, bocha, searchapi, kagi]`):
 
 - `search` — Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI,
-  Perplexity, Jina AI, You.com, Linkup, and Spider.cloud. The only search
-  control honored by every Provider
-  is `--topic <general|news|finance>`.
+  Perplexity, Jina AI, You.com, Linkup, Spider.cloud, Bocha AI, SearchApi,
+  and Kagi. The only search control honored by every Provider
+  is `--topic <general|news|finance>` (Firecrawl rejects the `finance`
+  value, so option-level fallback retries it on the next candidate).
   Brave is the only Provider that accepts `--type video`; every other
   Provider rejects `controls.type` as `UnsupportedOptionError` so
   option-level fallback continues to Brave.
@@ -125,13 +138,15 @@ in registry order `[zai, minimax, tavily, exa, brave, firecrawl, parallel, perpl
   conformance registry.
 - `quota` — Z.AI, MiniMax, Tavily, Firecrawl (credits), Brave
   (rate-limit window), Jina AI (rate-limit telemetry), Linkup and
-  Spider.cloud (credit balance, limit unknown). Exa, Parallel AI,
-  Perplexity, and You.com do not advertise quota.
+  Spider.cloud (credit balance, limit unknown), and SearchApi (credits).
+  Exa, Parallel AI, Perplexity, You.com, Bocha AI, and Kagi do not
+  advertise quota.
 - `diagnostics` — every built-in Provider (Z.AI, MiniMax, Tavily, Exa,
   Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, You.com, Linkup,
-  Spider.cloud).
+  Spider.cloud, Bocha AI, SearchApi, and Kagi).
 - `read` — Z.AI, Tavily, Exa, Firecrawl, Parallel AI, Jina AI, You.com,
-  Linkup, and Spider.cloud (MiniMax, Brave, and Perplexity do not
+  Linkup, and Spider.cloud (MiniMax, Brave, Perplexity, Bocha AI,
+  SearchApi, and Kagi do not
   advertise it; Tavily/Exa/Firecrawl/Parallel reject Z.AI-only reader
   options: `--with-links`, `--no-gfm`, `--keep-img-data-url`,
   `--with-images-summary`; Jina maps them natively; You.com mirrors the
@@ -156,7 +171,7 @@ Vision by Z.AI and MiniMax only. **Provider
 fallback is always-on by default**
 (0.11.0+): selecting a non-supplier emits a stderr notice and silently
 reroutes to the next eligible configured Provider in registry order
-`[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider]`. Pass
+`[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider, bocha, searchapi, kagi]`. Pass
 `--no-fallback` (or set `SCOUTLINE_NO_FALLBACK=1`) to restore the
 previous strict `UNSUPPORTED_CAPABILITY` behavior — the preflight
 still runs capability metadata → configuration → adapter handle in
@@ -248,18 +263,18 @@ scoutline search "x" --no-journal                           # skip this one call
 
 | Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Parallel | Perplexity | Jina AI | You.com | Linkup | Spider.cloud | Bocha AI | SearchApi | Kagi | arXiv | OpenAlex | Crossref | PubMed | Europe PMC | Command |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Search | Yes | Yes (no domain/recency/content-size/location) | Yes (no location) | Yes (no location) | Yes (web/news/video; `--content-size high` → LLM Context) | Yes (no location; `--content-size high` = markdown, +1 credit/result) | Yes (domain, recency, location, content-size via `advanced_settings`; topic via keyword) | Yes (domain, recency, content-size; topic via keyword) | Yes (domain, location; rejects recency/content-size; topic via keyword) | Yes | Yes | Yes | Yes | Yes | Yes (no location/recency/content-size/type; domain via `site:` prefix; `--topic news` → `/api/v0/enrich/news`) | No | No | No | No | No | `scoutline search` |
+| Search | Yes | Yes (no domain/recency/content-size/location) | Yes (no location) | Yes (no location) | Yes (web/news/video; `--content-size high` → LLM Context) | Yes (no location; `--content-size high` = markdown, +1 credit/result) | Yes (domain, recency, location, content-size via `advanced_settings`; topic via keyword) | Yes (domain, recency, content-size; topic via keyword) | Yes (domain, location; rejects recency/content-size; topic via keyword) | Yes | Yes | Yes | Yes (no location/type; domain via `site:` prefix) | Yes (no content-size/type; domain via `site:` prefix) | Yes (no location/recency/content-size/type; domain via `site:` prefix; `--topic news` → `/api/v0/enrich/news`) | No | No | No | No | No | `scoutline search` |
 | General single-image interpretation | Yes | Yes (JPG/JPEG/PNG/WebP ≤50 MiB) | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline vision analyze` |
 | Specialized Vision (UI-to-code, OCR, error diagnosis, diagram) | Yes | Available (live-attested; conformance-gated) | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline vision ui-to-code`, `vision extract-text`, `vision diagnose-error`, `vision diagram` |
 | Specialized Vision (chart) | Yes | Pending (implemented; fixture image defect blocks live conformance) | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline vision chart` |
 | Two-image diff, video | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline vision diff`, `vision video` |
 | Quota (normalized) | Yes | Yes | Yes | **No** (deferred) | Yes (rate-limit window, not spend) | Yes (credits) | **No** | **No** | Yes (rate-limit telemetry, not spend) | **No** | Yes (credit balance, not spend) | Yes (credit balance, not spend) | No | Yes | No | No | No | No | No | No | `scoutline quota [--all-providers]` |
 | Diagnostics | Yes | Yes | Yes | Yes | Yes | Yes (single-scrape probe) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes (keyless probe) | Yes (keyless probe) | Yes (keyless probe) | Yes (keyless probe) | Yes (keyless probe) | `scoutline doctor [--no-tools] [--available]`; every row carries `availability` (`ok`/`exhausted`/`error`/`unconfigured`), rows sort healthy-first, and `availableProviders` lists the `ok` providers in registry order |
-| Reader | Yes | **No** (UNSUPPORTED_CAPABILITY) | Yes (rejects Z.AI-only options) | Yes (rejects Z.AI-only options) | **No** (UNSUPPORTED_CAPABILITY) | Yes (returns page titles) | Yes | **No** (UNSUPPORTED_CAPABILITY) | Yes | Yes (rejects Z.AI-only options plus `--format text`) | Yes (renders JavaScript; rejects `--format text` and `--no-images`) | Yes (rejects Z.AI-only options) | No | No | No | No | No | No | No | No | `scoutline read` |
-| Repository exploration (search/read/tree/brief) | Yes | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | No | No | No | No | No | No | No | No | `scoutline repo ...` |
-| Crawl | **No** | **No** | Yes | **No** | **No** | Yes (async; resumable after Ctrl-C) | **No** | **No** | **No** | **No** | **No** | Yes (sync) | No | No | No | No | No | No | No | No | `scoutline crawl` |
-| Map | **No** | **No** | Yes | **No** | **No** | Yes | **No** | **No** | **No** | **No** | **No** | Yes | No | No | No | No | No | No | No | No | `scoutline map` |
-| Research (4-250 credits) | **No** | **No** | Yes | Yes | **No** | **No** (`/deep-research` deprecated) | Yes | Yes | Yes | Yes | Yes | **No** | No | No | No | No | No | No | No | No | `scoutline research` |
+| Reader | Yes | **No** (UNSUPPORTED_CAPABILITY) | Yes (rejects Z.AI-only options) | Yes (rejects Z.AI-only options) | **No** (UNSUPPORTED_CAPABILITY) | Yes (returns page titles) | Yes | **No** (UNSUPPORTED_CAPABILITY) | Yes | Yes (rejects Z.AI-only options plus `--format text`) | Yes (renders JavaScript; rejects `--format text` and `--no-images`) | Yes (rejects Z.AI-only options) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | No | No | No | No | No | `scoutline read` |
+| Repository exploration (search/read/tree/brief) | Yes | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | **No** (UNSUPPORTED_CAPABILITY) | No | No | No | No | No | `scoutline repo ...` |
+| Crawl | **No** | **No** | Yes | **No** | **No** | Yes (async; resumable after Ctrl-C) | **No** | **No** | **No** | **No** | **No** | Yes (sync) | **No** | **No** | **No** | No | No | No | No | No | `scoutline crawl` |
+| Map | **No** | **No** | Yes | **No** | **No** | Yes | **No** | **No** | **No** | **No** | **No** | Yes | **No** | **No** | **No** | No | No | No | No | No | `scoutline map` |
+| Research (4-250 credits) | **No** | **No** | Yes | Yes | **No** | **No** (`/deep-research` deprecated) | Yes | Yes | Yes | Yes | Yes | **No** | **No** | **No** | **No** | No | No | No | No | No | `scoutline research` |
 | Science (scholarly search/get) | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | Yes | Yes | Yes | Yes | Yes | `scoutline science search <query>` / `scoutline science get <identifier>`; keyless — no API key required; controls `--author`/`--year`/`--venue`/`--type` consumed only where the supplier wire supports them |
 | Raw tools | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline tools`, `tool`, `call` |
 | Code Mode | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline code ...` |
@@ -447,6 +462,19 @@ scoutline --provider spider crawl https://docs.example.com --depth 2
 scoutline --provider spider map https://docs.example.com
 scoutline --provider spider quota   # credit balance
 
+# Bocha AI (Search)
+scoutline --provider bocha search "AI policy news" --topic news
+scoutline doctor --provider bocha
+
+# SearchApi (Search, Quota)
+scoutline --provider searchapi search "AI policy news" --topic news
+scoutline --provider searchapi quota
+scoutline doctor --provider searchapi
+
+# Kagi (Search)
+scoutline --provider kagi search "AI policy news" --topic news
+scoutline doctor --provider kagi
+
 # All-Provider quota
 scoutline quota --all-providers
 
@@ -479,6 +507,8 @@ scoutline config get routing
 | You.com | Search/reader/research; no quota endpoint. |
 | Linkup | Research priced by reasoning depth ($0.25-$2.50/query); quota reports the prepaid USD balance. |
 | Spider.cloud | Crawl/map (sync) plus search/reader; credit-based. |
+| Bocha AI | Web search with `--domain` as a `site:` prefix, `--recency` freshness, and `--content-size high` summaries; search + diagnostics only. Key: `BOCHA_API_KEY` — https://open.bochaai.com. |
+| SearchApi | Exact Google-SERP search (`--topic news` routes to the google_news engine) plus credit quota via `quota`; search + quota + diagnostics only. Key: `SEARCHAPI_API_KEY` — https://www.searchapi.io. |
 | Kagi | Search (and `--topic news` via the enrich/news endpoint) with a diagnostics probe; no reader/research/crawl/map/vision/quota. Key: `KAGI_API_KEY` — https://kagi.com/settings/api. |
 | arXiv, OpenAlex, Crossref, PubMed, Europe PMC | `scoutline science search` / `science get` only — keyless scholarly lookups (five suppliers, DOI-deduped merge; `--provider` pins one). |
 
@@ -587,10 +617,12 @@ legacy-key construction — ambient `process.env` is never reread.
 ## Reader
 
 `scoutline read` participates in Provider selection. Z.AI, Tavily, Exa,
-and Firecrawl advertise `reader`; Z.AI supplies it through the Z.AI
+Firecrawl, Parallel AI, Jina AI, You.com, Linkup, and Spider.cloud
+advertise `reader`; Z.AI supplies it through the Z.AI
 Reader Adapter, Tavily through the Tavily `/extract` endpoint, Exa
-through `/contents`, and Firecrawl through `/v2/scrape`. MiniMax and
-Brave do not, so by default (0.11.0+) selecting either emits a stderr
+through `/contents`, and Firecrawl through `/v2/scrape`. MiniMax,
+Brave, Perplexity, Bocha AI, SearchApi, and Kagi do not, so by default
+(0.11.0+) selecting any of them emits a stderr
 notice and Provider fallback auto-reroutes to the next eligible
 configured supplier; under `--no-fallback` (or
 `SCOUTLINE_NO_FALLBACK=1`) the preflight surfaces
@@ -721,7 +753,7 @@ additive optional fields to both schemas
 { source: "snapshot" | "live", observedAt, authoritative }`, the
 `providers` union may include a `{ status: "none", reason:
 "no-capability" }` row for a configured provider without quota (Exa,
-Parallel, Perplexity, You.com),
+Parallel, Perplexity, You.com, Bocha AI, and Kagi),
 and each `doctor` provider entry may carry `quota: { source:
 "snapshot" | "none", observedAt?, authoritative }` plus `verification:
 { status, checkedAt, reason? }`. Each `quota` requests category may

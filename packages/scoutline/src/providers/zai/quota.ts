@@ -22,6 +22,10 @@
  *   - `TOKENS_LIMIT` -> `tokens` category; convert the Provider's used
  *     percentage to a remaining percentage.
  *   - Categories are named `requests` then `tokens` when present.
+ *   - When a payload carries MULTIPLE entries per category (#204,
+ *     never observed live), `requests` picks the first SELF-CONSISTENT
+ *     TIME_LIMIT, falling back to the first entry when none is; `tokens`
+ *     takes the first TOKENS_LIMIT.
  *
  * Boundary rules (ARCHITECTURE.md §2):
  *   - May import the quota capability contract, Provider-local monitor
@@ -204,7 +208,15 @@ export function normalizeZaiQuota(raw: unknown): ProviderQuotaSuccess {
 
   const limits = Array.isArray(data.limits) ? data.limits : [];
 
-  const timeLimit = limits.find(isTimeLimit);
+  const timeCandidates = limits.filter(isTimeLimit);
+  // #204 multi-entry rule: pick the FIRST SELF-CONSISTENT entry — a
+  // corrupt leading entry must not poison the category when a healthy
+  // sibling exists. Entries are NOT summed/merged (windows of different
+  // scopes are not additive); first-consistent is deterministic and
+  // fabricates nothing. When NO entry is consistent, fall back to the
+  // FIRST entry, preserving the corrupt→empty-window behavior above.
+  // Single-entry payloads (the only observed wire shape) are unchanged.
+  const timeLimit = timeCandidates.find(isConsistentTimeLimit) ?? timeCandidates[0];
   if (timeLimit) {
     const durationSeconds =
       typeof timeLimit.unit === "number" && Number.isFinite(timeLimit.unit)
@@ -248,6 +260,9 @@ export function normalizeZaiQuota(raw: unknown): ProviderQuotaSuccess {
     });
   }
 
+  // #204 multi-entry rule: first entry wins — tokens entries have no
+  // consistency guard to rank by, so there is nothing to prefer beyond
+  // position. (Single-entry payloads are the only observed wire shape.)
   const tokensLimit = limits.find(isTokensLimit);
   if (tokensLimit) {
     const usedPercent = readNumber(tokensLimit.percentage);

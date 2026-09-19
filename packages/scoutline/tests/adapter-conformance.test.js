@@ -586,6 +586,11 @@ const SEARCH_CONFORMANCE_RAW = new Map([
         link: "https://example.test/two",
         content: "Shared normalized summary two.",
       },
+      // Non-object row dropped by the zai shape guard
+      // (zai/adapter.ts `!entry || typeof entry !== "object"`, #251).
+      // Absent from the shared normalized fixture, so deleting the
+      // guard fails this gate (kagi `t: 1` convention).
+      null,
     ],
   ],
   // MiniMax raw response (organic title/link/snippet).
@@ -717,6 +722,13 @@ const SEARCH_CONFORMANCE_RAW = new Map([
           url: "https://example.test/two",
           snippet: "Shared normalized summary two.",
         },
+        // Url-less row dropped by the perplexity `.filter((item) =>
+        // item.url)` skip (perplexity/adapter.ts, #251) — absent from
+        // the shared normalized fixture.
+        {
+          title: "Conformance url-less row",
+          snippet: "Dropped before normalization.",
+        },
       ],
     },
   ],
@@ -734,6 +746,13 @@ const SEARCH_CONFORMANCE_RAW = new Map([
           title: "Conformance result two",
           url: "https://example.test/two",
           description: "Shared normalized summary two.",
+        },
+        // Url-less row dropped by the jina `.filter((item) => item.url)`
+        // skip (jina/adapter.ts, #251) — absent from the shared
+        // normalized fixture.
+        {
+          title: "Conformance url-less row",
+          description: "Dropped before normalization.",
         },
       ],
     },
@@ -755,6 +774,14 @@ const SEARCH_CONFORMANCE_RAW = new Map([
             url: "https://example.test/two",
             description: "Shared normalized summary two.",
           },
+          // Non-object row behind the you `isPlainObject` skip
+          // (you/adapter.ts, #251) — absent from the shared normalized
+          // fixture.
+          null,
+          // Url-less row behind the you empty/missing-url skip
+          // (you/adapter.ts, #251) — absent from the shared normalized
+          // fixture.
+          { title: "Conformance url-less row" },
         ],
       },
     },
@@ -814,6 +841,13 @@ const SEARCH_CONFORMANCE_RAW = new Map([
         name: "Conformance result two",
         url: "https://example.test/two",
         snippet: "Shared normalized summary two.",
+      },
+      // Url-less row dropped by the bocha `.filter((item) => item.url)`
+      // skip (bocha/adapter.ts, #251) — absent from the shared
+      // normalized fixture.
+      {
+        name: "Conformance url-less row",
+        snippet: "Dropped before normalization.",
       },
     ],
   ],

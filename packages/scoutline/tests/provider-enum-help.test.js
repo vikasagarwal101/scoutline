@@ -38,8 +38,8 @@ import { RESEARCH_HELP } from "../dist/commands/research.js";
 // pin; that independence is the teeth, and it stays unedited.
 const SCIENCE_SEAT_IDS = new Set(SCIENCE_SUPPLIER_IDS);
 const SHARED_PROVIDER_IDS = PROVIDER_IDS.filter((id) => !SCIENCE_SEAT_IDS.has(id));
-const PIPE_ENUM = `(zai | ${PROVIDER_IDS.slice(1).join(" | ")})`;
-const SHARED_PIPE_ENUM = `(zai | ${SHARED_PROVIDER_IDS.slice(1).join(" | ")})`;
+const PIPE_ENUM = `(${PROVIDER_IDS.join(" | ")})`;
+const SHARED_PIPE_ENUM = `(${SHARED_PROVIDER_IDS.join(" | ")})`;
 const COMMA_ENUM = `(${PROVIDER_IDS.join(", ")})`;
 
 describe("command help provider enumerations match the registry (#82)", () => {

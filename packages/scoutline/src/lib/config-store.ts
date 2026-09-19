@@ -49,6 +49,15 @@ export interface ScoutlineConfig {
    * and never fails config load.
    */
   readonly journal?: boolean;
+  /**
+   * Merged-search ranking algorithm (fusion seed-24): how multi-provider
+   * fan-out results are ranked. Absent → "rrf" (the default). Loaded
+   * LENIENTLY: a non-enum value is ignored (field dropped, default
+   * applies) and never fails config load — the `journal` leniency
+   * precedent. Strict validation lives at the `config set` surface and
+   * in {@link resolveFusionMode} (env door).
+   */
+  readonly fusion?: FusionMode;
   readonly providers: Partial<Record<ProviderId, ProviderConfig>>;
   readonly hintShown?: boolean;
   /**
@@ -124,10 +133,56 @@ export interface MalformedJournalWarning {
   readonly message: string;
 }
 
+/**
+ * Malformed top-level field warning: a non-enum `fusion` value in
+ * config.json. Warn-and-drop like MALFORMED_JOURNAL — never a load
+ * failure (the "rrf" default applies).
+ */
+export interface MalformedFusionWarning {
+  readonly code: "MALFORMED_FUSION";
+  readonly message: string;
+}
+
+/**
+ * The merged-search ranking algorithms (fusion seed-24). Case-sensitive:
+ * anything not exactly "rrf" or "occurrence" is invalid wherever strict
+ * validation applies (`config set`, {@link resolveFusionMode} env door).
+ */
+export type FusionMode = "rrf" | "occurrence";
+
+const FUSION_MODES: readonly FusionMode[] = ["rrf", "occurrence"];
+
+/**
+ * Resolve the effective fusion mode (fusion seed-24 owner rulings).
+ * Precedence: SCOUTLINE_FUSION env > config `fusion` > default "rrf".
+ * The env door is STRICT: a non-empty value that is not exactly "rrf"
+ * or "occurrence" throws ValidationError — typos fail loudly, never
+ * silently fall back. (The file-config value arrives here already
+ * leniently parsed to enum|undefined, so it needs no re-check.)
+ * Pure — both inputs injected; no ambient reads; safe to unit-test.
+ */
+export function resolveFusionMode(
+  env: { readonly SCOUTLINE_FUSION?: string | undefined },
+  config: ScoutlineConfig | undefined,
+): FusionMode {
+  const fromEnv = env.SCOUTLINE_FUSION;
+  if (fromEnv !== undefined && fromEnv.length > 0) {
+    if (!(FUSION_MODES as readonly string[]).includes(fromEnv)) {
+      throw new ValidationError(
+        `Invalid SCOUTLINE_FUSION value "${fromEnv}".`,
+        `Use one of: ${FUSION_MODES.join(", ")}.`,
+      );
+    }
+    return fromEnv as FusionMode;
+  }
+  return config?.fusion ?? "rrf";
+}
+
 export type AnyConfigWarning =
   | ConfigWarning
   | RoutingConfigWarning
-  | MalformedJournalWarning;
+  | MalformedJournalWarning
+  | MalformedFusionWarning;
 
 export type ConfigInspection =
   | { readonly status: "absent"; readonly filePath: string }
@@ -300,6 +355,21 @@ function parseConfig(contents: string): ParsedConfig {
       message: `Ignoring non-boolean "journal" in config.json; journaling stays enabled.`,
     });
   }
+  // `fusion` loads LENIENTLY like `journal`: a non-enum value drops with
+  // a warning (the "rrf" default applies) instead of corrupt-config —
+  // a one-field typo must not lock a user out of every command.
+  let fusion: FusionMode | undefined;
+  if (
+    parsed.fusion === undefined ||
+    (FUSION_MODES as readonly string[]).includes(parsed.fusion as string)
+  ) {
+    fusion = parsed.fusion as FusionMode | undefined;
+  } else {
+    warnings.push({
+      code: "MALFORMED_FUSION",
+      message: `Ignoring invalid "fusion" value in config.json (accepted: rrf, occurrence); the default "rrf" applies.`,
+    });
+  }
   for (const [providerId, value] of Object.entries(parsed.providers ?? {})) {
     if (!(PROVIDER_IDS as readonly string[]).includes(providerId)) {
       warnings.push({
@@ -322,6 +392,7 @@ function parseConfig(contents: string): ParsedConfig {
         : {}),
       ...(parsed.fanout !== undefined ? { fanout: parsed.fanout as boolean } : {}),
       ...(journal !== undefined ? { journal } : {}),
+      ...(fusion !== undefined ? { fusion } : {}),
       providers,
       ...(parsed.hintShown !== undefined ? { hintShown: parsed.hintShown as boolean } : {}),
     ...(parsed.agentRules !== undefined ? { agentRules: parsed.agentRules as Record<string, boolean> } : {}),
@@ -709,6 +780,14 @@ const KEY_FANOUT: ConfigKeyDescriptor = {
   setTrueNotice: fanoutCostNotice,
 };
 
+const KEY_FUSION: ConfigKeyDescriptor = {
+  path: "fusion",
+  gettable: true,
+  settable: true,
+  credential: false,
+  describe: "rrf | occurrence — merged-search ranking algorithm (default rrf)",
+};
+
 const KEY_ROUTING_TABLE: ConfigKeyDescriptor = {
   path: "routing",
   gettable: true,
@@ -763,6 +842,7 @@ export function resolveConfigKey(path: string): ConfigKeyDescriptor | null {
   const trimmed = path.trim();
   if (trimmed === "fallbackEnabled") return KEY_FALLBACK_ENABLED;
   if (trimmed === "fanout") return KEY_FANOUT;
+  if (trimmed === "fusion") return KEY_FUSION;
   if (trimmed === "journal") return KEY_JOURNAL;
   if (trimmed === "routing") return KEY_ROUTING_TABLE;
   if (trimmed.startsWith("routing.")) {
@@ -964,6 +1044,18 @@ export async function setConfigValue(
           : key === KEY_FANOUT
             ? { ...current, fanout: lowered === "true" }
             : { ...current, journal: lowered === "true" };
+    } else if (key === KEY_FUSION) {
+      // Strict enum (fusion seed-24 owner ruling): a typo FAILS — an
+      // explicit command must never silently store a different ranking
+      // algorithm. Case-sensitive: "RRF" is not "rrf".
+      const trimmed = value.trim();
+      if (!(FUSION_MODES as readonly string[]).includes(trimmed)) {
+        throw new ValidationError(
+          `Invalid fusion algorithm "${value}".`,
+          `Use one of: ${FUSION_MODES.join(", ")}.`,
+        );
+      }
+      next = { ...current, fusion: trimmed as FusionMode };
     } else {
       const { capability, ids } = parseRoutingValue(path, value);
       const routing = { ...current.routing, [capability]: ids };
@@ -1040,6 +1132,13 @@ export async function unsetConfigValue(
       }
       const { fanout: _fo, ...rest } = current;
       void _fo;
+      next = rest;
+    } else if (trimmed === "fusion") {
+      if (current.fusion === undefined) {
+        throw new ValidationError('"fusion" is not set.', "Nothing to unset.");
+      }
+      const { fusion: _fu, ...rest } = current;
+      void _fu;
       next = rest;
     } else if (trimmed === "journal") {
       if (current.journal === undefined) {

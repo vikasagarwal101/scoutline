@@ -91,6 +91,7 @@ function valueAtPath(config: ScoutlineConfig, path: string): unknown {
   if (trimmed.startsWith("routing.")) return config.routing?.[trimmed.slice("routing.".length)];
   if (trimmed === "fallbackEnabled") return config.fallbackEnabled;
   if (trimmed === "fanout") return config.fanout;
+  if (trimmed === "fusion") return config.fusion;
   if (trimmed === "journal") return config.journal;
   const providerMatch = /^providers\.([a-z0-9-]+)(?:\.[A-Za-z0-9-]+)*$/.exec(trimmed);
   if (providerMatch?.[1]) return config.providers[providerMatch[1] as keyof typeof config.providers];
@@ -208,6 +209,10 @@ Keys:
                              or the routing.search subset when routed).
                              Remove the standing switch with
                              \`scoutline config unset fanout\`.
+  fusion                      rrf|occurrence — sets how merged search results
+                             are ranked (default rrf; SCOUTLINE_FUSION
+                             overrides). Remove the explicit choice with
+                             \`scoutline config unset fusion\`.
   journal                     true|false — the always-on research journaling
                              switch (default true: every search/read/research
                              call records a local skeleton entry). Set false
@@ -227,7 +232,7 @@ Behaviour:
         arguments).
   unset Removes a routing capability (and the table when the last entry
         goes), the whole routing table, the fallbackEnabled switch, the
-        fanout switch, or the journal switch.
+        fanout switch, the fusion choice, or the journal switch.
 
 Routing semantics: when no --provider / SCOUTLINE_PROVIDER pin exists,
 the routed list orders provider selection for that capability — the

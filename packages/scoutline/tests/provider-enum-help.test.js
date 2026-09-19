@@ -18,6 +18,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { PROVIDER_IDS } from "../dist/providers/types.js";
+import { SCIENCE_SUPPLIER_IDS } from "../dist/capabilities/science.js";
 import { READ_HELP } from "../dist/commands/read.js";
 import { CRAWL_HELP } from "../dist/commands/crawl.js";
 import { MAP_HELP } from "../dist/commands/map.js";
@@ -30,7 +31,12 @@ import { SEARCH_HELP } from "../dist/commands/search.js";
 // drift guard widened in the same commit as the source.
 import { RESEARCH_HELP } from "../dist/commands/research.js";
 
-const SCIENCE_SEAT_IDS = new Set(["arxiv", "openalex", "crossref", "pubmed", "europepmc"]);
+// Derived from the science seam (#236) — src/providers/catalog.ts builds
+// SCIENCE_SEATS the same way — so this pin widens with the registry instead
+// of being a hand-maintained mirror. tests/science-registry.test.js
+// intentionally keeps its OWN independent literal as the D2 membership/order
+// pin; that independence is the teeth, and it stays unedited.
+const SCIENCE_SEAT_IDS = new Set(SCIENCE_SUPPLIER_IDS);
 const SHARED_PROVIDER_IDS = PROVIDER_IDS.filter((id) => !SCIENCE_SEAT_IDS.has(id));
 const PIPE_ENUM = `(zai | ${PROVIDER_IDS.slice(1).join(" | ")})`;
 const SHARED_PIPE_ENUM = `(zai | ${SHARED_PROVIDER_IDS.slice(1).join(" | ")})`;

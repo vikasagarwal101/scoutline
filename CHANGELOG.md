@@ -11,7 +11,7 @@
 
 ### Changed
 
-- **Merged-search ranking defaults to reciprocal rank fusion (fusion seed-24):** merged lists from multi-provider fan-out and `--merge` now rank by rrf (Σ 1/(60 + rank) over every arm × sub-query occurrence) instead of raw cross-provider occurrence count; rrf rows additively carry a fixed 3-decimal `fusionScore` and near-duplicate cluster members on `clusterUrls` (both additive fields — no shape break). `scoutline config set fusion occurrence` (or `SCOUTLINE_FUSION=occurrence`) restores the pre-fusion ordering byte-for-byte.
+- **Merged-search ranking defaults to reciprocal rank fusion (fusion seed-24):** merged lists from multi-provider fan-out and `--merge` now rank by rrf (Σ 1/(60 + rank) over every arm × sub-query occurrence) instead of raw cross-provider occurrence count; rrf rows additively carry a fixed 3-decimal `fusionScore` and near-duplicate cluster members on `clusterUrls` (both additive fields — no shape break). `scoutline config set fusion occurrence` (or `SCOUTLINE_FUSION=occurrence`) restores the pre-fusion ordering (the identity layers — canonicalization widening and near-duplicate clustering — apply in both modes).
 
 ### Fixed
 

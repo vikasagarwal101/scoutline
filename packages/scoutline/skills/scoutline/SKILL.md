@@ -177,11 +177,13 @@ previous strict `UNSUPPORTED_CAPABILITY` behavior — the preflight
 still runs capability metadata → configuration → adapter handle in
 order on the effective Provider only.
 
-### Search fan-out (multi-provider search, ADR-0004)
+### Search fan-out (multi-provider search, ADR-0012)
 
 `search` alone can run one query across several providers in parallel
-and merge the results (dedupe by canonical URL identity, occurrence
-ranking, additive `mergedFrom` provenance per result; arms are pinned —
+and merge the results (dedupe by canonical URL identity with
+near-duplicate title clustering, fusion ranking — `rrf` by default,
+`config set fusion occurrence` restores the legacy ordering — and
+additive `mergedFrom` provenance per result; arms are pinned —
 no per-arm fallback, and an arm that rejects a control drops with a
 stderr notice instead of failing the invocation). Activation tiers:
 

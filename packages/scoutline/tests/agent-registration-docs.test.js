@@ -116,7 +116,11 @@ const changelog = fs.readFile(new URL("../../../CHANGELOG.md", import.meta.url),
 // config key + env + default rrf, occurrence escape hatch, rrf/fusion
 // semantics, near-dup clustering, www/apex identity collapse. No other
 // body copy changed.
-const SKILL_BODY_SHA256 = "f570b7278f3d4a7ec25e7e8359778216d78a84368820b3cc3bff1dfb72338737";
+// Rebaselined at fusion PR #240 review round 1: the Search fan-out
+// section header now cites ADR-0012 (0004 superseded) and its merge
+// description states fusion ranking + near-dup clustering + occurrence
+// escape hatch (was: occurrence ranking). No other body copy changed.
+const SKILL_BODY_SHA256 = "f89160248674710de264d046092df7b908a02424eaf9bdf1662ff07f5df7ccfc";
 
 // AC-10 budget: codex/qwen load name+description before any body
 // byte; the old enumeration (~1500 chars) blows the disclosure

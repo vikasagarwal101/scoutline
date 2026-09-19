@@ -165,9 +165,12 @@ default `rrf`. The env door is strict — a value other than `rrf` or
 - `rrf` (default): results rank by reciprocal rank fusion,
   Σ 1/(60 + rank) over every arm × sub-query occurrence; each emitted
   row carries a fixed 3-decimal `fusionScore`.
-- `occurrence`: the legacy ordering — byte-identical to pre-fusion
-  output, the escape hatch for scripts that pin exact result order.
-  No `fusionScore` is emitted.
+- `occurrence`: the legacy ordering — the escape hatch for scripts
+  that pin the pre-fusion result order. The RANKING is byte-identical
+  to pre-fusion; the identity layers (`www.`/apex canonicalization and
+  near-duplicate clustering) apply in BOTH modes, so output rows can
+  still differ from pre-fusion when near-duplicates cluster. No
+  `fusionScore` is emitted.
 
 Near-duplicate clustering (3-word title shingles, Jaccard ≥ 0.8) and
 the `www`/apex identity-key collapse run in both modes; absorbed URLs

@@ -14,6 +14,9 @@
  *
  * Order of operations for `executeSearch`:
  *   1. `capability.validate(request)`
+ *   1b. Early return `[]` when the resolved count is `<= 0` (#230) —
+ *       before cache identity, read, legacy read-through, invoke,
+ *       consumption, and cache write.
  *   2. `capability.cacheIdentity(request, { legacyCount, count })`
  *   3. Read the provider-partitioned cache key
  *   4. Try and decode Adapter-supplied legacy candidates when applicable
@@ -432,6 +435,16 @@ export async function executeSearch(
 ): Promise<readonly SearchSource[]> {
   // 1. Validate Capability request.
   capability.validate(request);
+
+  // 1b. Issue #230: a resolved count <= 0 guarantees an empty result
+  //     after applyCount. Return before cache identity, cache read,
+  //     legacy read-through, invoke, consumption, and cache write — a
+  //     guaranteed slice-to-empty must not bill a provider call or
+  //     persist a cache entry. Validation still runs first: count 0 is
+  //     a no-op, not a license to skip request validation.
+  if (options.count !== undefined && options.count <= 0) {
+    return [];
+  }
 
   // 2. Adapter-owned cache identity (after validation).
   const identity = capability.cacheIdentity(request, {

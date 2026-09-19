@@ -4,7 +4,7 @@
  * Keyless bounded probe (DESIGN D2 round-3 ruling): doctor probes
  * every always-configured science supplier, so the OpenAlex probe is
  * ONE minimal keyless wire call — still one call, still `per-page=1`,
- * but it rides the SEARCH surface (`search=test`). #145: anonymous
+ * but it rides the SEARCH surface (`search=scoutline-doctor-probe`). #145: anonymous
  * OpenAlex search can be 503-paused while the bare works list stays
  * green, so a works-list-only probe reports capability health it never
  * tested. Red during an anonymous pause is INTENDED — the row reports
@@ -41,7 +41,7 @@ export function createOpenalexDiagnosticsCapability(
         // 503-paused, so the probe must issue a search. The request
         // parameter is `per-page` (review) — `per_page` is only
         // response metadata the server ignores.
-        await fetchOpenalexJson({ search: "test", "per-page": "1" }, { ...transport, env });
+        await fetchOpenalexJson({ search: "scoutline-doctor-probe", "per-page": "1" }, { ...transport, env });
       } catch (error) {
         throw normalizeProbeError(error);
       }

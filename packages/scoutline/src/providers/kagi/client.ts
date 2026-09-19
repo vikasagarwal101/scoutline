@@ -24,6 +24,8 @@ const BASE_URL = "https://kagi.com";
 const SEARCH_URL = `${BASE_URL}/api/v1/search`;
 const NEWS_URL = `${BASE_URL}/api/v0/enrich/news`;
 const DEFAULT_TIMEOUT_MS = 30000;
+/** Shared default result count for search + news requests (#239). */
+export const DEFAULT_SEARCH_LIMIT = 10;
 
 export interface KagiTransportDeps {
   readonly fetch?: (
@@ -52,7 +54,7 @@ export interface KagiSearchResponse {
 }
 
 /** Kagi error body shape: { error: [{ code, msg }] }. */
-export interface KagiErrorBody {
+interface KagiErrorBody {
   readonly error?: readonly { readonly code?: string; readonly msg?: string }[];
 }
 
@@ -150,7 +152,7 @@ export async function fetchKagiSearch(
   params: KagiSearchParams,
   deps: KagiTransportDeps = {},
 ): Promise<KagiSearchResponse> {
-  const url = `${SEARCH_URL}?q=${encodeURIComponent(params.query)}&limit=${params.limit ?? 10}`;
+  const url = `${SEARCH_URL}?q=${encodeURIComponent(params.query)}&limit=${params.limit ?? DEFAULT_SEARCH_LIMIT}`;
   return kagiGet(url, apiKey, deps);
 }
 
@@ -160,6 +162,6 @@ export async function fetchKagiNews(
   params: KagiSearchParams,
   deps: KagiTransportDeps = {},
 ): Promise<KagiSearchResponse> {
-  const url = `${NEWS_URL}?q=${encodeURIComponent(params.query)}&limit=${params.limit ?? 10}`;
+  const url = `${NEWS_URL}?q=${encodeURIComponent(params.query)}&limit=${params.limit ?? DEFAULT_SEARCH_LIMIT}`;
   return kagiGet(url, apiKey, deps);
 }

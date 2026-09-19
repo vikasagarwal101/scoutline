@@ -6,6 +6,8 @@
  * normalized output to fixtures/normalized/search.json. The expected
  * normalized shape is NOT branched by Provider: each Adapter is fed a
  * Provider-shaped raw response that normalizes to the shared form.
+ * Each raw fixture MUST carry at least one row its Adapter's drop
+ * logic removes (#237) — see SEARCH_CONFORMANCE_RAW below.
  *
  * Also covers the static production registry: exact order [zai, minimax],
  * unique IDs, pure metadata, side-effect-free creation, configured
@@ -558,6 +560,15 @@ const SEARCH_CONFORMANCE_FACTORIES = new Map([
  * factory in SEARCH_CONFORMANCE_FACTORIES — to the SAME shared
  * fixtures/normalized/search.json form. The expected normalized shape
  * does NOT branch by Provider.
+ *
+ * Fixture-authoring convention (#237): every raw fixture MUST carry
+ * at least one row its Adapter's normalization would DROP — a
+ * related-query row (kagi `t: 1`), a url-less row behind a url
+ * filter, a non-object entry behind a shape guard — and that row MUST
+ * be absent from the shared normalized fixture. Without such a row,
+ * deleting the drop logic stays green at this gate: proven live when
+ * kagi's t-filter survived the entire suite before its `t: 1` row
+ * existed (issue #237).
  */
 const SEARCH_CONFORMANCE_RAW = new Map([
   // Z.AI raw response (title/link/content; no media/publish_date so the
@@ -826,7 +837,10 @@ const SEARCH_CONFORMANCE_RAW = new Map([
     },
   ],
   // Kagi raw response (`data[].t/url/title/snippet`; only `t === 0`
-  // rows are results — related-query rows carry `t: 1` and no url).
+  // rows are results — related-query rows carry `t: 1`). The `t: 1`
+  // row below exercises the adapter's related-query drop (#237): it
+  // MUST be absent from the shared normalized fixture, so deleting
+  // the `t !== 0` drop in kagi/adapter.ts fails this gate.
   [
     "kagi",
     [
@@ -842,6 +856,7 @@ const SEARCH_CONFORMANCE_RAW = new Map([
         title: "Conformance result two",
         snippet: "Shared normalized summary two.",
       },
+      { t: 1, list: ["conformance related query"] },
     ],
   ],
 ]);

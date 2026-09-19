@@ -10,9 +10,10 @@
  *
  * This table is the guardrail for every resolver it lists: reverting a
  * listed resolver's clamp fails its row, and dropping a row fails the
- * count guard below. It cannot catch a resolver it has never heard of —
- * a new client must add its row here when it gains a *_TIMEOUT env
- * resolver.
+ * count guard below. A resolver the table has never heard of is caught
+ * by the "source-sweep guard #233" describe below: any src file whose
+ * line combines `parseInt` with a `*_TIMEOUT` identifier must import
+ * `clampTimeoutMs`.
  *
  * Teeth are by mutation — reverting one provider's clamp (restoring
  * its ad-hoc `Number.isFinite(raw) && raw > 0 ? raw : DEFAULT` return)
@@ -20,12 +21,14 @@
  *
  * Providers WITHOUT a `*_TIMEOUT` env resolver (fixed-constant
  * timeouts, nothing user-overridable to clamp) are intentionally absent
- * from this table: spider, the five science suppliers (arXiv,
- * OpenAlex, Crossref, PubMed, Europe PMC), and the media fetch
- * constants (zai/media.ts, minimax/media.ts).
+ * from this table: the media fetch constants (zai/media.ts,
+ * minimax/media.ts).
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import { fileURLToPath } from "node:url";
+import { join, relative, sep } from "node:path";
 import { clampTimeoutMs, TIMEOUT_MS_MAX } from "../dist/lib/timeout.js";
 import * as zaiMcpClient from "../dist/lib/mcp-client.js";
 import * as zaiCodeModeClient from "../dist/lib/code-mode.js";
@@ -45,6 +48,12 @@ import * as linkupClient from "../dist/providers/linkup/client.js";
 import * as parallelClient from "../dist/providers/parallel/client.js";
 import * as firecrawlClient from "../dist/providers/firecrawl/client.js";
 import * as youClient from "../dist/providers/you/client.js";
+import * as spiderClient from "../dist/providers/spider/client.js";
+import * as arxivClient from "../dist/providers/arxiv/client.js";
+import * as crossrefClient from "../dist/providers/crossref/client.js";
+import * as pubmedClient from "../dist/providers/pubmed/client.js";
+import * as europepmcClient from "../dist/providers/europepmc/client.js";
+import * as openalexClient from "../dist/providers/openalex/client.js";
 
 const TIMEOUT_MAX = 2147483647;
 
@@ -182,6 +191,42 @@ const RESOLVER_ROWS = [
     defaultMs: 300000,
   },
   {
+    provider: "spider",
+    envVar: "SPIDER_TIMEOUT",
+    resolve: spiderClient.resolveTimeoutMs,
+    defaultMs: 30000,
+  },
+  {
+    provider: "arxiv",
+    envVar: "ARXIV_TIMEOUT",
+    resolve: arxivClient.resolveTimeoutMs,
+    defaultMs: 30000,
+  },
+  {
+    provider: "crossref",
+    envVar: "CROSSREF_TIMEOUT",
+    resolve: crossrefClient.resolveTimeoutMs,
+    defaultMs: 30000,
+  },
+  {
+    provider: "pubmed",
+    envVar: "PUBMED_TIMEOUT",
+    resolve: pubmedClient.resolveTimeoutMs,
+    defaultMs: 30000,
+  },
+  {
+    provider: "europepmc",
+    envVar: "EUROPEPMC_TIMEOUT",
+    resolve: europepmcClient.resolveTimeoutMs,
+    defaultMs: 30000,
+  },
+  {
+    provider: "openalex",
+    envVar: "OPENALEX_TIMEOUT",
+    resolve: openalexClient.resolveTimeoutMs,
+    defaultMs: 30000,
+  },
+  {
     provider: "zai-mcp",
     envVar: "Z_AI_TIMEOUT",
     resolve: zaiMcpClient.resolveZaiMcpTimeoutMs,
@@ -205,16 +250,17 @@ const RESOLVER_ROWS = [
 
 describe("cross-provider timeout clamp conformance (#214)", () => {
   it("covers every provider that ships a *_TIMEOUT env resolver", () => {
-    // Guardrail against accidental row loss: 21 resolver rows across 18
-    // modules — 15 provider client modules (jina, perplexity, and
+    // Guardrail against accidental row loss: 27 resolver rows across 24
+    // modules — 21 provider client modules (jina, perplexity, and
     // minimax contribute two resolvers each; you contributes the legacy
-    // YDC alias row), the two shared Z.AI lib clients (mcp-client,
-    // code-mode), and loadConfig's inline Z_AI_TIMEOUT parse. A resolver
-    // added to the codebase but not to this table is NOT caught here —
-    // extend the table whenever a client gains a *_TIMEOUT env resolver.
-    assert.equal(RESOLVER_ROWS.length, 21);
+    // YDC alias row; the five science suppliers and spider add one each),
+    // the two shared Z.AI lib clients (mcp-client, code-mode), and
+    // loadConfig's inline Z_AI_TIMEOUT parse. A resolver added to the
+    // codebase but not to this table is NOT caught here — extend the
+    // table whenever a client gains a *_TIMEOUT env resolver.
+    assert.equal(RESOLVER_ROWS.length, 27);
     const providers = new Set(RESOLVER_ROWS.map((r) => r.provider));
-    assert.equal(providers.size, 21);
+    assert.equal(providers.size, 27);
   });
 
   for (const row of RESOLVER_ROWS) {
@@ -245,4 +291,113 @@ describe("cross-provider timeout clamp conformance (#214)", () => {
       });
     });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Source-sweep guard (#233): the table above pins only the resolvers it
+// lists. This sweep walks src/**/*.ts and asserts that every file with a
+// line combining `parseInt` with a `*_TIMEOUT` identifier actually USES
+// `clampTimeoutMs` at the match site — not merely imports it (an import
+// can be a dead binding; NIT-1). A matched line counts as clamped iff:
+//
+//   (a) `clampTimeoutMs(` appears on the matched line itself —
+//       src/lib/mcp-client.ts:93:
+//       `return clampTimeoutMs(parseIntOrDefault(env.Z_AI_TIMEOUT, ...), ...);`
+//   (b) `clampTimeoutMs(` appears on the matched line +1 or +2 — the
+//       dominant shape, all 21 provider-style resolvers, e.g.
+//       src/providers/brave/client.ts:86:
+//       `const raw = parseInt(env.BRAVE_TIMEOUT || ..., 10);`
+//       then `return clampTimeoutMs(raw, DEFAULT_TIMEOUT_MS);`
+//   (c) the immediately preceding line ends with `clampTimeoutMs(` —
+//       src/lib/config.ts:71-72, where the parseInt opens the clamp
+//       call's argument list. The ends-with-`(` requirement excludes an
+//       adjacent sibling resolver's already-closed
+//       `return clampTimeoutMs(raw, DEFAULT);` line from satisfying a
+//       different unclamped resolver two lines above (the
+//       adjacent-resolver false-green).
+//
+// A NEW provider client that parses a *_TIMEOUT env var without
+// clamping therefore fails deterministically here.
+//
+// Known honest gap (documented, not fixed): src/lib/code-mode.ts reads
+// Z_AI_TIMEOUT on a line separate from its parseInt call, so a same-line
+// sweep does not match that file — it clamps anyway (verified by the
+// zai-code-mode rows above). The sweep is a guard (matched ⇒ must clamp),
+// not a proof of coverage.
+describe("source-sweep guard #233 (parseInt-on-*_TIMEOUT must use clampTimeoutMs)", () => {
+  const srcRoot = fileURLToPath(new URL("../src", import.meta.url));
+  const LINE_RE = /parseInt/;
+  const TIMEOUT_ID_RE = /[A-Z][A-Z0-9_]*_TIMEOUT/;
+  const CALL_RE = /clampTimeoutMs\s*\(/;
+  const CALL_OPEN_END_RE = /clampTimeoutMs\s*\(\s*$/;
+
+  const walk = (dir) =>
+    fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) return walk(full);
+      return entry.name.endsWith(".ts") && !entry.name.endsWith(".d.ts")
+        ? [full]
+        : [];
+    });
+
+  const sweep = () => {
+    const offenders = [];
+    for (const file of walk(srcRoot)) {
+      const lines = fs.readFileSync(file, "utf8").split("\n");
+      const matching = lines
+        .map((text, i) => ({ text, line: i + 1 }))
+        .filter(({ text }) => LINE_RE.test(text) && TIMEOUT_ID_RE.test(text));
+      if (matching.length === 0) continue;
+      const unclamped = matching.filter(({ line }) => {
+        const i = line - 1;
+        // (a) clamp call on the matched line, or (b) on the matched line +1/+2.
+        if (
+          CALL_RE.test(lines[i]) ||
+          CALL_RE.test(lines[i + 1] || "") ||
+          CALL_RE.test(lines[i + 2] || "")
+        ) {
+          return false;
+        }
+        // (c) the preceding line opens the clamp call's argument list (ends
+        // with `clampTimeoutMs(`) — a closed sibling call does not count.
+        return !CALL_OPEN_END_RE.test(lines[i - 1] || "");
+      });
+      if (unclamped.length > 0) {
+        offenders.push({
+          file: relative(srcRoot, file).split(sep).join("/"),
+          lines: unclamped.map(({ text, line }) => `${line}: ${text.trim()}`),
+        });
+      }
+    }
+    return offenders;
+  };
+
+  it("every parseInt-on-*_TIMEOUT match site uses clampTimeoutMs", () => {
+    const offenders = sweep();
+    assert.deepStrictEqual(
+      offenders,
+      [],
+      `Files parse a *_TIMEOUT value without a clampTimeoutMs( call at the match site:\n${offenders
+        .map((o) => `  ${o.file}\n${o.lines.map((l) => `    ${l}`).join("\n")}`)
+        .join("\n")}`,
+    );
+  });
+
+  it("sweep still matches the canary files (rot-to-zero guard)", () => {
+    const matched = new Set();
+    for (const file of walk(srcRoot)) {
+      const content = fs.readFileSync(file, "utf8");
+      if (
+        content.split("\n").some((text) => LINE_RE.test(text) && TIMEOUT_ID_RE.test(text))
+      ) {
+        matched.add(relative(srcRoot, file).split(sep).join("/"));
+      }
+    }
+    for (const canary of ["providers/firecrawl/client.ts", "lib/config.ts"]) {
+      assert.ok(
+        matched.has(canary),
+        `canary ${canary} no longer matched by the sweep — pattern rotted?`,
+      );
+    }
+  });
 });

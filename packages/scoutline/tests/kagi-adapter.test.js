@@ -204,7 +204,7 @@ describe("kagi diagnostics", () => {
     assert.equal(calls, 1);
   });
 
-  it("diagnostics probe GETs v1 search with q=test and Bot auth", async () => {
+  it("diagnostics probe GETs v1 search with q=scoutline-doctor-probe and Bot auth", async () => {
     const fetchFn = makeFetchRecorder();
     const adapter = createKagiDescriptor({ transport: { fetch: fetchFn } }).create({
       env: { KAGI_API_KEY: "k" },
@@ -213,7 +213,7 @@ describe("kagi diagnostics", () => {
     assert.equal(fetchFn.calls.length, 1);
     const parsed = new URL(fetchFn.calls[0].url);
     assert.equal(`${parsed.origin}${parsed.pathname}`, "https://kagi.com/api/v1/search");
-    assert.equal(parsed.searchParams.get("q"), "test");
+    assert.equal(parsed.searchParams.get("q"), "scoutline-doctor-probe");
     assert.equal(parsed.searchParams.get("limit"), "1");
     assert.equal(header(fetchFn.calls[0].init, "Authorization"), "Bot k");
   });

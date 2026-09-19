@@ -46,6 +46,7 @@ import {
 } from "../../lib/errors.js";
 import type { ProviderQuotaFetch } from "../types.js";
 import { getGlobalFetch } from "../types.js";
+import { clampTimeoutMs } from "../../lib/timeout.js";
 
 const { version: VERSION } = pkg;
 
@@ -69,6 +70,12 @@ export interface PubmedCredentials {
 export function resolvePubmedCredentials(env: NodeJS.ProcessEnv): PubmedCredentials {
   const apiKey = env["NCBI_API_KEY"];
   return apiKey === undefined || apiKey === "" ? {} : { apiKey };
+}
+
+/** `PUBMED_TIMEOUT` override, clamped through the shared seam (#234). */
+export function resolveTimeoutMs(env: NodeJS.ProcessEnv): number {
+  const raw = parseInt(env.PUBMED_TIMEOUT || String(DEFAULT_TIMEOUT_MS), 10);
+  return clampTimeoutMs(raw, DEFAULT_TIMEOUT_MS);
 }
 
 /**
@@ -152,6 +159,7 @@ async function eutilsRequest(
   const f = deps.fetch ?? getGlobalFetch<ProviderQuotaFetch>();
   const setT = deps.setTimeout ?? setTimeout;
   const clearT = deps.clearTimeout ?? clearTimeout;
+  const timeoutMs = resolveTimeoutMs(deps.env ?? {});
   const { apiKey } = resolvePubmedCredentials(deps.env ?? {});
   const url = new URL(endpoint, EUTILS_BASE_URL);
   for (const [key, value] of Object.entries(params)) {
@@ -172,7 +180,7 @@ async function eutilsRequest(
   const timeoutId = setT(() => {
     timedOut = true;
     controller.abort();
-  }, DEFAULT_TIMEOUT_MS);
+  }, timeoutMs);
   const abortWithExternal = () => controller.abort();
   if (signal !== undefined) {
     if (signal.aborted) {
@@ -198,7 +206,7 @@ async function eutilsRequest(
       await res.body?.cancel().catch(() => {});
       throw mapStatusError(
         res.status,
-        DEFAULT_TIMEOUT_MS,
+        timeoutMs,
         parseRetryAfterHintMs(res.headers),
       );
     }
@@ -267,7 +275,7 @@ async function eutilsRequest(
       throw new ApiError("PubMed returned a malformed response", 500);
     }
   } catch (err) {
-    throw normalizeTransportError(err, DEFAULT_TIMEOUT_MS, timedOut, signal);
+    throw normalizeTransportError(err, timeoutMs, timedOut, signal);
   } finally {
     if (signal !== undefined) {
       signal.removeEventListener("abort", abortWithExternal);

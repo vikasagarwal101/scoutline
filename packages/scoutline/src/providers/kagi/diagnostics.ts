@@ -2,7 +2,7 @@
  * Kagi Diagnostics Capability.
  *
  * Probes Kagi connectivity with a lightweight web-search request
- * (query "test", limit 1) through the same client the Search
+ * (query "scoutline-doctor-probe", limit 1) through the same client the Search
  * Capability uses — GET /api/v1/search with `Authorization: Bot <key>`.
  * Billable. Errors are normalized through the shared probe-error seam
  * so no raw Provider body crosses the diagnostics boundary.
@@ -32,7 +32,7 @@ export function createKagiDiagnosticsCapability(
       if (!diagOptions.probe) return;
       const apiKey = requireKagiApiKey(env);
       try {
-        await fetchKagiSearch(apiKey, { query: "test", limit: 1 }, transport);
+        await fetchKagiSearch(apiKey, { query: "scoutline-doctor-probe", limit: 1 }, transport);
       } catch (error) {
         throw normalizeProbeError(error);
       }

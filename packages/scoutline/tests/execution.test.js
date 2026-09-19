@@ -330,18 +330,56 @@ describe("executeSearch — count truncation", () => {
     summary: `S${n}`,
   }));
 
-  it("count zero returns an empty list after cache + normalization", async () => {
+  it("count zero short-circuits: no invoke, no cache traffic, no consumption (#230)", async () => {
+    const sink = createInMemoryConsumptionSink();
     const cache = makeCache();
     const cap = makeCapability({ results });
     const out = await executeSearch(
       cap,
       { query: "q" },
-      { count: 0, noCache: true },
-      baseDeps(cache, makeSleep(), makeRandom()),
+      { count: 0, ...baseOptions() },
+      { ...baseDeps(cache, makeSleep(), makeRandom()), consume: sink },
     );
     assert.deepStrictEqual(out, []);
-    // The full result was still normalized internally.
-    assert.strictEqual(cap.invokeCount, 1);
+    assert.strictEqual(cap.invokeCount, 0, "no provider invoke");
+    assert.strictEqual(cache.writes.length, 0, "no cache write");
+    assert.strictEqual(cache.reads.length, 0, "no cache read");
+    assert.strictEqual(sink.events.length, 0, "no consumption event");
+    // Only validate ran — nothing downstream in the pipeline.
+    assert.deepStrictEqual(cap.events, [{ phase: "validate", query: "q" }]);
+  });
+
+  it("count zero still validates the request first (#230)", async () => {
+    const cache = makeCache();
+    const cap = makeCapability({ results });
+    await assert.rejects(
+      executeSearch(
+        cap,
+        { query: "" },
+        { count: 0, ...baseOptions() },
+        baseDeps(cache, makeSleep(), makeRandom()),
+      ),
+      ValidationError,
+    );
+    assert.strictEqual(cap.invokeCount, 0);
+  });
+
+  it("negative count short-circuits the same as zero (#230)", async () => {
+    const sink = createInMemoryConsumptionSink();
+    const cache = makeCache();
+    const cap = makeCapability({ results });
+    const out = await executeSearch(
+      cap,
+      { query: "q" },
+      { count: -1, ...baseOptions() },
+      { ...baseDeps(cache, makeSleep(), makeRandom()), consume: sink },
+    );
+    assert.deepStrictEqual(out, []);
+    assert.strictEqual(cap.invokeCount, 0, "no provider invoke");
+    assert.strictEqual(cache.writes.length, 0, "no cache write");
+    assert.strictEqual(cache.reads.length, 0, "no cache read");
+    assert.strictEqual(sink.events.length, 0, "no consumption event");
+    assert.deepStrictEqual(cap.events, [{ phase: "validate", query: "q" }]);
   });
 
   it("positive count slices the normalized result", async () => {

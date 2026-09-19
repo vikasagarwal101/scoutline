@@ -614,7 +614,7 @@ describe("crossref diagnostics — keyless bounded probe (TASKS T4b; DESIGN D2 r
     // supplier; the probe is ONE minimal keyless wire call on the
     // supplier's endpoint (rows=1 — the cheapest credible liveness
     // check, arXiv max_results=1 precedent). #163: the call exercises
-    // the SEARCH capability (query=test) — a bare works list can stay
+    // the SEARCH capability (query=scoutline-doctor-probe) — a bare works list can stay
     // green while the search surface degrades, so a works-list-only
     // probe reports capability health it never tested. The politeness
     // posture applies to it too (house UA carrying mailto).
@@ -636,7 +636,7 @@ describe("crossref diagnostics — keyless bounded probe (TASKS T4b; DESIGN D2 r
     // works list can stay green while the search surface degrades.
     assert.equal(
       wireUrl.searchParams.get("query"),
-      "test",
+      "scoutline-doctor-probe",
       "probe exercises the search capability (query= is on the wire)",
     );
     const ua = calls[0].init?.headers?.["User-Agent"];
@@ -670,7 +670,7 @@ describe("crossref diagnostics — keyless bounded probe (TASKS T4b; DESIGN D2 r
     assert.equal(probeCalls.length, 1, "the probe issued the failing call itself");
     assert.equal(
       new URL(probeCalls[0]).searchParams.get("query"),
-      "test",
+      "scoutline-doctor-probe",
       "the failing call was the search probe, not the bare works list",
     );
   });

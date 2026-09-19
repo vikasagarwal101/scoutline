@@ -18,7 +18,7 @@ import * as pathMod from "node:path";
 
 import { main } from "../dist/index.js";
 import { resolveFusionMode } from "../dist/lib/config-store.js";
-import { mergeResults, search } from "../dist/commands/search.js";
+import { mergeResults, search, jaccard } from "../dist/commands/search.js";
 import { useTempConfigDir } from "./helpers/config-dir-pin.js";
 import { hermeticMainDeps, getHermeticArtifactsDir } from "./helpers/hermetic-main.js";
 
@@ -664,16 +664,22 @@ const GOLDEN_GRIDS = [
 ];
 
 /**
- * Rows keyed by url with `rank` and `fusionScore` dropped: the two keys that
- * legitimately differ between the modes. Everything left — first-writer
- * title/summary/url, occurrences, mergedFrom — must be mode-invariant.
+ * Rows keyed by url with `rank`, `fusionScore`, and `clusterUrls` dropped:
+ * `rank`/`fusionScore` are the keys that legitimately differ between the
+ * modes, and `clusterUrls` presence is cluster-dependent while its CONTENT
+ * can vary with representative choice (score-tied clusters pick different
+ * members per mode) — mode-invariance must not depend on it. Everything
+ * left — first-writer title/summary/url, occurrences, mergedFrom — must be
+ * mode-invariant. Stripping clusterUrls guards the byte-identity goldens
+ * against future fixtures growing >= 6-word (clusterable) titles.
  */
 function rowsWithoutRankOrScore(rows) {
   const map = new Map();
   for (const row of rows) {
-    const { rank: _rank, fusionScore: _score, ...rest } = row;
+    const { rank: _rank, fusionScore: _score, clusterUrls: _clusterUrls, ...rest } = row;
     void _rank;
     void _score;
+    void _clusterUrls;
     map.set(row.url, rest);
   }
   return map;
@@ -1031,6 +1037,72 @@ describe("T5 clustering determinism", () => {
     const c = mergeResults(syndicationGrid(), { mode: "occurrence", emitMergedFrom: true });
     const d = mergeResults(syndicationGrid(), { mode: "occurrence", emitMergedFrom: true });
     assert.strictEqual(JSON.stringify(c), JSON.stringify(d));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #243 — Jaccard total guard + gate property pin + strip teeth
+// ---------------------------------------------------------------------------
+
+describe("jaccard: total guard (Issue #243)", () => {
+  it("an empty-set pair scores 0 (no overlap), never 0/0 = NaN", () => {
+    const score = jaccard(new Set(), new Set());
+    assert.strictEqual(score, 0);
+    assert.ok(!Number.isNaN(score), "empty ∪ empty must not be NaN");
+  });
+
+  it("an empty operand against a non-empty set scores 0", () => {
+    assert.strictEqual(jaccard(new Set(["a b c", "b c d"]), new Set()), 0);
+    assert.strictEqual(jaccard(new Set(), new Set(["a b c", "b c d"])), 0);
+  });
+});
+
+describe("CLUSTER_MIN_SHINGLES gate: short titles never cluster (Issue #243 property pin)", () => {
+  // PROPERTY PIN — passes before AND after the #243 guard: the gate, not
+  // the guard, is the first line of defense on the mergeResults path.
+  // Rows whose titles yield < 4 shingles (empty or short) are ineligible,
+  // so all rows survive as singletons with no clusterUrls key.
+  it("rows below the shingle floor survive as singletons — no clusterUrls key", () => {
+    const grid = [
+      {
+        provider: "tavily",
+        results: [
+          [
+            ranked(1, "", "https://e/empty1", undefined),
+            ranked(2, "Tiny Title", "https://e/tiny", undefined),
+          ],
+        ],
+      },
+      {
+        provider: "exa",
+        results: [
+          [
+            ranked(1, "", "https://e/empty2", undefined),
+            ranked(2, "Tiny Title", "https://e/tiny2", undefined),
+          ],
+        ],
+      },
+    ];
+    for (const mode of ["rrf", "occurrence"]) {
+      const merged = mergeResults(grid, { mode, emitMergedFrom: true });
+      assert.strictEqual(merged.length, 4, `${mode}: no row merged`);
+      for (const row of merged) {
+        assert.ok(
+          !Object.hasOwn(row, "clusterUrls"),
+          `${mode}: no clusterUrls on ${row.url}`,
+        );
+      }
+    }
+  });
+});
+
+describe("rowsWithoutRankOrScore strips clusterUrls (Issue #243)", () => {
+  it("a row carrying clusterUrls is mapped without the field", () => {
+    const rows = [
+      { rank: 1, fusionScore: "0.500", title: "T", url: "https://e/a", clusterUrls: ["https://e/b"] },
+    ];
+    const mapped = rowsWithoutRankOrScore(rows);
+    assert.ok(!Object.hasOwn(mapped.get("https://e/a"), "clusterUrls"), "clusterUrls stripped");
   });
 });
 

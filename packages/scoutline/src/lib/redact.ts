@@ -129,18 +129,15 @@ export function redactCredentialString(input: string, extraSecrets?: string | st
   // The lookbehind keeps a bare scheme match from starting mid-identifier
   // (KAGI_TOKEN abc123 must not become KAGI_[REDACTED]); an env-var-name
   // form is handled by the key-specific rows below.
-  result = result.replace(
-    /(?<![A-Za-z0-9_])(?:Bearer|Token|ApiKey)\s+([^\s"]{8,})/gi,
-    (match, value: string) => {
-      // ponytail: quote cut defensive since regex excludes ", upgrade to AST parser if complex grammar needed
-      const quoteIdx = value.indexOf('"');
-      const candidate = (quoteIdx === -1 ? value : value.slice(0, quoteIdx)).replace(
-        /[",.;:)\]]+$/,
-        "",
-      );
-      return CREDENTIAL_CHAR.test(candidate) ? REDACTED : match;
-    },
-  );
+  result = result.replace(/(?<![A-Za-z0-9_])(?:Bearer|Token|ApiKey)\s+([^\s"]{8,})/gi, (match, value: string) => {
+    // ponytail: quote cut defensive since regex excludes ", upgrade to AST parser if complex grammar needed
+    const quoteIdx = value.indexOf('"');
+    const candidate = (quoteIdx === -1 ? value : value.slice(0, quoteIdx)).replace(
+      /[",.;:)\]]+$/,
+      "",
+    );
+    return CREDENTIAL_CHAR.test(candidate) ? REDACTED : match;
+  });
   // Quoted-scheme recovery pass (#171 review F3): recover coverage for
   // quoted credentials (e.g. Bearer "ghp_..." or JSON Bearer \"ghp_...\")
   // that bare [^\s"]{8,} cannot match. Exclude backslash, quotes, and

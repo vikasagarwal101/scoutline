@@ -78,6 +78,126 @@ import {
 } from "./search.js";
 import { deriveTemplateTopic, planSubQueries } from "../lib/investigate-planner.js";
 import { extractPassages } from "../lib/investigate-extract.js";
+import { SHARED_PROVIDER_FLAG_IDS } from "../providers/catalog.js";
+
+// ---------------------------------------------------------------------------
+// Help (T6; mirrors SEARCH_HELP's shape: usage, controls, tier notes, cost)
+// ---------------------------------------------------------------------------
+
+/**
+ * `investigate --help` (T6). The command's rejected-flag contract is part
+ * of the surface: --depth/--arms/--budget-tokens DO NOT EXIST (PRD AC-1 —
+ * the rejection is the feature), and --context-stdin is deliberately not
+ * investigate's (search-only spelling; pipes and --context cover the
+ * sub-query sources). --synthesize is T7 and is not advertised yet.
+ */
+export const INVESTIGATE_HELP = `
+Investigate Command - Local investigation pipeline (EvidencePack)
+
+Usage: scoutline investigate <question> [options]
+
+Plans sub-queries, fans out search, merges by fusion, reads the top
+sources, and extracts deterministic passages into an EvidencePack
+(schemaVersion 1). The pack is data, not prose: agents consume it
+directly; text output modes fall back to JSON. Warm re-runs replay the
+response cache (coverage.cacheHits reflects it).
+
+Provider selection (precedence: explicit flag, then SCOUTLINE_PROVIDER, then zai):
+  --provider <${SHARED_PROVIDER_FLAG_IDS}>   Select the search provider. A
+        comma-list or \`all\` fans out over every listed arm (search's
+        activation tiers, verbatim); a single id runs one arm;
+        \`scoutline config set fanout true\` (no pin) is a standing fan-out.
+
+Cost: the run bills N sub-queries × M arms searches + up to K reads —
+one stderr notice states the exact arithmetic before any billable work.
+
+Sub-query planning (precedence: pipes > --context > template):
+  Pipes   An unescaped \`|\` in the question splits it into explicit
+          sub-queries (the --merge grammar; escape with \\| for a
+          literal pipe). Wins over --context with a stderr notice.
+  --context <path>  Read a local notes file and derive up to 8
+          sub-queries (headings/questions), exactly like search.
+  Template  Deterministic transforms of the bare question (original,
+          key terms, overview/evidence/criticism), deduped, capped at 5.
+
+Options:
+  --provider <ids>    Comma-list, \`all\`, or a single id (fan-out tiers
+                      above).
+  --context <path>    Local notes file deriving sub-queries (max 256 KiB;
+                      never leaves the machine — only the derived
+                      sub-query strings are searched).
+  --sources <n>       How many distinct post-cluster sources to read
+                      (positive integer; default 5).
+  --max-chars <n>     Fit the pack in ~<n> chars (passages trim first —
+                      quotes truncate, charRange adjusts — then late
+                      sources drop; question/subQueries/coverage are
+                      never cut; the full untrimmed pack is saved to the
+                      artifacts store — recover with
+                      "scoutline history show").
+  --no-cache          Skip the response cache for this run's searches
+                      and reads.
+  --no-journal        Skip the research journal entries for this run's
+                      underlying search/read ops.
+  --save [<path>]     Save the pack as a clean report (global flag;
+                      master copy + optional export; refuses an
+                      existing target without --save-force).
+  --isolated          Process-isolated state (accepted; no stateful
+                      directory exists — pure cache replay on re-run).
+
+Not investigate's flags (rejected with VALIDATION_ERROR — by design):
+  --depth             There is no depth axis; planning is deterministic
+                      (pipes > context > template).
+  --arms              The arm set IS the provider pin (--provider
+                      comma-list / all); there is no separate control.
+  --budget-tokens    --max-chars is the budget (chars, not tokens).
+  --context-stdin    Search-only spelling; use --context <path> (or
+                      pipes in the question) instead.
+
+Standard global options apply (--output-format/-O, --save-format,
+--save-force, --provider before the command, --no-fallback,
+--isolated).
+
+Output formats (--output-format / -O):
+  data       Raw EvidencePack JSON (default)
+  json       Envelope-wrapped {success, data, timestamp}
+  pretty     Pretty-printed json
+  compact / markdown / refs / tty   Fall back to JSON — the pack is
+                      data, not prose.
+
+Examples:
+  scoutline investigate "rust async runtime benchmarks"
+  scoutline investigate "rust async | rust tokio"          # explicit pipes
+  scoutline --provider tavily,exa investigate "alpha | beta"
+  scoutline investigate "vector dbs" --context notes.md --sources 3
+  scoutline investigate "k8s cost" --max-chars 4000        # budgeted pack
+
+Default JSON shape (EvidencePack, schemaVersion 1):
+  {
+    "schemaVersion": 1,
+    "question": "...",
+    "subQueries": ["..."],
+    "sources": [
+      {
+        "url": "https://...",
+        "finalUrl": "https://...",
+        "title": "Page title",
+        "fetchedAt": "2026-09-20T00:00:00.000Z",
+        "provider": "tavily",
+        "contentFormat": "markdown",
+        "contentSha256": "<sha256 of the utf-8 content>",
+        "passages": [{ "quote": "...", "charRange": [0, 42] }]
+      }
+    ],
+    "coverage": {
+      "subQueries": 2,
+      "armsUsed": 2,
+      "sourcesConsidered": 5,
+      "sourcesRead": 5,
+      "cacheHits": 0,
+      "unread": [{ "url": "https://...", "reason": "reader-failed:API_ERROR" }]
+    }
+  }
+`.trim();
 
 // ---------------------------------------------------------------------------
 // Options + dependencies

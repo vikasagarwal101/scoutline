@@ -1,0 +1,585 @@
+/**
+ * Investigation orchestrator (investigate-pipeline lane, Ticket T4;
+ * docs/plans/investigate-pipeline DESIGN.md D3, PRD AC-3/AC-4/AC-9/
+ * AC-10; ADR-0013).
+ *
+ * Thin, data-returning composition of the seams `search` and `read`
+ * already export — no bespoke merge fork, no local fan-out copy, no
+ * transport of its own:
+ *
+ *   1. planSubQueries (T2, injected loadContextText — no filesystem).
+ *   2. resolveFanoutPlan over the resolved provider pin (AC-1 tiers,
+ *      the same inputs handleSearch passes).
+ *   3. Grid execution through the exported seams: fan-out mode runs
+ *      executeFanoutPlan; single mode runs the exported search() with
+ *      {merge: N > 1} over the escaped-pipe join of the sub-queries
+ *      (the exact context-mode join precedent, index.ts handleSearch).
+ *   4. Top --sources distinct sources = the first K rows of the merged
+ *      FormattedResult[] (mergeResults already collapsed near-dup
+ *      clusters to representatives — a near-dup pair IS one row).
+ *   5. Reads: bounded-concurrency pool (default 4) over the reader
+ *      capability seam via executeReaderOperation, one client per
+ *      read (descriptor.create per read), closed in `finally`.
+ *   6. extractPassages (T3) per read result.
+ *   7. EvidencePack assembly per the T1 types.
+ *
+ * Reader supplier selection mirrors handleRead: the FIRST descriptor
+ * in registry order whose injected `readerCapabilityFor` resolves a
+ * ReaderCapability serves every read (the same first-configured-capable
+ * order read uses; cross-provider fallback per failed read is the
+ * index.ts handler seam's business, T6). A supplier that rejects a
+ * source terminally classifies as `reader-failed:<code>`; a supplier
+ * that cannot serve the capability at all classifies as
+ * `no-reader-supplier`. Unread rows carry reason codes only
+ * (redacted, house rule); the pool continues past them;
+ * `sourcesRead` counts successes only.
+ *
+ * Consumption linearity: every billable arm and read attempt records
+ * exactly one event (N×M + K) because the shared executors emit per
+ * invoke and the orchestrator never double-reads a URL.
+ *
+ * `--isolated` is ACCEPTED, never rejected: the pid-segment cache
+ * behavior is the main() handler seam's job (T6) — the command has no
+ * cache-directory logic of its own; the injected cache IS the
+ * (possibly isolated) production cache. Journal entry/marker WRITING
+ * lives at the index.ts descriptor seam (journalingDescriptors /
+ * captureServingDescriptors): this command consumes the injected
+ * descriptor list verbatim, so capture-wrapped descriptors keep
+ * stamping servedFrom/cacheKey cells the journal hook consumes — the
+ * T4-level guarantee (asserted by the seam-passthrough test); journal
+ * wiring itself is deferred to T6 (journal.ts / index.ts untouched).
+ */
+
+import { createHash } from "node:crypto";
+
+import type { CommandContext, CommandResult } from "../command-invocation.js";
+import type { ReaderCapability, ReaderFetchResult } from "../capabilities/reader.js";
+import type { EvidencePack, EvidenceSource } from "../capabilities/investigation.js";
+import type { FusionMode } from "../lib/config-store.js";
+import { buildProviderCacheKey, type ResponseCache } from "../lib/cache.js";
+import type { RetryPolicy } from "../lib/execution.js";
+import { executeReaderOperation } from "../lib/execution.js";
+import type { ConsumptionSink } from "../lib/consumption.js";
+import type { ProviderDescriptor, ProviderId } from "../providers/types.js";
+import { UnsupportedCapabilityError, ValidationError } from "../lib/errors.js";
+import {
+  executeFanoutPlan,
+  resolveFanoutPlan,
+  search,
+  type FanoutPlan,
+  type FormattedResult,
+} from "./search.js";
+import { deriveTemplateTopic, planSubQueries } from "../lib/investigate-planner.js";
+import { extractPassages } from "../lib/investigate-extract.js";
+
+// ---------------------------------------------------------------------------
+// Options + dependencies
+// ---------------------------------------------------------------------------
+
+export interface InvestigateOptions {
+  /**
+   * Raw `--provider` value (comma-list / "all" / single id), threaded
+   * to resolveFanoutPlan verbatim — the same tier grammar search uses.
+   */
+  readonly provider?: string;
+  /** `--context` file path; selects the planner's context tier. */
+  readonly contextFile?: string;
+  /**
+   * `--sources`: how many distinct post-cluster sources to read.
+   * Positive integer; default 5. 0/negative/non-integers are
+   * VALIDATION_ERROR (validation at the trust boundary).
+   */
+  readonly sources?: number;
+  /**
+   * ACCEPTED, never rejected (PRD AC-9: no ISOLATED_REJECTED path).
+   * The pid-segment cache behavior belongs to the main() handler seam
+   * (T6) — this command has no cache-directory logic of its own; the
+   * injected cache IS the (possibly isolated) production cache.
+   */
+  readonly isolated?: boolean;
+  /** `--no-cache`: threaded to every underlying search + read. */
+  readonly noCache?: boolean;
+  /**
+   * `--no-journal`: threaded through ONLY as far as the command seam
+   * allows (the underlying ops take no such option — journaling is
+   * wired at the index.ts descriptor/hook seam). T6 owns the real
+   * suppression; recorded here so the option never fails the parse.
+   */
+  readonly noJournal?: boolean;
+}
+
+export interface InvestigateExecutionDependencies {
+  /**
+   * Live provider registry — the same `HandlerDependencies.
+   * providerDescriptors` list handleSearch consumes (possibly the
+   * capture-wrapped journalingDescriptors list; this command never
+   * unwraps it, so journal servedFrom/cacheKey stamping survives).
+   */
+  readonly descriptors: readonly ProviderDescriptor[];
+  /** The resolved env (env + file-configured keys). Input only. */
+  readonly env: NodeJS.ProcessEnv;
+  /** Whether `fanout` is enabled in the active config. */
+  readonly configFanout: boolean;
+  /** Resolved per-capability routing table. */
+  readonly routing?: Readonly<Record<string, readonly ProviderId[]>>;
+  /** Shared response cache for search arms AND reads. */
+  readonly cache: ResponseCache;
+  readonly sleep: (ms: number) => Promise<void>;
+  readonly random: () => number;
+  readonly retryPolicy?: RetryPolicy;
+  /** Usage-ledger sink — N×M + K linearity pins on it. */
+  readonly consume?: ConsumptionSink;
+  /** Clock for consumption events. */
+  readonly now?: () => number;
+  /**
+   * Fusion ranking mode — resolved ONCE at the handler seam (env >
+   * config > "rrf"), exactly how handleSearch threads it. Omitted
+   * (direct tests) → "rrf".
+   */
+  readonly fusionMode?: FusionMode;
+  /**
+   * Wall clock for `fetchedAt` (ISO-8601 UTC-Z, D5). Injected for
+   * byte-identical determinism pins; defaults to `() => new Date()`.
+   */
+  nowWall?: () => Date;
+  /**
+   * Read-pool concurrency bound (default 4). Overridable in deps so
+   * tests can pin the pool shape without timers.
+   */
+  readConcurrency?: number;
+  /** Injected context reader (production: readContextSource-shaped). */
+  loadContextText(filePath: string): Promise<string>;
+  /**
+   * Reader supplier seam: resolve the ReaderCapability a provider
+   * descriptor serves, or `undefined` when it has none. Production
+   * mirrors handleRead's shape — `descriptor.create({ env }).reader` —
+   * so selection follows the same first-configured-capable order read
+   * uses (the registry order the descriptor list already carries).
+   */
+  readerCapabilityFor(descriptor: ProviderDescriptor): ReaderCapability | undefined;
+}
+
+const DEFAULT_SOURCES = 5;
+const DEFAULT_READ_CONCURRENCY = 4;
+
+// ---------------------------------------------------------------------------
+// Option validation (trust boundary)
+// ---------------------------------------------------------------------------
+
+function validateOptions(options: InvestigateOptions): number {
+  if (typeof options.sources === "number") {
+    if (!Number.isInteger(options.sources) || options.sources <= 0) {
+      throw new ValidationError(
+        `--sources must be a positive integer (got ${options.sources}).`,
+      );
+    }
+    return options.sources;
+  }
+  return DEFAULT_SOURCES;
+}
+
+// ---------------------------------------------------------------------------
+// Read pool (bounded concurrency, one client per read, terminal-failure
+// isolation — D3 #5)
+// ---------------------------------------------------------------------------
+
+interface ReadOutcome {
+  readonly url: string;
+  readonly result?: ReaderFetchResult;
+  readonly reason?: string;
+  readonly warm: boolean;
+}
+
+/**
+ * Serve one read through the shared cache. One client per read
+ * (D3 #5): `deps.readerCapabilityFor` resolves the supplier's
+ * capability per call (`descriptor.create` per read — `create` is
+ * side-effect-free metadata capture; the operation's invoke owns and
+ * closes its transport inside executeReaderOperation, so no transport
+ * outlives the call). cacheHits instrumentation: a warm serve is a
+ * read-only cache `get()` on the operation's exact partition key that
+ * decodes non-null through the operation's own decoder. Boundary: the
+ * executor's legacy read-through candidates are miss-then-set serves
+ * and count as misses (honest warm-serve count only).
+ */
+async function serveRead(
+  url: string,
+  descriptor: ProviderDescriptor,
+  deps: InvestigateExecutionDependencies,
+  noCache: boolean,
+  cacheHits: { count: number },
+): Promise<ReadOutcome> {
+  const capability = deps.readerCapabilityFor(descriptor);
+  if (capability === undefined) {
+    return { url, reason: "no-reader-supplier", warm: false };
+  }
+  const wasWarm = await readerCacheWasWarm(capability, url, deps, noCache);
+  try {
+    const result = await executeReaderOperation(
+      capability.fetch,
+      { url },
+      { noCache, ...(deps.retryPolicy !== undefined ? { retryPolicy: deps.retryPolicy } : {}) },
+      {
+        cache: deps.cache,
+        sleep: deps.sleep,
+        random: deps.random,
+        ...(deps.consume !== undefined ? { consume: deps.consume } : {}),
+        ...(deps.now !== undefined ? { now: deps.now } : {}),
+      },
+    );
+    if (wasWarm) cacheHits.count += 1;
+    return { url, result, warm: wasWarm };
+  } catch (error) {
+    if (error instanceof UnsupportedCapabilityError) {
+      // The selected reader supplier cannot serve this source at all.
+      return { url, reason: "no-reader-supplier", warm: false };
+    }
+    // Terminal per-source failure: reason CODE only, redacted — no
+    // error prose crossing the interface (house rule, D5).
+    const code =
+      typeof error === "object" && error !== null && "code" in error
+        ? String((error as { code: unknown }).code)
+        : "UNKNOWN_ERROR";
+    return { url, reason: `reader-failed:${code}`, warm: false };
+  }
+}
+
+/**
+ * Read-only warm probe on the reader partition key the executor will
+ * use — the operation's own cacheIdentity + decoder, never a
+ * fabricated key. Never seeds an entry; shared execution remains the
+ * sole read/write authority.
+ */
+async function readerCacheWasWarm(
+  capability: ReaderCapability,
+  url: string,
+  deps: InvestigateExecutionDependencies,
+  noCache: boolean,
+): Promise<boolean> {
+  if (noCache) return false;
+  try {
+    const identity = capability.fetch.cacheIdentity({ url });
+    const key = buildProviderCacheKey({
+      provider: identity.provider,
+      capability: `${identity.capability}-${identity.operation}`,
+      credentialFingerprint: identity.credentialFingerprint,
+      request: identity.request,
+    });
+    const raw = await deps.cache.get(key);
+    if (raw === null) return false;
+    return capability.fetch.decodeCached(raw) !== null;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Bounded-concurrency map over the selected sources (D3 #5). A read
+ * slot is reused as soon as its previous read settles (start-aligned
+ * workers over a shared index — no per-chunk scheduling, no timers).
+ * `supplier` is the run's reader supplier (handleRead-parity
+ * selection, see the module header).
+ */
+async function readPool(
+  rows: readonly FormattedResult[],
+  supplier: ProviderDescriptor | undefined,
+  deps: InvestigateExecutionDependencies,
+  noCache: boolean,
+  cacheHits: { count: number },
+): Promise<ReadOutcome[]> {
+  const limit = Math.max(1, deps.readConcurrency ?? DEFAULT_READ_CONCURRENCY);
+  const outcomes: ReadOutcome[] = [];
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const index = next;
+      next += 1;
+      const row = rows[index];
+      if (row === undefined) return;
+      if (supplier === undefined) {
+        outcomes.push({ url: row.url, reason: "no-reader-supplier", warm: false });
+        continue;
+      }
+      outcomes.push(await serveRead(row.url, supplier, deps, noCache, cacheHits));
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, rows.length) }, worker));
+  return outcomes;
+}
+
+/**
+ * The run's reader supplier: the FIRST descriptor in registry order
+ * whose injected `readerCapabilityFor` resolves a capability — the
+ * same first-configured-capable order handleRead's provider selection
+ * walks (resolveEffectiveProvider over the same descriptor list).
+ */
+function selectReaderSupplier(
+  deps: InvestigateExecutionDependencies,
+): ProviderDescriptor | undefined {
+  for (const descriptor of deps.descriptors) {
+    if (deps.readerCapabilityFor(descriptor) !== undefined) return descriptor;
+  }
+  return undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Escaped-pipe join (the handleSearch context-mode precedent verbatim:
+// trim trailing backslashes, then escape pipes, join on "|")
+// ---------------------------------------------------------------------------
+
+function joinSubQueries(subQueries: readonly string[]): string {
+  return subQueries
+    .map((s) => s.replace(/\\+$/, "").replace(/\|/g, "\\|"))
+    .join("|");
+}
+
+// ---------------------------------------------------------------------------
+// Handler
+// ---------------------------------------------------------------------------
+
+export async function investigate(
+  question: string,
+  options: InvestigateOptions = {},
+  deps: InvestigateExecutionDependencies,
+  context?: CommandContext,
+): Promise<CommandResult> {
+  if (typeof question !== "string" || question.trim().length === 0) {
+    throw new ValidationError("investigate requires a question.");
+  }
+  const sourcesCap = validateOptions(options);
+  const noCache = options.noCache === true;
+
+  // 1. Plan (T2) — injected loadContextText; no filesystem here.
+  const plan = await planSubQueries(
+    {
+      query: question,
+      ...(options.contextFile !== undefined ? { contextFile: options.contextFile } : {}),
+    },
+    { loadContextText: deps.loadContextText },
+  );
+  const subQueries = [...plan.subQueries];
+  // The planner's explicit-tier notice ("--context ignored") only
+  // means something when a context file was actually in play; without
+  // --context it would be a misleading stderr line on every pipe
+  // question.
+  if (plan.notice !== undefined && options.contextFile !== undefined) {
+    context?.notice(plan.notice);
+  }
+  const N = subQueries.length;
+
+  // 2. resolveFanoutPlan over the resolved provider pin (AC-1 tiers,
+  //    the same inputs handleSearch passes).
+  const fanoutPlan = resolveFanoutPlan({
+    explicitProviderRaw: options.provider,
+    env: deps.env,
+    configFanout: deps.configFanout,
+    ...(deps.routing !== undefined ? { routing: deps.routing } : {}),
+    descriptors: deps.descriptors,
+  });
+  const M = fanoutPlan.arms.length;
+
+  // Cost notice (AC-3): the arithmetic stated literally, N/M/K spelled
+  // out, BEFORE any billable work runs.
+  context?.notice(
+    `investigate: ${N} sub-queries × ${M} arms = ${N * M} billable searches + up to ${sourcesCap} reads`,
+  );
+  if (fanoutPlan.suppress) context?.notice(fanoutPlan.suppress);
+
+  const searchDepsBase = {
+    cache: deps.cache,
+    sleep: deps.sleep,
+    random: deps.random,
+    ...(deps.retryPolicy !== undefined ? { retryPolicy: deps.retryPolicy } : {}),
+    ...(deps.consume !== undefined ? { consume: deps.consume } : {}),
+    ...(deps.now !== undefined ? { now: deps.now } : {}),
+  };
+
+  // Search-stage warm-serve count. MUST run BEFORE the grid executes:
+  // the grid seeds exactly these keys on a cold run, so a post-grid
+  // probe would count its own writes (the recorded trap this ordering
+  // exists to avoid). Read and search partitions are disjoint
+  // (`reader-reader-fetch` vs `search`), so later reads cannot pollute
+  // these probes either.
+  const searchHits = await countSearchCacheHits(fanoutPlan, subQueries, deps, noCache);
+
+  // 3. Grid execution through the exported seams only. Both paths emit
+  //    FormattedResult[] (rank-merged rows); the fan-out path carries
+  //    mergedFrom provenance, the single path carries rows verbatim.
+  let merged: FormattedResult[];
+  let armsUsed: number;
+  let singleArmProviderId: string | undefined;
+  if (fanoutPlan.mode === "fanout") {
+    const fanoutResult = await executeFanoutPlan(
+      fanoutPlan,
+      {
+        descriptors: deps.descriptors,
+        env: deps.env,
+        query: joinSubQueries(subQueries),
+        searchOptions: {
+          // The (arm × sub-query) merge grid: merge=true makes every
+          // arm run every sub-query — the search seam's own grammar.
+          merge: N > 1,
+          ...(noCache ? { noCache: true } : {}),
+        },
+        fusionMode: deps.fusionMode ?? "rrf",
+        dependencies: searchDepsBase,
+      },
+      context,
+    );
+    if (fanoutResult.kind !== "data" || !Array.isArray(fanoutResult.data)) {
+      throw new Error("investigate: fan-out returned a non-grid result");
+    }
+    merged = fanoutResult.data as FormattedResult[];
+    armsUsed = M;
+  } else {
+    singleArmProviderId = fanoutPlan.arms[0];
+    // Single mode: the exported search() with the escaped-pipe join —
+    // the exact context-mode join precedent (index.ts handleSearch).
+    // One arm executes every sub-query (search --merge semantics);
+    // count stays undefined (search default 10 per AC-3, applied after
+    // normalization by shared execution).
+    const singleResult = await search(
+      joinSubQueries(subQueries),
+      { merge: N > 1, ...(noCache ? { noCache: true } : {}) },
+      {
+        capability: singleArmCapability(fanoutPlan, deps),
+        ...searchDepsBase,
+        fusionMode: deps.fusionMode ?? "rrf",
+      },
+      context,
+    );
+    if (singleResult.kind !== "data" || !Array.isArray(singleResult.data)) {
+      throw new Error("investigate: single-arm search returned a non-grid result");
+    }
+    merged = singleResult.data as FormattedResult[];
+    armsUsed = 1;
+  }
+
+  // 4. Top --sources distinct sources (post-cluster representatives —
+  //    mergeResults already collapsed near-dups; a pair IS one row).
+  const sourcesConsidered = merged.length;
+  const selected = merged.slice(0, sourcesCap);
+
+  // 5. Reads — bounded-concurrency pool over the reader capability
+  //    seam; per-source terminal failures continue the pool.
+  const supplier = selectReaderSupplier(deps);
+  const readerHits = { count: 0 };
+  const outcomes = await readPool(selected, supplier, deps, noCache, readerHits);
+  const byUrl = new Map(outcomes.map((o) => [o.url, o]));
+
+  // 6 + 7. Extraction (T3) + pack assembly (T1 types). Terms = union of
+  // the question + sub-queries key-term derivations (deriveTemplateTopic
+  // per member — the T2-exposed term shape), case-folded and
+  // stopword-filtered by normalizeTerms inside extractPassages.
+  const terms = [
+    ...new Set(
+      [question, ...subQueries].flatMap((q) => deriveTemplateTopic(q).split(" ")),
+    ),
+  ].filter((t) => t.length > 0);
+  const nowWall = deps.nowWall ?? (() => new Date());
+  const sources: EvidenceSource[] = [];
+  const unread: { url: string; reason: string }[] = [];
+  for (const row of selected) {
+    const outcome = byUrl.get(row.url);
+    if (outcome === undefined || outcome.result === undefined) {
+      unread.push({ url: row.url, reason: outcome?.reason ?? "no-reader-supplier" });
+      continue;
+    }
+    const result = outcome.result;
+    // Provider provenance: the merged row's surfaced provider — first
+    // mergedFrom (fan-out) or the resolved arm (single mode). NOT the
+    // reader supplier: the row says who FOUND it, not who read it.
+    const surfacedProvider = row.mergedFrom?.[0] ?? singleArmProviderId ?? supplier?.id ?? "";
+    sources.push({
+      url: row.url,
+      finalUrl: result.finalUrl,
+      title: result.title,
+      fetchedAt: nowWall().toISOString(),
+      provider: surfacedProvider,
+      contentFormat: result.contentFormat,
+      contentSha256: createHash("sha256").update(result.content, "utf8").digest("hex"),
+      passages: extractPassages({ content: result.content, terms }),
+    });
+  }
+
+  const pack: EvidencePack = {
+    schemaVersion: 1,
+    question,
+    subQueries,
+    sources,
+    coverage: {
+      subQueries: N,
+      armsUsed,
+      sourcesConsidered,
+      sourcesRead: sources.length,
+      cacheHits: searchHits + readerHits.count,
+      unread,
+    },
+  };
+  return { kind: "data", data: pack };
+}
+
+/**
+ * Resolve the single-arm search capability. The resolver's single mode
+ * always names the arm (`arms[0]`); a descriptor MUST exist for it —
+ * an unknown id means the pin never matched the registry, which is
+ * the capability seam's typed error to raise.
+ */
+function singleArmCapability(
+  fanoutPlan: FanoutPlan,
+  deps: InvestigateExecutionDependencies,
+): Parameters<typeof search>[2]["capability"] {
+  const armId = fanoutPlan.arms[0];
+  const descriptor = deps.descriptors.find((d) => d.id === armId);
+  if (descriptor === undefined) {
+    throw new UnsupportedCapabilityError(String(armId ?? "(none)"), "search");
+  }
+  const adapter = descriptor.create({ env: deps.env });
+  const capability = adapter.search;
+  if (capability === undefined) {
+    throw new UnsupportedCapabilityError(descriptor.id, "search");
+  }
+  return capability;
+}
+
+/**
+ * Search-stage warm-serve count. Mirrors the read-stage boundary: a
+ * warm serve is a cache get() on the arm's exact partition key —
+ * resolved through the injected descriptors' own cacheIdentity, never
+ * a fabricated key — consulted once per (arm × sub-query) BEFORE the
+ * grid runs (see the ordering note at the call site). executeSearch
+ * treats any non-null raw value on this key as a hit (no decoder), so
+ * the probe matches: non-null = warm.
+ */
+async function countSearchCacheHits(
+  fanoutPlan: FanoutPlan,
+  subQueries: readonly string[],
+  deps: InvestigateExecutionDependencies,
+  noCache: boolean,
+): Promise<number> {
+  if (noCache) return 0;
+  const arms = fanoutPlan.mode === "fanout" ? fanoutPlan.arms : fanoutPlan.arms.slice(0, 1);
+  let hits = 0;
+  for (const armId of arms) {
+    const descriptor = deps.descriptors.find((d) => d.id === armId);
+    if (descriptor === undefined) continue;
+    const capability = descriptor.create({ env: deps.env }).search;
+    if (capability === undefined) continue;
+    for (const query of subQueries) {
+      try {
+        const identity = capability.cacheIdentity({ query });
+        const key = buildProviderCacheKey({
+          provider: identity.provider,
+          capability: identity.capability,
+          credentialFingerprint: identity.credentialFingerprint,
+          request: identity.request,
+        });
+        if ((await deps.cache.get(key)) !== null) hits += 1;
+      } catch {
+        // A capability whose cacheIdentity cannot be probed counts
+        // nothing — never guess a hit.
+      }
+    }
+  }
+  return hits;
+}

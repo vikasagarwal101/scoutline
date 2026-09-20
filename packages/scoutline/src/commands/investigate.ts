@@ -62,6 +62,13 @@ import { executeReaderOperation } from "../lib/execution.js";
 import type { ConsumptionSink } from "../lib/consumption.js";
 import type { ProviderDescriptor, ProviderId } from "../providers/types.js";
 import { UnsupportedCapabilityError, ValidationError } from "../lib/errors.js";
+import { redactSecrets } from "../lib/redact.js";
+import {
+  applyBudget,
+  type BudgetCompaction,
+  type LadderRule,
+} from "../lib/output-budget.js";
+import { persistCompaction } from "../lib/output-budget-persistence.js";
 import {
   executeFanoutPlan,
   resolveFanoutPlan,
@@ -106,7 +113,72 @@ export interface InvestigateOptions {
    * suppression; recorded here so the option never fails the parse.
    */
   readonly noJournal?: boolean;
+  /**
+   * `--max-chars` (T5, D7): whole-envelope Output Budget over the
+   * EvidencePack via INVESTIGATE_LADDER. Strict positive integer
+   * (parseBriefMaxChars class); 0/negative/fractional values are
+   * VALIDATION_ERROR at the trust boundary.
+   */
+  readonly maxChars?: number;
 }
+
+// ---------------------------------------------------------------------------
+// Output Budget ladder (T5, DESIGN D7, PRD AC-8)
+// ---------------------------------------------------------------------------
+
+/**
+ * One passage-trim step: truncate every quote FROM THE END to half
+ * its length and ADJUST charRange to the truncated slice so the
+ * round-trip pin `content.slice(...charRange) === quote` survives
+ * every pass. NO omission marker is appended: the pin demands quote
+ * be an exact slice of the paired content, so any added `…` would
+ * break it (the read ladder's marker idiom does not apply here).
+ * A quote too short to halve stays unchanged (rule exhausts; the
+ * source-drop rule takes over) — and empty quotes never exist, so a
+ * budgeted pack still decodes. url/title/fetchedAt/provider/hashes
+ * are never touched. `ponytail:` marker-less trim is the pin-driven
+ * minimum; a marker would need pinless budgeted quotes (schema
+ * change) — revisit only if budgeted-quote readability ever matters.
+ */
+const trimPassagesRule: LadderRule = {
+  name: "trim-passages",
+  apply: (envelope) => {
+    const pack = envelope as EvidencePack;
+    return {
+      ...pack,
+      sources: pack.sources.map((source) => ({
+        ...source,
+        passages: source.passages.map((passage) => {
+          const half = Math.floor(passage.quote.length / 2);
+          if (half <= 0) return passage;
+          return {
+            quote: passage.quote.slice(0, half),
+            // charRange adjusts to the truncated slice — the pin holds.
+            charRange: [passage.charRange[0], passage.charRange[0] + half] as [number, number],
+          };
+        }),
+      })),
+    };
+  },
+};
+
+/** One late-source drop step: the LAST source drops whole (search's drop-lowest-rank analog). */
+const dropLastSourceRule: LadderRule = {
+  name: "drop-late-source",
+  apply: (envelope) => {
+    const pack = envelope as EvidencePack;
+    if (pack.sources.length <= 0) return pack;
+    return { ...pack, sources: pack.sources.slice(0, -1) };
+  },
+};
+
+/**
+ * INVESTIGATE_LADDER (D7 budget order): passages trim FIRST (quote
+ * truncate, charRange adjusts — the round-trip pin survives), then
+ * LATE sources drop whole. question/subQueries/coverage are never
+ * cut — expressed by omission (no rule touches them).
+ */
+export const INVESTIGATE_LADDER = [trimPassagesRule, dropLastSourceRule] as const;
 
 export interface InvestigateExecutionDependencies {
   /**
@@ -157,6 +229,12 @@ export interface InvestigateExecutionDependencies {
    * uses (the registry order the descriptor list already carries).
    */
   readerCapabilityFor(descriptor: ProviderDescriptor): ReaderCapability | undefined;
+  /**
+   * T5: resolved secrets for the compaction artifact's redaction (the
+   * save seam's contract — the caller redacts before persisting).
+   * Omitted (direct tests, no secrets) → no-op redaction.
+   */
+  readonly secrets?: string[];
 }
 
 const DEFAULT_SOURCES = 5;
@@ -175,7 +253,66 @@ function validateOptions(options: InvestigateOptions): number {
     }
     return options.sources;
   }
+  // T5 (D7): strict positive-integer --max-chars (parseBriefMaxChars
+  // class) — validated at the boundary so a bad value is
+  // VALIDATION_ERROR regardless of provider state.
+  if (options.maxChars !== undefined) {
+    const value = options.maxChars;
+    if (!Number.isFinite(value) || !Number.isInteger(value) || value < 1) {
+      throw new ValidationError("--max-chars must be a positive integer");
+    }
+  }
   return DEFAULT_SOURCES;
+}
+
+/**
+ * Output Budget seam (T5, D7): walk INVESTIGATE_LADDER over the pack;
+ * on a fired budget persist the FULL untrimmed pack through
+ * persistCompaction (mirrored save shape — post-redaction,
+ * pre-compaction `result`, MANDATORY log entry with
+ * presentation-flag-free args) and stamp `compaction {budget, ref}`
+ * into the returned payload. No flag → identity (the zero-diff
+ * invariant). Returns a NEW CommandResult; never mutates the input.
+ */
+async function applyInvestigateOutputBudget(
+  result: CommandResult<EvidencePack>,
+  maxChars: number | undefined,
+  options: {
+    readonly context: { notice(message: string): void };
+    readonly deps: InvestigateExecutionDependencies;
+    readonly args: Readonly<Record<string, unknown>>;
+    readonly providerRouting: { mode: "single" | "fanout"; effective?: string; arms?: readonly string[] };
+  },
+): Promise<CommandResult> {
+  if (maxChars === undefined || result.kind !== "data") return result;
+  const outcome = applyBudget(result.data, maxChars, INVESTIGATE_LADDER);
+  if (outcome.compaction === undefined) return result;
+  const redactedEnvelope = redactSecrets(result.data, options.deps.secrets);
+  const compaction: BudgetCompaction = await persistCompaction(
+    redactedEnvelope,
+    outcome.compaction,
+    {
+      command: "investigate",
+      args: options.args,
+      provider: options.providerRouting as Parameters<typeof persistCompaction>[2]["provider"],
+      outputFormat: "data",
+    },
+    {
+      env: options.deps.env,
+      now: options.deps.now ?? Date.now,
+      onNotice: options.context.notice,
+    },
+  );
+  options.context.notice(
+    `output budget: ${maxChars} chars — full untrimmed envelope saved (${compaction.ref})`,
+  );
+  return {
+    kind: "data",
+    data: {
+      ...(outcome.projection as EvidencePack & Record<string, unknown>),
+      compaction,
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -516,7 +653,31 @@ export async function investigate(
       unread,
     },
   };
-  return { kind: "data", data: pack };
+  // 8. Output Budget (T5, D7): the pack is fully assembled first — the
+  // compaction artifact is the FULL untrimmed pack, so the budget
+  // rides AFTER assembly by construction.
+  const investigateArgs: Readonly<Record<string, unknown>> = {
+    ...(options.provider !== undefined ? { provider: options.provider } : {}),
+    ...(options.sources !== undefined ? { sources: options.sources } : {}),
+    ...(noCache ? { "no-cache": true } : {}),
+    ...(options.isolated ? { isolated: true } : {}),
+  };
+  return applyInvestigateOutputBudget(
+    { kind: "data", data: pack },
+    options.maxChars,
+    {
+      context: context ?? { stdinIsTTY: false, readStdin: async () => "", notice: () => {} },
+      deps,
+      args: investigateArgs,
+      providerRouting: {
+        mode: fanoutPlan.mode,
+        ...(fanoutPlan.mode === "fanout"
+          ? { arms: fanoutPlan.arms }
+          : { effective: singleArmProviderId ?? "" }),
+        ...(options.provider !== undefined ? { requested: options.provider } : {}),
+      } as { mode: "single" | "fanout"; effective?: string; arms?: readonly string[] },
+    },
+  );
 }
 
 /**

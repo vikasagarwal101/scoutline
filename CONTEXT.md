@@ -64,6 +64,18 @@ highest-Fusion-Score member; `mergedFrom` and `occurrences` accumulate
 the whole cluster. Deterministic thresholds, fixed by contract.
 _Avoid_: dedupe group, similar results (both blur the identity-versus-similarity layering)
 
+**Investigation**:
+A Normal command (`scoutline investigate <question>`) that composes Scoutline's own capabilities — fan-out search, Fusion, Reader, deterministic extraction — into a local, transparent, cache-resumable pipeline returning an EvidencePack. No provider-side job runs; distinct from Research, which delegates the whole investigation to a Provider as an opaque billed job.
+_Avoid_: deep research, research pipeline (collide with the provider-side Research Capability)
+
+**Agent-synthesis**:
+The default output mode of an Investigation: the EvidencePack is the deliverable and the calling agent writes the prose. `--synthesize` is the explicit escape hatch and is additive — a brief attaches to the pack, never replaces it. The pipeline is deterministic and model-free everywhere else.
+_Avoid_: auto-summarize, brief generation
+
+**EvidencePack**:
+The self-contained deliverable of an Investigation: question, sub-queries, sources (each with url, finalUrl, title, fetchedAt, provider, `contentSha256` over normalized content, and extracted passages), and a coverage block. Hashes cover provider-normalized content, never raw bytes — byte-exact hashing belongs to Evidentiary Fetch.
+_Avoid_: report, brief (a brief is synthesized prose; the pack is evidence)
+
 **Direct command**:
 A command that communicates directly with a target origin or public index
 without an AI provider, provider fallback, or LLM/markdown synthesis

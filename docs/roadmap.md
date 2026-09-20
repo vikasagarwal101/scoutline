@@ -64,10 +64,11 @@ features next; features that reverse a written decision (ADR) last.
 
 ### Studied seeds — visionary
 
-- **`investigate` pipeline** (`docs/plans/v2/06-investigate-pipeline.md`) —
-  local multi-step research: plan → fan-out search → read top hits →
-  deterministic evidence extraction → `EvidencePack` envelope;
-  agent-synthesis by default, `--synthesize` (Z.AI chat) as the escape hatch.
+- **`investigate` pipeline** (`docs/plans/v2/06-investigate-pipeline.md`)
+  — **grilled 2026-09-20 (Q1–Q7); graduated to a plan set** at
+  `docs/plans/investigate-pipeline/` (PRD 12 ACs / DESIGN D1–D8 /
+  TASKS T1–T8; ADR-0013 accepted). Pickup-ready. `verify` mode
+  deferred to a follow-up.
 - **Selection strategies** (`docs/plans/v2/11-selection-strategies.md`) —
   `--strategy cheapest|freshest|diverse` extending the quota-aware ranking.
 

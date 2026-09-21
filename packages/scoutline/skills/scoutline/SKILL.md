@@ -363,6 +363,42 @@ per-op `output` writes captured stdout (temp + rename); `vision batch` adds
 per-input files plus `out/summary.json` (`--out` required for more than one
 input).
 
+## Investigation (`investigate`, ADR-0013)
+
+A local, transparent, cache-resumable pipeline: plans sub-queries, fans
+out search, merges by Fusion, reads the top sources, and extracts
+deterministic passages into an EvidencePack. No provider-side job runs —
+distinct from Research, an opaque billed provider job. Agent-synthesis is
+the default: the pack is data, not prose (text output modes fall back to
+JSON), and the calling agent writes the brief. `--synthesize` is the
+additive-only escape hatch: an optional `brief` attaches to the pack
+through Z.AI chat (Z.AI-only; it ignores `--provider`), never replaces
+it — absent by default.
+
+```bash
+scoutline investigate "rust async runtime benchmarks"
+scoutline investigate "rust async | rust tokio"    # explicit pipes split sub-queries
+scoutline investigate "topic" --provider tavily,exa --sources 8
+scoutline investigate "topic" --synthesize         # attach a Z.AI brief (additive)
+```
+
+Sub-query planning precedence: explicit pipes (the `--merge` grammar,
+escape a literal pipe with `\|`) > `--context <path>` (local notes file,
+never leaves the machine) > deterministic templates of the question
+(original, key terms, overview/evidence/criticism; deduped, capped 5).
+Cost is pinned before any billable work: N sub-queries × M arms
+billable searches + up to K reads (default `--sources` 5).
+
+Sources surfaced but unread land in `coverage.unread` with a reason code
+(`no-reader-supplier`, `reader-failed:<code>`) — never silently dropped.
+`--max-chars` is the output budget: passages trim first, late sources
+drop; the full untrimmed pack is saved and recoverable via
+`scoutline history show <ref>` (the `compaction {budget, ref}` stamp
+names it). `--verify` does not exist: claim corroboration is deferred
+per ADR-0013. `--depth`, `--arms`, and `--budget-tokens` are rejected
+with `VALIDATION_ERROR` by design (no depth axis; the arm set IS the
+provider pin; `--max-chars` is the budget).
+
 ## Commands
 
 | Command | Purpose | Help |
@@ -378,6 +414,7 @@ input).
 | crawl | Multi-page website traversal (Tavily, Firecrawl, or Spider.cloud) | `--help` for depth/breadth/filters |
 | map | URL-set discovery without fetching pages (Tavily, Firecrawl, or Spider.cloud) | `--help` for depth/breadth/filters |
 | research | Deep research with citations (seven providers; 4-250 credits) | `--help` for model/citation/timeout and local context |
+| investigate | Local investigation pipeline returning an EvidencePack (ADR-0013) | `--help` for planner tiers, controls, and cost |
 | repo | GitHub code search and reading (Z.AI) | `--help` for tree/search/read/brief |
 | quota | Provider-normalized plan usage dashboard | `--help` for `--all-providers` |
 | tools | List available MCP tools (Z.AI) | |

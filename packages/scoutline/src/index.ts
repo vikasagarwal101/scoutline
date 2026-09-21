@@ -92,6 +92,13 @@ import { handleArchive, parseArchiveArgs, ARCHIVE_HELP } from "./commands/archiv
 import { handleWatch } from "./commands/watch.js";
 import { handleScience } from "./commands/science.js";
 import {
+  investigate,
+  INVESTIGATE_HELP,
+  type SynthesisPrompt,
+  type SynthesizeBrief,
+} from "./commands/investigate.js";
+import { ZaiApiClient } from "./lib/api-client.js";
+import {
   buildProviderCacheKey,
   cacheStats,
   clearAllCaches,
@@ -141,6 +148,7 @@ import { buildJournalCacheKeyMap, buildJournalRepeatMarker } from "./lib/journal
 import { applyBudget, type LadderRule } from "./lib/output-budget.js";
 import { persistCompaction } from "./lib/output-budget-persistence.js";
 import {
+  ApiError,
   ConfigurationError,
   FileError,
   ValidationError,
@@ -287,6 +295,10 @@ Commands:
            DOI, PMID, arXiv ids; keyless scholarly suppliers:
            openalex, arxiv, crossref, pubmed, europepmc)
   code     Execute TypeScript tool chains (Code Mode, Z.AI)
+  investigate Local investigation pipeline: plan sub-queries, fan out
+           search, read top sources, extract passages into an
+           EvidencePack (search+reader supplier union; the pack is data,
+           text modes fall back to JSON)
   init     Interactive onboarding wizard (writes ~/.scoutline/config.json)
   config   Manage ~/.scoutline/config.json keys (get / set / unset,
            credential-free)
@@ -352,6 +364,7 @@ Help:
   scoutline archive --help
   scoutline watch --help
   scoutline science --help
+  scoutline investigate --help
   scoutline init --help
 `.trim();
 
@@ -660,6 +673,22 @@ export const STRICT_FLAG_ALLOWLIST: Readonly<Record<string, ReadonlySet<string>>
     "max-chars",
     "no-journal",
   ]),
+  // investigate-pipeline T6: the documented control surface only
+  // (PRD AC-1). The rejected trio (depth/arms/budget-tokens) and
+  // --context-stdin are deliberately ABSENT — under strict flags they
+  // reject here, and the lenient default rejects them inside
+  // handleInvestigate (the rejection IS the feature).
+  investigate: new Set([
+    "help",
+    "h",
+    "provider",
+    "context",
+    "sources",
+    "max-chars",
+    "no-cache",
+    "no-journal",
+    "synthesize",
+  ]),
 };
 
 /**
@@ -774,6 +803,7 @@ const SAVE_CAPABLE_COMMANDS: ReadonlySet<string> = new Set([
   "research",
   "repo",
   "vision",
+  "investigate",
 ]);
 
 /**
@@ -809,6 +839,7 @@ export const DISPATCHED_COMMANDS: ReadonlySet<string> = new Set([
   "archive",
   "watch",
   "science",
+  "investigate",
 ]);
 
 /**
@@ -855,6 +886,11 @@ export const ACCEPT_NO_JOURNAL_COMMANDS: ReadonlySet<string> = new Set([
   // Science verticals (T7): the science noun journals (skeleton entries,
   // PRD AC-5c), so its --no-journal per-call escape must exist too.
   "science",
+  // investigate-pipeline T6 (PRD AC-10): the run journals its
+  // UNDERLYING search/read ops exactly as running them standalone
+  // would (umbrella capability "search" — see the journalWiring map),
+  // so its --no-journal per-call escape exists on the same seam.
+  "investigate",
 ]);
 
 /**
@@ -1228,6 +1264,12 @@ function bestEffortOutputMode(
  */
 export interface HandlerDependencies {
   readonly invocation: CommandInvocationAdapter;
+  /**
+   * T7: synthesis transport for `investigate --synthesize`. Production
+   * wires it from `MainDependencies.synthesize`; undefined → the
+   * handler seam builds the Z.AI chat-completions default.
+   */
+  readonly synthesize?: SynthesizeBrief;
   readonly env: NodeJS.ProcessEnv;
   readonly secrets: string[];
   readonly now?: () => number;
@@ -4808,6 +4850,340 @@ async function handleHistoryExport(
   );
 }
 
+
+// ---------------------------------------------------------------------------
+// investigate-pipeline T6 (ADR-0013): the CLI wiring for the local
+// investigation pipeline. Mirrors handleSearch's ORDER — valueless-flag
+// guards BEFORE the help-gate, count-class validation BEFORE provider
+// resolution — and hands the parsed controls to commands/investigate.ts
+// (T4/T5), which owns the plan → fan-out → merge → read → pack
+// orchestration. The command is NOT routed through executeWithFallback:
+// it owns its provider grid through resolveFanoutPlan tiers (D3).
+// ---------------------------------------------------------------------------
+
+/**
+ * Strict positive-integer parse for `--sources` (the parseAndValidateCount
+ * class — not the lax parseInt idiom). Parse-level, before the help-gate
+ * is bypassed and before provider resolution, so a bad value is
+ * VALIDATION_ERROR regardless of credentials or provider state.
+ */
+export function parseAndValidateSources(raw: unknown): number | undefined {
+  if (raw === undefined || raw === "") return undefined;
+  if (raw === true) {
+    throw new ValidationError(
+      "--sources requires a value.",
+      "Use a positive integer (e.g. --sources 5).",
+    );
+  }
+  const str = typeof raw === "string" ? raw : String(raw);
+  if (!/^\d+$/.test(str)) {
+    throw new ValidationError(
+      `Invalid --sources value "${str}": must be a positive integer`,
+      "Use a positive integer (e.g. --sources 5).",
+    );
+  }
+  const parsed = Number(str);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
+    throw new ValidationError(
+      `Invalid --sources value "${str}": must be a positive safe integer`,
+      "Use a positive integer (e.g. --sources 5).",
+    );
+  }
+  return parsed;
+}
+
+async function handleInvestigate(
+  args: string[],
+  outputMode: OutputMode,
+  deps: HandlerDependencies,
+): Promise<number> {
+  const { flags, positional } = parseArgs(args);
+
+  // Valueless --context guard BEFORE the help-gate (the handleSearch
+  // D1 placement pin): parseArgs records `true` for a valueless flag,
+  // so without this check `investigate --context` would short-circuit
+  // to HELP + exit 0 with the malformed flag silently swallowed.
+  if (flags.context === true) {
+    throw new ValidationError(
+      "--context requires a value.",
+      "Pass a file path: --context <path>.",
+    );
+  }
+
+  // PRD AC-1 pins the accepted controls exactly; --context-stdin is NOT
+  // investigate's (search-only spelling — the question's pipes and
+  // --context cover the sub-query sources). Rejected explicitly, never
+  // accepted-and-dropped; before the help-gate like every other
+  // valueless/malformed-flag guard here.
+  if (flags["context-stdin"] !== undefined) {
+    throw new ValidationError(
+      "investigate has no --context-stdin flag.",
+      "Pipe sub-queries with | in the question, or pass --context <path> (see `scoutline investigate --help`).",
+    );
+  }
+
+  // PRD AC-1 / ADR-0013 rejected extensions: --depth, --arms, and
+  // --budget-tokens DO NOT EXIST (the parser rejecting them IS the
+  // feature — no accept-and-drop). rejectFlagPair guards BOTH
+  // spellings (#242); before the help-gate for the same reason as
+  // --context above.
+  rejectFlagPair(
+    flags,
+    "depth",
+    () =>
+      new ValidationError(
+        "investigate has no --depth flag; planning is deterministic (pipes > --context > template).",
+        "Structure the question with | sub-queries or --context <path> instead.",
+      ),
+  );
+  rejectFlagPair(
+    flags,
+    "arms",
+    () =>
+      new ValidationError(
+        "investigate has no --arms flag; the arm set IS the provider pin.",
+        "Use --provider <tavily,exa|all> to fan out, or a single --provider id for one arm.",
+      ),
+  );
+  rejectFlagPair(
+    flags,
+    "budget-tokens",
+    () =>
+      new ValidationError(
+        "investigate has no --budget-tokens flag; --max-chars is the budget.",
+        "Use --max-chars <n> (characters, not tokens).",
+      ),
+  );
+
+  // T7 (PRD AC-7): --synthesize is VALUELESS. parseArgs assigns the
+  // next non-dash token as a flag value, so `--synthesize foo` would
+  // swallow the value; the =-form parses as a garbage key and is
+  // silently dropped (#172 review F6). Both reject here, before the
+  // help-gate, like every other malformed-flag guard in this handler.
+  for (const token of args) {
+    if (typeof token === "string" && token.startsWith("--synthesize=")) {
+      throw new ValidationError(
+        `Invalid flag "${token}": the --flag=value form is not supported; --synthesize takes no value.`,
+        "Pass the bare --synthesize to enable it, or omit it.",
+      );
+    }
+  }
+  if (flags.synthesize !== undefined && flags.synthesize !== true) {
+    throw new ValidationError(
+      "--synthesize is a boolean flag and takes no value",
+      "Pass the bare --synthesize to enable it, or omit it.",
+    );
+  }
+  const synthesize = flags.synthesize === true;
+
+  if (flags.help || flags.h || positional.length === 0) {
+    deps.invocation.writeStdout(INVESTIGATE_HELP);
+    return 0;
+  }
+
+  // Z.AI-only (PRD AC-7, the Code Mode precedent): the escape hatch
+  // is Z.AI chat regardless of the provider pin. The handler is the
+  // seam where the RAW pin is visible — the command cannot see it —
+  // so the notice fires here, before any billable work.
+  if (synthesize && deps.provider !== undefined && deps.provider.trim().length > 0) {
+    const pinned = deps.provider.trim().toLowerCase();
+    if (pinned !== "zai") {
+      deps.invocation.writeStderr(
+        `investigate: --synthesize is Z.AI-only; ignoring the --provider ${pinned} pin for the brief (the pack still uses it).`,
+      );
+    }
+  }
+
+  // The synthesis dep (T7): a Z.AI chat completion through the
+  // in-repo /chat/completions surface. Built HERE, at the handler
+  // seam, exactly like every other capability — the command holds no
+  // transport. `visionComplete` is the only chat-completions method
+  // on ZaiApiClient; the transport is fetch-per-call (no client to
+  // close), and nothing is constructed when the flag is absent.
+  const synthesizeDep: SynthesizeBrief | undefined = !synthesize
+    ? undefined
+    : deps.synthesize ??
+      (async (prompt: SynthesisPrompt) => {
+        const client = new ZaiApiClient(undefined, deps.env);
+        const response = await client.visionComplete([
+          {
+            role: "system",
+            content:
+              "You are given an evidence pack assembled from web sources: a question, " +
+              "its planned sub-queries, and verbatim passage quotes extracted from the " +
+              "read sources. Write a short, direct brief answering the question using " +
+              "ONLY the quoted evidence. Do not invent facts, do not add citations that " +
+              "are not in the quotes, and say plainly when the evidence is insufficient.",
+          },
+          {
+            role: "user",
+            // Deterministic serialization: fixed key order, compact JSON.
+            content: JSON.stringify({
+              question: prompt.question,
+              subQueries: [...prompt.subQueries],
+              quotes: [...prompt.quotes],
+            }),
+          },
+        ]);
+        const content = response.choices?.[0]?.message?.content;
+        if (typeof content !== "string") {
+          throw new ApiError("synthesis returned no brief text", 502);
+        }
+        return content;
+      });
+
+  // Count-class validation BEFORE provider resolution (Fixup D order):
+  // a bad --sources is VALIDATION_ERROR even with no credentials, and
+  // --max-chars rides the strict parseMaxCharsFlag (parseBriefMaxChars
+  // class). Both are re-validated inside the command's trust boundary.
+  const sources = parseAndValidateSources(flags.sources);
+  const maxChars = parseMaxCharsFlag(flags);
+
+  const question = positional.join(" ");
+
+  // Resolve the fan-out activation plan once HERE (pure — the same
+  // inputs handleSearch passes) so the journal hook can stamp per-arm
+  // serving cells BEFORE any arm runs; the command resolves its own
+  // plan identically from the same inputs (the tiers are deterministic,
+  // so the two resolutions agree by construction).
+  const fanoutPlan = resolveFanoutPlan({
+    explicitProviderRaw: deps.provider,
+    env: deps.env,
+    configFanout: deps.configFanout === true,
+    ...(deps.routing !== undefined ? { routing: deps.routing } : {}),
+    descriptors: deps.providerDescriptors,
+  });
+
+  // Save wiring (D7): the pack is a first-class saveable result. The
+  // provider routing mirrors the in-code vocabulary — fan-out records
+  // the arm list with no single effective; single records the resolved
+  // arm (the resolver's single-mode arm, not a quota-ranked pick — the
+  // command runs exactly that arm). Args carry the
+  // provider-influencing allow-list only.
+  const investigateSaveArgs = {
+    ...(deps.provider !== undefined ? { provider: deps.provider } : {}),
+    ...(sources !== undefined ? { sources } : {}),
+    ...(flags["no-cache"] === true ? { "no-cache": true } : {}),
+    ...(synthesize ? { synthesize: true } : {}),
+  };
+  const investigateProviderRouting: ProviderRouting =
+    fanoutPlan.mode === "fanout"
+      ? {
+          mode: "fanout",
+          ...(deps.provider !== undefined ? { requested: deps.provider } : {}),
+          arms: fanoutPlan.arms.map((arm) => String(arm)),
+        }
+      : {
+          mode: "single",
+          ...(deps.provider !== undefined ? { requested: deps.provider } : {}),
+          effective: String(fanoutPlan.arms[0]),
+        };
+  const save = createSaveArtifactHook(deps, {
+    command: "investigate",
+    outputMode,
+    args: investigateSaveArgs,
+    provider: investigateProviderRouting,
+  });
+
+  // Journal wiring (PRD AC-10): investigate journals its UNDERLYING
+  // search/read ops exactly as running them standalone would. The
+  // umbrella capability is "search" — JournalableCapability is closed
+  // over {search, read, research, science} and lib/journal.ts is a
+  // read-only seam for this lane; a literal "investigate" entry fails
+  // asJournalEntry validation and would poison the whole log
+  // (fail-open drop + corruption notice). Entry shape: query = the
+  // question, skeleton rows = the pack sources (url/title) — fed via
+  // the resultRows thunk read after dispatch resolves. Fan-out runs
+  // stamp per-arm cells on the shared capture first (the arm-race fix),
+  // exactly like handleSearch.
+  let journalRows: readonly { url?: string; title?: string }[] | undefined;
+  if (fanoutPlan.mode === "fanout" && deps.journal !== undefined) {
+    installFanoutArmCells(deps.journal.capture, fanoutPlan.arms);
+  }
+  const journal =
+    deps.journal === undefined
+      ? undefined
+      : createJournalHook(deps, {
+          journal: deps.journal,
+          query: question,
+          resultRows: () => journalRows,
+          fanoutRouting:
+            fanoutPlan.mode === "fanout"
+              ? {
+                  mode: "fanout" as const,
+                  ...(deps.provider !== undefined ? { requested: deps.provider } : {}),
+                  arms: fanoutPlan.arms,
+                }
+              : undefined,
+        });
+
+  return invokeCommand(
+    deps.invocation,
+    async (context) => {
+      const result = await investigate(
+        question,
+        {
+          ...(deps.provider !== undefined ? { provider: deps.provider } : {}),
+          ...(typeof flags.context === "string" ? { contextFile: flags.context } : {}),
+          ...(sources !== undefined ? { sources } : {}),
+          ...(maxChars !== undefined ? { maxChars } : {}),
+          noCache: flags["no-cache"] === true,
+          noJournal: collectLongFlagValues(args, "no-journal").length > 0,
+          ...(synthesize ? { synthesize: true } : {}),
+        },
+        {
+          descriptors: deps.providerDescriptors,
+          env: deps.env,
+          configFanout: deps.configFanout === true,
+          ...(deps.routing !== undefined ? { routing: deps.routing } : {}),
+          // One shared cache for the search arms AND the reads — the
+          // production defaultCache aliases every capability triple to
+          // the same root, and the command's warm-cacheHit accounting
+          // (search + reader partitions) assumes the one store.
+          cache: deps.searchCache,
+          sleep: deps.searchSleep,
+          random: deps.searchRandom,
+          ...(deps.consume !== undefined ? { consume: deps.consume } : {}),
+          ...(deps.now !== undefined ? { now: deps.now } : {}),
+          fusionMode: deps.fusionMode ?? "rrf",
+          ...(deps.now !== undefined ? { nowWall: () => new Date(deps.now!()) } : {}),
+          loadContextText: async (filePath: string) =>
+            (
+              await readContextSource({ file: filePath }, {
+                readFile: (f) => fs.readFile(f),
+                readStdin: () => {
+                  throw new Error("stdin context is not investigate's flag");
+                },
+              })
+            ).text,
+          readerCapabilityFor: (descriptor) => descriptor.create({ env: deps.env }).reader,
+          ...(deps.secrets !== undefined ? { secrets: deps.secrets } : {}),
+          ...(synthesizeDep !== undefined ? { synthesize: synthesizeDep } : {}),
+        },
+        context,
+      );
+      // Feed the journal skeleton from the pack BEFORE the result
+      // leaves the behavior — url/title identities of the read
+      // sources, the same row shape search journals.
+      if (result.kind === "data") {
+        const pack = result.data as { sources?: { url?: string; title?: string }[] };
+        if (Array.isArray(pack.sources)) {
+          journalRows = pack.sources.map((source) => ({
+            url: typeof source.url === "string" ? source.url : undefined,
+            title: typeof source.title === "string" ? source.title : undefined,
+          }));
+        }
+      }
+      return result;
+    },
+    outputMode,
+    deps.now,
+    deps.secrets,
+    save,
+    journal,
+  );
+}
+
 export { handleFetch, fetchCommand, executeFetch, FETCH_HELP } from "./commands/fetch.js";
 export {
   handleArchive,
@@ -5558,6 +5934,13 @@ function createJournalHook(
 
 export interface MainDependencies {
   readonly invocation: CommandInvocationAdapter;
+  /**
+   * T7: injectable synthesis transport for `investigate --synthesize`.
+   * Production leaves it undefined and the handler seam builds the
+   * Z.AI chat-completions default; tests inject a fixture so the
+   * escape hatch runs with no network.
+   */
+  readonly synthesize?: SynthesizeBrief;
   readonly env: NodeJS.ProcessEnv;
   readonly now?: () => number;
   /**
@@ -6235,6 +6618,7 @@ export async function main(
     credFusion: HandlerDependencies["fusionMode"] = undefined,
   ): HandlerDependencies => ({
     invocation,
+    synthesize: dependencies.synthesize,
     env: credEnv,
     secrets: credSecrets,
     now,
@@ -6951,7 +7335,19 @@ export async function main(
   const journalWiring =
     journalCapture === undefined
       ? undefined
-      : { capability: command as JournalableCapability, capture: journalCapture };
+      : {
+          // investigate-pipeline T6: the run journals its UNDERLYING
+          // search/read ops under the umbrella capability "search" —
+          // JournalableCapability is closed over
+          // {search,read,research,science} (lib/journal.ts is a
+          // read-only seam for this lane) and a literal "investigate"
+          // entry would fail asJournalEntry validation and poison the
+          // whole log (fail-open drop + corruption notice). The
+          // underlying ops ARE search/read; running them standalone
+          // journals exactly so (orchestrator ruling 2026-09-20).
+          capability: (command === "investigate" ? "search" : command) as JournalableCapability,
+          capture: journalCapture,
+        };
   const saveWiring =
     saveRequest === undefined || isHelpInvocation
       ? undefined
@@ -7063,6 +7459,13 @@ export async function main(
       case "quota":
         commandRecognized = true;
         exitCode = await handleQuota(commandArgs, outputMode, handlerDepsWithSelection);
+        break;
+      case "investigate":
+        commandRecognized = true;
+        // PRD AC-9: --isolated is ACCEPTED (never rejected — investigate
+        // has no stateful dir; resumability is pure cache replay, and the
+        // isolated/<pid> cache segment is exactly the right namespace).
+        exitCode = await handleInvestigate(commandArgs, outputMode, handlerDepsWithSave);
         break;
       case "code":
         commandRecognized = true;

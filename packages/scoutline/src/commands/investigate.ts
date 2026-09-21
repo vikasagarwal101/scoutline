@@ -159,6 +159,20 @@ Sub-query planning (precedence: pipes > --context > template):
   Template  Deterministic transforms of the bare question (original,
           key terms, overview/evidence/criticism), deduped, capped at 5.
 
+Verify mode (--verify, ADR-0013 follow-up):
+  The statement splits into sentence-claims (the extract grammar's
+  terminators; '|' is literal text); each claim is searched VERBATIM
+  (no per-claim controls); deterministic term matching links claims to
+  the extracted passages. Verdicts per claim:
+    corroborated   >= 1 matching passage, 0 negation cues
+    contradicted   >= 1 matching passage carrying a negation cue
+    unresolved     no matching passages
+  HINT-GRADE DISCLOSURE: 'contradicted' is a negation-cue heuristic
+  (fixed, versioned cue list) — NOT semantic contradiction. Semantic
+  judgment stays with the calling agent; the per-claim negationCues
+  count exists for exactly that re-judgment. Claim text and verdicts
+  are never cut by --max-chars (evidence pointers drop last, whole).
+
 Options:
   --provider <ids>    Comma-list, \`all\`, or a single id (fan-out tiers
                       above).
@@ -173,6 +187,12 @@ Options:
                       never cut; the full untrimmed pack is saved to the
                       artifacts store — recover with
                       "scoutline history show").
+  --verify            Claim-corroboration mode: the positional becomes a
+                      STATEMENT; sentence-claims (<= 8, fail-loud) are the
+                      sub-query grid verbatim; the pack gains a verify
+                      block (per claim: verdict + evidence pointers +
+                      negation-cue count). Cannot combine with --context
+                      (verify owns planning).
   --synthesize        Attach an ADDITIVE \`brief\` (Z.AI chat) to the pack.
                       Absent by default. Z.AI-only: it ignores --provider
                       (a stderr notice fires when another provider is
@@ -217,6 +237,7 @@ Examples:
   scoutline investigate "vector dbs" --context notes.md --sources 3
   scoutline investigate "k8s cost" --max-chars 4000        # budgeted pack
   scoutline investigate "wasm runtimes" --synthesize       # + Z.AI brief
+  scoutline investigate "X is fast. Y lags." --verify      # claim verdicts
 
 Default JSON shape (EvidencePack, schemaVersion 1):
   {

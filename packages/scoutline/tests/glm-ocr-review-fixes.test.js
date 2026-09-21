@@ -205,17 +205,17 @@ describe("glm-ocr review M1 — --save runs keep the ledger seam", () => {
   });
 });
 
-describe("glm-ocr review M2 — isolated runs never write the shared dir", () => {
-  it("SCOUTLINE_ISOLATED=1 lands OCR entries under cache/isolated/<pid>, not the shared cache/", async () => {
+describe("glm-ocr review M2/R1 — isolated runs never write the shared dir", () => {
+  it("isolated flag via the ADAPTER env lands OCR entries under cache/isolated/<pid>, not the shared cache/", async () => {
+    // R1: the flag rides the adapter's own injected env (the production
+    // channel — descriptor.create({env}) where main() merged
+    // SCOUTLINE_ISOLATED), never a process.env mutation.
     const sharedRoot = await fs.mkdtemp(path.join(os.tmpdir(), "glm-shared-"));
     const file = path.join(tmpRoot, "iso.png");
     await fs.writeFile(file, Buffer.from("iso-probe"));
     const rest = makeRest([WARM]);
     const notices = [];
     try {
-      const savedShared = process.env.SCOUTLINE_CACHE_DIR;
-      process.env.SCOUTLINE_CACHE_DIR = sharedRoot;
-      process.env.SCOUTLINE_ISOLATED = "1";
       const descriptor = createZaiDescriptor({
         clientFactory: () => {
           throw new Error("no MCP on the OCR arm");
@@ -223,7 +223,9 @@ describe("glm-ocr review M2 — isolated runs never write the shared dir", () =>
         layoutParsingFetch: rest.fetch,
         notice: (l) => notices.push(l),
       });
-      const adapter = descriptor.create({ env: ENV });
+      const adapter = descriptor.create({
+        env: { ...ENV, SCOUTLINE_CACHE_DIR: sharedRoot, SCOUTLINE_ISOLATED: "1" },
+      });
       const result = await adapter.vision.invoke({
         operation: "extract-text",
         source: file,
@@ -248,10 +250,66 @@ describe("glm-ocr review M2 — isolated runs never write the shared dir", () =>
           "the OCR entry exists under the isolated pid dir",
         );
       }
-      process.env.SCOUTLINE_CACHE_DIR = savedShared;
     } finally {
-      delete process.env.SCOUTLINE_ISOLATED;
       await fs.rm(sharedRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("FLAG leg: main()-level --isolated run writes nothing shared, lands under isolated/<pid>", async () => {
+    const sharedRoot = await fs.mkdtemp(path.join(os.tmpdir(), "glm-flag-"));
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "glm-flag-src-"));
+    const file = path.join(tmp, "flag.png");
+    await fs.writeFile(file, Buffer.from("flag-probe"));
+    const savedGlobalFetch = globalThis.fetch;
+    globalThis.fetch = async () => jsonResponse({ md_results: "flag-ok" });
+    try {
+      const writes = [];
+      const invocation = {
+        stdoutIsTTY: false,
+        stdinIsTTY: false,
+        environmentOutputMode: undefined,
+        readStdin: async () => "",
+        writeStdout(v) {
+          writes.push(["out", v]);
+        },
+        writeStderr(v) {
+          writes.push(["err", v]);
+        },
+        runQuietly: async (op) => op(),
+        setExitCode() {},
+      };
+      const sink = createInMemoryConsumptionSink();
+      const code = await main(
+        ["--isolated", "vision", "extract-text", file],
+        {
+          invocation,
+          env: { ...ENV, SCOUTLINE_CACHE_DIR: sharedRoot },
+          configFanout: false,
+          loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
+          agentRegistrationCheck: async () => {},
+          consume: sink,
+          searchSleep: async () => {},
+          searchRandom: () => 0.5,
+        },
+      );
+      assert.strictEqual(code, 0, `--isolated exit 0, stderr: ${writes.filter((w) => w[0] === "err").map((w) => w[1]).join("\n")}`);
+
+      const sharedCache = path.join(sharedRoot, "cache");
+      const sharedEntries = await fs.readdir(sharedCache).catch(() => []);
+      const leaked = sharedEntries.filter(
+        (e) => !e.startsWith("isolated") && e.startsWith("v2.vision-ocr-layout-parsing."),
+      );
+      assert.deepStrictEqual(leaked, [], "--isolated run wrote NOTHING to the shared dir");
+      const isolatedRoot = path.join(sharedCache, "isolated");
+      const pidDirs = await fs.readdir(isolatedRoot).catch(() => []);
+      assert.ok(
+        pidDirs.includes(String(process.pid)),
+        "--isolated run landed its OCR entry under isolated/<pid>",
+      );
+    } finally {
+      globalThis.fetch = savedGlobalFetch;
+      await fs.rm(sharedRoot, { recursive: true, force: true });
+      await fs.rm(tmp, { recursive: true, force: true });
     }
   });
 });

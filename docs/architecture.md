@@ -840,7 +840,7 @@ key, a wire request, or the artifacts log's `args` allow-list.
 `src/lib/mcp-client.ts` is the main Z.AI integration boundary. It initializes UTCP once per client, registers MCP services, resolves tool names, normalizes failures into CLI error classes, and closes transports.
 
 - Retriable failures use bounded exponential backoff with jitter. Retrying closes the current client before trying again.
-- Search/read/ZRead calls use the response cache unless `--no-cache` is supplied. Vision calls are never cached.
+- Search/read/ZRead calls use the response cache unless `--no-cache` is supplied. Vision analyze-family calls are never cached; extract-text's glm-ocr arm is content-hash cached (see the capability matrix).
 - Multi-query search creates one client per concurrent query because UTCP clients are not concurrency-safe for parallel calls.
 - Tool discovery has a separate cache from normal response caching. Both caches share one on-disk root (`~/.scoutline/`) and one env-var policy; each owns its own subdirectory I/O (`cache/` for responses, `tools/` for tool discovery). Inspect or clear either via `scoutline cache stats` / `scoutline cache clear`.
 

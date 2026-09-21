@@ -572,6 +572,7 @@ async function invokeZaiExtractTextOcrArm(
   layoutParsingFetch: ProviderQuotaFetch | undefined,
   cacheEnv: NodeJS.ProcessEnv | undefined,
   ocrLedger: (attempt: number) => Promise<void>,
+  adapterEnv: NodeJS.ProcessEnv,
 ): Promise<string> {
   const resolved = resolveOcrSource(request.source);
   const isUrl = /^https?:\/\//i.test(resolved);
@@ -581,7 +582,7 @@ async function invokeZaiExtractTextOcrArm(
   // warm hit records NOTHING (AC-7). The key covers only
   // {model, file-identity} — strip-notice state never enters it.
   const key = ocrCacheKey(apiKey, ocrFileIdentity(resolved, isUrl ? undefined : fileValue));
-  const cached = await readOcrCache(key, cacheEnv);
+  const cached = await readOcrCache(key, cacheEnv, adapterEnv);
   if (cached !== null) {
     return cached;
   }
@@ -597,7 +598,7 @@ async function invokeZaiExtractTextOcrArm(
   await ocrLedger(1);
   try {
     const result = await parseLayout({ apiKey, file: fileValue }, LAYOUT_PARSING_TIMERS, deps);
-    await writeOcrCache(key, result, cacheEnv);
+    await writeOcrCache(key, result, cacheEnv, adapterEnv);
     return result;
   } catch (error) {
     // One prefetch-to-base64 retry on a URL source whose REST attempt
@@ -614,7 +615,7 @@ async function invokeZaiExtractTextOcrArm(
       });
       await ocrLedger(2);
       const retried = await parseLayout({ apiKey, file: dataUri }, LAYOUT_PARSING_TIMERS, deps);
-      await writeOcrCache(key, retried, cacheEnv);
+      await writeOcrCache(key, retried, cacheEnv, adapterEnv);
       return retried;
     }
     throw error;
@@ -667,23 +668,29 @@ function ocrCacheKey(apiKey: string, fileIdentity: string): string {
 }
 
 /**
- * Resolve the OCR cache dir. M2 (review): when no test env is
- * injected, pass `process.env` so `responseCacheDir`'s merged-env
- * branch applies — `SCOUTLINE_ISOLATED` reroutes to
+ * Resolve the OCR cache dir. M2/R1 (review): the env-var leg and the
+ * `--isolated` flag leg BOTH resolve through the adapter's OWN
+ * injected env (the descriptor's `create({env})` value — main()
+ * merges SCOUTLINE_ISOLATED into it), never a reread of ambient
+ * process.env. `SCOUTLINE_ISOLATED` reroutes to
  * `cache/isolated/<pid>` (ADR-0006 §5: isolated runs never mutate the
- * shared dir) instead of the early-return shared path.
+ * shared dir).
  */
-function ocrCacheDir(cacheEnv: NodeJS.ProcessEnv | undefined): string {
-  return responseCacheDir((cacheEnv ?? process.env) as never);
+function ocrCacheDir(
+  cacheEnv: NodeJS.ProcessEnv | undefined,
+  adapterEnv: NodeJS.ProcessEnv,
+): string {
+  return responseCacheDir((cacheEnv ?? adapterEnv) as never);
 }
 
 /** Read the OCR cache; a miss/mismatch/poison returns null (fresh run). */
 async function readOcrCache(
   key: string,
   cacheEnv: NodeJS.ProcessEnv | undefined,
+  adapterEnv: NodeJS.ProcessEnv,
 ): Promise<string | null> {
   return readCacheInDir(
-    ocrCacheDir(cacheEnv),
+    ocrCacheDir(cacheEnv, adapterEnv),
     key,
     (raw): string | null => (typeof raw === "string" && raw.length > 0 ? raw : null),
   );
@@ -694,8 +701,9 @@ async function writeOcrCache(
   key: string,
   value: string,
   cacheEnv: NodeJS.ProcessEnv | undefined,
+  adapterEnv: NodeJS.ProcessEnv,
 ): Promise<void> {
-  await writeCacheInDir(ocrCacheDir(cacheEnv), key, value);
+  await writeCacheInDir(ocrCacheDir(cacheEnv, adapterEnv), key, value);
 }
 
 /**
@@ -763,6 +771,7 @@ function createZaiVisionCapability(options: ZaiVisionCapabilityOptions): VisionC
             options.layoutParsingFetch,
             options.layoutParsingCacheEnv,
             ocrLedger,
+            env,
           );
         } catch (error) {
           if (error instanceof QuotaError) {

@@ -94,7 +94,7 @@ function captureAllStderr(fn) {
  * in-memory consumption sink. Returns { code, stdout, stderr, sink,
  * rest, mcp }.
  */
-async function runMain(args, { rest, mcpLog, env = ENV } = {}) {
+async function runMain(args, { rest, mcpLog, env = ENV, cacheDir } = {}) {
   const writes = [];
   const invocation = {
     stdoutIsTTY: false,
@@ -127,7 +127,10 @@ async function runMain(args, { rest, mcpLog, env = ENV } = {}) {
   );
   const deps = hermeticMainDeps({
     invocation,
-    env: { ...env, SCOUTLINE_CACHE_DIR: await fs.mkdtemp(path.join(os.tmpdir(), "glm-t4-")) },
+    env: {
+      ...env,
+      SCOUTLINE_CACHE_DIR: cacheDir ?? (await fs.mkdtemp(path.join(os.tmpdir(), "glm-t4-"))),
+    },
     now: () => 1_700_000_000_000,
     providerDescriptors: [zai],
     consume: sink,
@@ -200,10 +203,11 @@ describe("glm-ocr T4 — ledger rows (D7)", () => {
     const rest = makeRest([WARM]);
     const mcpLog = [];
     const args = ["vision", "extract-text", "https://example.test/doc.png"];
-    const first = await runMain(args, { rest, mcpLog });
+    const sharedCache = await fs.mkdtemp(path.join(os.tmpdir(), "glm-t4-shared-"));
+    const first = await runMain(args, { rest, mcpLog, cacheDir: sharedCache });
     assert.strictEqual(first.sink.events.length, 1);
-    // Second run: same URL, same credential, same hermetic cache dir.
-    const second = await runMain(args, { rest, mcpLog });
+    // Second run: same URL, same credential, SAME cache dir.
+    const second = await runMain(args, { rest, mcpLog, cacheDir: sharedCache });
     assert.strictEqual(second.sink.events.length, 0, "warm hit emits nothing");
     assert.strictEqual(rest.calls.length, 1, "and no transport");
   });

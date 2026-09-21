@@ -516,6 +516,72 @@ describe("glm-ocr PR-265 G1 — timeout covers body decode", () => {
   });
 });
 
+describe("glm-ocr wave-2 W1 — cancellation race at the fetch/decode boundary", () => {
+  it("abort fired at fetch-resolve yields TimeoutError, not post-cancellation processing", async () => {
+    const { parseLayout } = await import("../dist/providers/zai/layout-parsing.js");
+    let decodeCalled = false;
+    const fetch = async (url, init) => {
+      // Yield past the already-scheduled timer: the abort lands while
+      // fetch is completing — exactly the W1 race window.
+      await new Promise((resolve) => setImmediate(resolve));
+      void init;
+      return {
+        ok: true,
+        status: 200,
+        text: async () => "{}",
+        json: async () => {
+          decodeCalled = true;
+          return { md_results: "should-never-process" };
+        },
+      };
+    };
+    await assert.rejects(
+      parseLayout(
+        { apiKey: "k", file: "x", fetch },
+        {
+          setTimeout: (fn) => {
+            setImmediate(fn);
+            return 0;
+          },
+          clearTimeout: () => {},
+        },
+      ),
+      (error) => error.constructor.name === "TimeoutError",
+      "a raced abort at the fetch boundary must yield TimeoutError",
+    );
+    assert.strictEqual(decodeCalled, false, "no post-cancellation decode");
+  });
+});
+
+describe("glm-ocr wave-2 W3 — eligibility stat honesty", () => {
+  it("EACCES on stat surfaces the error — no silent ineligible→fallback routing", async () => {
+    const { isOcrSourceFallbackEligible } = await import("../dist/providers/zai/media.js");
+    // A path whose stat fails with EACCES: create a dir, chmod 000, stat a file inside.
+    const dir = path.join(tmpRoot, "denied");
+    await fs.mkdir(dir);
+    const inner = path.join(dir, "x.png");
+    await fs.writeFile(inner, Buffer.from("x"));
+    await fs.chmod(dir, 0o000);
+    try {
+      assert.throws(
+        () => isOcrSourceFallbackEligible(inner),
+        (error) => error.code === "EACCES",
+        "EACCES must rethrow, not return false",
+      );
+    } finally {
+      await fs.chmod(dir, 0o755);
+    }
+  });
+
+  it("ENOENT on stat returns false (plainly ineligible)", async () => {
+    const { isOcrSourceFallbackEligible } = await import("../dist/providers/zai/media.js");
+    assert.equal(
+      isOcrSourceFallbackEligible(path.join(tmpRoot, "missing.png")),
+      false,
+    );
+  });
+});
+
 describe("glm-ocr PR-265 G2 — fallback input honesty", () => {
   function ineligibleSetup() {
     const rest = makeRest([INSUFFICIENT]);
@@ -553,8 +619,11 @@ describe("glm-ocr PR-265 G2 — fallback input honesty", () => {
   it("1113 + local image >5 MiB → the same terminal error", async () => {
     const big = path.join(tmpRoot, "big.png");
     const handle = await fs.open(big, "w");
-    await handle.truncate(6 * 1024 * 1024); // 6 MiB — OCR-accepted, vision-ineligible
-    await handle.close();
+    try {
+      await handle.truncate(6 * 1024 * 1024); // 6 MiB — OCR-accepted, vision-ineligible
+    } finally {
+      await handle.close();
+    }
     const { rest, notices } = ineligibleSetup();
     const mcpLog = [];
     const descriptor = createZaiDescriptor({

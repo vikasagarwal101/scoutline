@@ -182,8 +182,13 @@ export function isOcrSourceFallbackEligible(source: string): boolean {
   if (ext === ".pdf") return false;
   try {
     return fs.statSync(path.resolve(source)).size <= ZAI_MAX_IMAGE_BYTES;
-  } catch {
-    return false;
+  } catch (error) {
+    // A missing file is simply ineligible; anything else (permissions,
+    // I/O failure) is unexpected and must not read as "eligible".
+    if (error instanceof Error && (error as NodeJS.ErrnoException).code === "ENOENT") {
+      return false;
+    }
+    throw error;
   }
 }
 

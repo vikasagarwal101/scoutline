@@ -142,6 +142,11 @@ export async function parseLayout(
       body: JSON.stringify({ model: LAYOUT_PARSING_MODEL, file: request.file }),
       signal: controller.signal,
     });
+    // Wave-2 F1: the timer may have aborted WHILE fetch was completing;
+    // never process a response from a cancelled request.
+    if (controller.signal.aborted) {
+      throw new TimeoutError(timeoutMs);
+    }
     responseStatus = response.status;
     try {
       payload = await response.json();
@@ -188,7 +193,14 @@ function resolveLayoutTimeoutMs(env: NodeJS.ProcessEnv): number {
 }
 
 function normalizeTransportError(err: unknown, timeoutMs: number): Error {
-  if (err instanceof AuthError || err instanceof ApiError || err instanceof QuotaError) return err;
+  if (
+    err instanceof AuthError ||
+    err instanceof ApiError ||
+    err instanceof QuotaError ||
+    err instanceof TimeoutError
+  ) {
+    return err;
+  }
   if (err instanceof Error && err.name === "AbortError") {
     return new TimeoutError(timeoutMs);
   }

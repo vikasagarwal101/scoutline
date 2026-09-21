@@ -428,6 +428,7 @@ executor preflight, Provider selection, and `doctor`.
 | `crawl` | **No** | **No** | Yes | No | No | Yes (async) | No | No | No | No | No | Yes (sync) | No | **No** | No | Tavily sync; Firecrawl async (resumable after Ctrl-C) |
 | `map` | **No** | **No** | Yes | No | No | Yes | No | No | No | No | No | Yes | No | **No** | No | URL-set discovery; no per-page content |
 | `research` | **No** | **No** | Yes | Yes | **No** | **No** | Yes | Yes | Yes | Yes | Yes | No | No | **No** | No | Tavily, Exa, Parallel, Perplexity (Agent API `high` preset), Jina DeepSearch, You.com, and Linkup research report synthesis |
+| `investigation` (EvidencePack) | Yes | **No** (no reader) | Yes | Yes | **No** (no reader) | Yes | Yes | **No** (no reader) | Yes | Yes | Yes | Yes | **No** (no reader) | **No** (no reader) | **No** (no reader) | Provider-composed — supplied by the search+reader supplier union (Z.AI, Tavily, Exa, Firecrawl, Parallel, Jina AI, You.com, Linkup, Spider.cloud); `--synthesize` is Z.AI-only |
 | `repo search` / `repo read` / `repo tree` / `repo brief` | Yes | **No** | **No** | **No** | **No** | **No** | **No** | **No** | **No** | No | No | No | No | No | No | Participates in selection; only Z.AI supplies `repository-exploration` |
 | `tools`, `tool`, `call` (Raw tools) | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | No | Z.AI-only; accepts but ignores `--provider` |
 | `code` (Code Mode) | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | No | Z.AI-only; accepts but ignores `--provider` |
@@ -524,6 +525,45 @@ scoutline science get 10.1038/nature12373
 the supplier wire supports them (rejected with `UNSUPPORTED_OPTION`
 elsewhere — never silently dropped). `science get <identifier>` fetches
 one work by bare DOI, numeric PMID, or arXiv id.
+
+### Investigation (`investigate`)
+
+`scoutline investigate <question>` runs a local, transparent,
+cache-resumable pipeline ([ADR-0013](https://github.com/vikasagarwal101/scoutline/blob/main/docs/adr/0013-local-investigation-pipeline.md)):
+plan sub-queries → fan-out search → Fusion merge → read the top
+`--sources` (default 5) → deterministic passage extraction → an
+EvidencePack (`schemaVersion` 1). No provider-side job runs — distinct
+from Research, an opaque billed provider job. The pack is data, not
+prose: agents consume it directly and text output modes fall back to
+JSON (agent-synthesis is the default; you write the prose). Warm re-runs
+replay the response cache (`coverage.cacheHits` reflects it).
+
+```bash
+scoutline investigate "rust async runtime benchmarks"
+scoutline investigate "rust async | rust tokio"    # pipes split explicit sub-queries
+scoutline investigate "topic" --provider tavily,exa --sources 8
+scoutline investigate "topic" --max-chars 20000 --synthesize
+```
+
+Sub-query planning precedence: explicit pipes (the `--merge` grammar) >
+`--context <path>` (a local notes file — it never leaves the machine,
+only the derived sub-query strings are searched) > deterministic
+templates of the bare question (original, key terms,
+overview/evidence/criticism; deduped, capped at 5). Provider selection
+reuses search's fan-out activation tiers verbatim (comma-list/`all`
+fan-out, single pin, `config set fanout true`). Cost is stated in one
+stderr notice before any billable work: N sub-queries × M arms billable
+searches + up to K reads.
+
+Controls: `--sources <n>`, `--max-chars <n>` (passages trim first, late
+sources drop; the full untrimmed pack is saved and recoverable via
+`scoutline history show <ref>`), `--no-cache`, `--no-journal`, `--save`,
+`--isolated`. Sources surfaced but unread land in `coverage.unread` with
+a reason code — never silently dropped. `--synthesize` attaches an
+additive `brief` via Z.AI chat (Z.AI-only; absent by default; a
+synthesis failure is the run's terminal error, never a degraded pack).
+`--depth`, `--arms`, and `--budget-tokens` are rejected with
+`VALIDATION_ERROR` by design.
 
 ## Usage
 

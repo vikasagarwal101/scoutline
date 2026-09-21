@@ -565,6 +565,14 @@ synthesis failure is the run's terminal error, never a degraded pack).
 `--depth`, `--arms`, and `--budget-tokens` are rejected with
 `VALIDATION_ERROR` by design.
 
+`--verify` turns the positional into a statement: sentence-claims
+(≤ 8, fail-loud) are searched verbatim and matched to the extracted
+passages; the pack gains an additive `verify` block — per claim, a
+verdict (`corroborated` / `contradicted` / `unresolved`), evidence
+pointers, and a negation-cue count. `contradicted` is a disclosed
+negation-cue heuristic (hint-grade), not semantic judgment;
+`--context` + `--verify` is a mode-conflict VALIDATION_ERROR.
+
 ## Usage
 
 The CLI is self-documenting. Use `--help` at any level:

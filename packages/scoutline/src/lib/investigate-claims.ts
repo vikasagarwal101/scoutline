@@ -34,6 +34,14 @@ import type { EvidenceSource } from "../capabilities/investigation.js";
 
 const STOPWORD_SET: ReadonlySet<string> = new Set(STOPWORDS);
 
+/**
+ * The verify-mode claim cap (PRD AC-1: > 8 sentence-claims is a
+ * fail-loud VALIDATION_ERROR, the R1 pipe-cap precedent — fail, never
+ * truncate). Exported so the command's error message names the cap
+ * from the single source of truth.
+ */
+export const MAX_VERIFY_CLAIMS = 8;
+
 /** A window [start, end) with the terminator char owned by the window. */
 interface Window {
   start: number;

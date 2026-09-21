@@ -35,12 +35,13 @@ features next; features that reverse a written decision (ADR) last.
   supersedes ADR-0004. Plan set: PRD (12 ACs) / DESIGN (D1–D7) /
   TASKS (T1–T7).
 - **GLM-OCR: supersede the vision-model OCR path**
-  (`docs/plans/v2/20-glm-ocr-supersede-vision-ocr.md`) — **grilled
-  2026-09-20 with live API investigation (funded-key probes);
-  ADR-0014 accepted**: exhaustion-aware routing for `vision
+  (`docs/plans/v2/20-glm-ocr-supersede-vision-ocr.md`) — **SHIPPED**
+  (PR #265; ADR-0014; grilled 2026-09-20 with live API investigation
+  incl. funded-key probes): exhaustion-aware routing for `vision
   extract-text` (1113 → loud fallback to plan-covered vision chat),
   token-metered $0.03/1M, layout_parsing cached (content-hash key),
-  no ZHIPU parity. Pickup-ready for plan flesh-out.
+  no ZHIPU parity. Plan set `docs/plans/glm-ocr/` retained for
+  reference.
 - **Science-vertical search commands**
   (`docs/plans/v2/18-science-verticals.md`) — **SHIPPED** (PR #139; polish
   + execution-hardening rounds in 0.21.1: PRs #162/#169 closed #141/#145/
@@ -67,10 +68,9 @@ features next; features that reverse a written decision (ADR) last.
 ### Studied seeds — visionary
 
 - **`investigate` pipeline** (`docs/plans/v2/06-investigate-pipeline.md`)
-  — **grilled 2026-09-20 (Q1–Q7); graduated to a plan set** at
-  `docs/plans/investigate-pipeline/` (PRD 12 ACs / DESIGN D1–D8 /
-  TASKS T1–T8; ADR-0013 accepted). Pickup-ready. `verify` mode
-  deferred to a follow-up.
+  — **SHIPPED** (PR #264; ADR-0013, plan set
+  `docs/plans/investigate-pipeline/` retained for reference).
+  `verify` mode remains a deferred follow-up.
 - **Selection strategies** (`docs/plans/v2/11-selection-strategies.md`) —
   `--strategy cheapest|freshest|diverse` extending the quota-aware ranking.
 

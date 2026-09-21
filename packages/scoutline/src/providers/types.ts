@@ -422,7 +422,12 @@ export interface ZaiAdapterClientPort {
 
 /** Dependencies the Z.AI Search Adapter accepts through injection. */
 export interface ZaiAdapterDependencies {
-  clientFactory(options: ZaiMcpClientOptions): ZaiAdapterClientPort;
+  /**
+   * Client factory. Optional since the glm-ocr lane: the adapter
+   * falls back to `defaultZaiClientFactory` (production registry
+   * passes only `notice`; tests inject the whole seam).
+   */
+  clientFactory?(options: ZaiMcpClientOptions): ZaiAdapterClientPort;
   /** Optional Z.AI quota-monitor transport injection (tests). */
   readonly quotaFetch?: ProviderQuotaFetch;
   readonly quotaSetTimeout?: typeof setTimeout;
@@ -444,6 +449,13 @@ export interface ZaiAdapterDependencies {
    * the ambient environment).
    */
   readonly layoutParsingCacheEnv?: NodeJS.ProcessEnv;
+  /**
+   * GLM-OCR usage-ledger seam (T4, ADR-0014 D7): attempts counted at
+   * the adapter (the OCR cache is adapter-internal). index.ts threads
+   * the shared sink here for extract-text.
+   */
+  readonly layoutParsingConsume?: import("../lib/consumption.js").ConsumptionSink;
+  readonly layoutParsingConsumeNow?: () => number;
   /**
    * Optional Repository Capability close-bound override in
    * milliseconds (P6-04A). When omitted, the production default of

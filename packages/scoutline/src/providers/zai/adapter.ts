@@ -81,6 +81,11 @@ import { createZaiReaderCapability } from "./reader.js";
 import type { ZaiMonitorFetch } from "./monitor-client.js";
 import { parseLayout } from "./layout-parsing.js";
 import { QuotaError } from "../../lib/errors.js";
+import {
+  defaultAmountForCapability,
+  emitConsumption,
+  type ConsumptionSink,
+} from "../../lib/consumption.js";
 
 const SEARCH_TOOL_PUBLIC_NAME = getMcpToolName("search", "web_search_prime");
 const VISION_ANALYZE_TOOL_PUBLIC_NAME = getMcpToolName("vision", "analyze_image");
@@ -221,7 +226,7 @@ function credentialFingerprint(apiKey: string): string {
 
 interface ZaiSearchCapabilityOptions {
   readonly env: NodeJS.ProcessEnv;
-  readonly clientFactory: ZaiAdapterDependencies["clientFactory"];
+  readonly clientFactory: NonNullable<ZaiAdapterDependencies["clientFactory"]>;
 }
 
 function createZaiSearchCapability(options: ZaiSearchCapabilityOptions): SearchCapability {
@@ -464,7 +469,7 @@ function normalizeZaiSearchResults(raw: readonly WebSearchResult[]): readonly Se
 
 interface ZaiVisionCapabilityOptions {
   readonly env: NodeJS.ProcessEnv;
-  readonly clientFactory: ZaiAdapterDependencies["clientFactory"];
+  readonly clientFactory: NonNullable<ZaiAdapterDependencies["clientFactory"]>;
   /** GLM-OCR layout-parsing seam (glm-ocr lane T2, ADR-0014 D2/D5). */
   readonly layoutParsingFetch?: ProviderQuotaFetch;
   /** Notice channel (D5): default silent; index.ts wires stderr. */
@@ -474,6 +479,17 @@ interface ZaiVisionCapabilityOptions {
    * SCOUTLINE_CACHE_DIR per suite; production resolves ambient).
    */
   readonly layoutParsingCacheEnv?: NodeJS.ProcessEnv;
+  /**
+   * Usage-ledger seam for the glm-ocr arm (T4, ADR-0014 D7): attempts
+   * are counted at the ADAPTER level because the OCR cache is
+   * adapter-internal — a warm hit never reaches the executor, and an
+   * 1113+fallback run is TWO attempts inside ONE executor invoke.
+   * index.ts threads the shared sink here for extract-text and
+   * suppresses its own emission on that path (one row per attempt,
+   * zero on a cache hit).
+   */
+  readonly layoutParsingConsume?: ConsumptionSink;
+  readonly layoutParsingConsumeNow?: () => number;
 }
 
 /** The pinned fallback notice text (PRD AC-2, owner-approved). */
@@ -555,15 +571,15 @@ async function invokeZaiExtractTextOcrArm(
   notice: (line: string) => void,
   layoutParsingFetch: ProviderQuotaFetch | undefined,
   cacheEnv: NodeJS.ProcessEnv | undefined,
+  ocrLedger: (attempt: number) => Promise<void>,
 ): Promise<string> {
   const resolved = resolveOcrSource(request.source);
   const isUrl = /^https?:\/\//i.test(resolved);
   const fileValue = isUrl ? resolved : await readOcrSourceAsBase64(resolved);
 
-  // Cache probe (D4) BEFORE any notice or transport: a warm hit emits
-  // no strip notices, constructs no transport, and records no ledger
-  // row. The key covers only {model, file-identity} — strip-notice
-  // state never enters it.
+  // Cache probe (D4) BEFORE any notice, transport, or ledger row: a
+  // warm hit records NOTHING (AC-7). The key covers only
+  // {model, file-identity} — strip-notice state never enters it.
   const key = ocrCacheKey(apiKey, ocrFileIdentity(resolved, isUrl ? undefined : fileValue));
   const cached = await readOcrCache(key, cacheEnv);
   if (cached !== null) {
@@ -578,6 +594,7 @@ async function invokeZaiExtractTextOcrArm(
   }
 
   const deps = layoutParsingFetch !== undefined ? { fetch: layoutParsingFetch } : {};
+  await ocrLedger(1);
   try {
     const result = await parseLayout({ apiKey, file: fileValue }, LAYOUT_PARSING_TIMERS, deps);
     await writeOcrCache(key, result, cacheEnv);
@@ -591,6 +608,7 @@ async function invokeZaiExtractTextOcrArm(
     if (isUrl && isFallbackEligibleError(error)) {
       try {
         const dataUri = await prefetchOcrUrlAsDataUri(resolved, layoutParsingFetch);
+        await ocrLedger(2);
         const retried = await parseLayout({ apiKey, file: dataUri }, LAYOUT_PARSING_TIMERS, deps);
         await writeOcrCache(key, retried, cacheEnv);
         return retried;
@@ -685,6 +703,25 @@ async function writeOcrCache(
 function createZaiVisionCapability(options: ZaiVisionCapabilityOptions): VisionCapability {
   const { env, clientFactory } = options;
   const notice = options.notice ?? (() => {});
+  // D7 adapter-owned ledger for the extract-text OCR arm (+ its
+  // fallback attempt). No-op when the seam is unwired (tests that
+  // don't care; the executor emission then stays active because the
+  // descriptor is not seam-marked).
+  const ocrLedger = async (attempt: number): Promise<void> => {
+    if (options.layoutParsingConsume === undefined) return;
+    await emitConsumption(
+      options.layoutParsingConsume,
+      {
+        provider: "zai",
+        capabilityId: "vision.extract-text",
+        category: "vision",
+        unit: "tokens",
+        amount: defaultAmountForCapability("vision"),
+      },
+      attempt,
+      options.layoutParsingConsumeNow ?? Date.now,
+    );
+  };
 
   // Shared credential resolver (Fixup A — B4/B7).
   function resolveApiKey(): string {
@@ -717,10 +754,16 @@ function createZaiVisionCapability(options: ZaiVisionCapabilityOptions): VisionC
             notice,
             options.layoutParsingFetch,
             options.layoutParsingCacheEnv,
+            ocrLedger,
           );
         } catch (error) {
           if (error instanceof QuotaError) {
             notice(GLM_OCR_FALLBACK_NOTICE);
+            // D7: the fallback attempt is its own ledger row (an
+            // 1113 + fallback run = 2 rows). Emitted here because the
+            // executor emission is suppressed on this seam-marked
+            // path (the adapter owns extract-text rows).
+            await ocrLedger(2);
             // Fall through to the pre-lane MCP path (no rethrow).
           } else {
             throw error;
@@ -796,7 +839,7 @@ function createZaiVisionCapability(options: ZaiVisionCapabilityOptions): VisionC
  * replaces a successful result nor masks the primary failure.
  */
 async function invokeZaiVisionOnce(
-  clientFactory: ZaiAdapterDependencies["clientFactory"],
+  clientFactory: NonNullable<ZaiAdapterDependencies["clientFactory"]>,
   toolName: string,
   args: Record<string, unknown>,
 ): Promise<unknown> {
@@ -1041,7 +1084,7 @@ function normalizeZaiVisionResult(raw: unknown): string {
 
 interface ZaiDiagnosticsCapabilityOptions {
   readonly env: NodeJS.ProcessEnv;
-  readonly clientFactory: ZaiAdapterDependencies["clientFactory"];
+  readonly clientFactory: NonNullable<ZaiAdapterDependencies["clientFactory"]>;
 }
 
 /**
@@ -1127,7 +1170,9 @@ function defaultZaiClientFactory(options: ZaiMcpClientOptions): ZaiAdapterClient
  * built and torn down per invocation.
  */
 export function createZaiDescriptor(dependencies?: ZaiAdapterDependencies): ProviderDescriptor {
-  const clientFactory = dependencies?.clientFactory ?? defaultZaiClientFactory;
+  const clientFactory =
+    dependencies?.clientFactory ??
+    ((options: ZaiMcpClientOptions) => defaultZaiClientFactory(options));
 
   // Quota-monitor transport injection (tests). Production uses the
   // global fetch and timers resolved inside the monitor client.
@@ -1208,6 +1253,12 @@ export function createZaiDescriptor(dependencies?: ZaiAdapterDependencies): Prov
         notice: dependencies?.notice,
         ...(dependencies?.layoutParsingCacheEnv !== undefined && {
           layoutParsingCacheEnv: dependencies.layoutParsingCacheEnv,
+        }),
+        ...(dependencies?.layoutParsingConsume !== undefined && {
+          layoutParsingConsume: dependencies.layoutParsingConsume,
+        }),
+        ...(dependencies?.layoutParsingConsumeNow !== undefined && {
+          layoutParsingConsumeNow: dependencies.layoutParsingConsumeNow,
         }),
       });
       const quotaOptions: ZaiQuotaCapabilityOptions = { env: context.env, ...quotaTransport };

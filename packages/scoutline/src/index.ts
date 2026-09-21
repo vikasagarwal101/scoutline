@@ -6941,10 +6941,13 @@ export async function main(
     (config as { journal?: unknown }).journal !== false
       ? {}
       : undefined;
+  // M1 (glm-ocr review): journal/save chains build from the ledger-
+  // rebuilt list so --save vision runs keep the adapter-owned
+  // extract-text seam (marker survives the capture spread).
   const journalingDescriptors =
     journalCapture === undefined
-      ? providerDescriptors
-      : captureServingDescriptors(providerDescriptors, journalCapture);
+      ? productionZaiLedgerDescriptors
+      : captureServingDescriptors(productionZaiLedgerDescriptors, journalCapture);
   const journalWiring =
     journalCapture === undefined
       ? undefined

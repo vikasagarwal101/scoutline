@@ -606,18 +606,16 @@ async function invokeZaiExtractTextOcrArm(
     // auth, and local-file sources never retry — they are not
     // source-related.
     if (isUrl && isFallbackEligibleError(error)) {
-      try {
-        const dataUri = await prefetchOcrUrlAsDataUri(resolved, layoutParsingFetch);
-        await ocrLedger(2);
-        const retried = await parseLayout({ apiKey, file: dataUri }, LAYOUT_PARSING_TIMERS, deps);
-        await writeOcrCache(key, retried, cacheEnv);
-        return retried;
-      } catch {
-        // Failed prefetch is terminal 422 (AC-3) — never surfaced as a
-        // raw transport TypeError and never rethrown for engine
-        // fallback.
+      // m1 (review): the catch guards the PREFETCH step only — a
+      // failed retried parseLayout propagates its own taxonomy error
+      // (AC-2); only a failed prefetch is the terminal 422.
+      const dataUri = await prefetchOcrUrlAsDataUri(resolved, layoutParsingFetch).catch(() => {
         throw new ApiError("Z.AI layout-parsing URL prefetch failed", 422);
-      }
+      });
+      await ocrLedger(2);
+      const retried = await parseLayout({ apiKey, file: dataUri }, LAYOUT_PARSING_TIMERS, deps);
+      await writeOcrCache(key, retried, cacheEnv);
+      return retried;
     }
     throw error;
   }
@@ -668,17 +666,27 @@ function ocrCacheKey(apiKey: string, fileIdentity: string): string {
   });
 }
 
+/**
+ * Resolve the OCR cache dir. M2 (review): when no test env is
+ * injected, pass `process.env` so `responseCacheDir`'s merged-env
+ * branch applies — `SCOUTLINE_ISOLATED` reroutes to
+ * `cache/isolated/<pid>` (ADR-0006 §5: isolated runs never mutate the
+ * shared dir) instead of the early-return shared path.
+ */
+function ocrCacheDir(cacheEnv: NodeJS.ProcessEnv | undefined): string {
+  return responseCacheDir((cacheEnv ?? process.env) as never);
+}
+
 /** Read the OCR cache; a miss/mismatch/poison returns null (fresh run). */
 async function readOcrCache(
   key: string,
   cacheEnv: NodeJS.ProcessEnv | undefined,
 ): Promise<string | null> {
-  const value = await readCacheInDir(
-    responseCacheDir(cacheEnv as never),
+  return readCacheInDir(
+    ocrCacheDir(cacheEnv),
     key,
     (raw): string | null => (typeof raw === "string" && raw.length > 0 ? raw : null),
   );
-  return value;
 }
 
 /** Write the OCR cache (best-effort; the shared module never throws). */
@@ -687,7 +695,7 @@ async function writeOcrCache(
   value: string,
   cacheEnv: NodeJS.ProcessEnv | undefined,
 ): Promise<void> {
-  await writeCacheInDir(responseCacheDir(cacheEnv as never), key, value);
+  await writeCacheInDir(ocrCacheDir(cacheEnv), key, value);
 }
 
 /**

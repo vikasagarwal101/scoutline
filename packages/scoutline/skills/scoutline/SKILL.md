@@ -139,7 +139,7 @@ in registry order `[zai, minimax, tavily, exa, brave, firecrawl, parallel, perpl
 - `vision.extract-text` on Z.AI routes to the GLM-OCR specialist
   (`layout_parsing`, PAYG balance-gated): verbatim markdown extraction,
   PDF input accepted (≤50 MB; images ≤10 MB), content-hash cached for
-  24 h (`--no-cache` honored). On exhaustion (error 1113) it prints one
+  24 h (disable for a run with `SCOUTLINE_CACHE=0`). On exhaustion (error 1113) it prints one
   stderr notice and falls back to the plan-covered vision model with
   identical invocation semantics. `--language` and a custom `[prompt]`
   are warn-and-strip on the OCR arm (stderr notice) and honored

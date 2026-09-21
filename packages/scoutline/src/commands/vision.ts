@@ -473,6 +473,9 @@ const VISION_BATCH_VIDEO_EXTENSIONS: ReadonlySet<string> = new Set([
 const VISION_BATCH_MEDIA_EXTENSIONS: ReadonlySet<string> = new Set([
   ...VISION_BATCH_IMAGE_EXTENSIONS,
   ...VISION_BATCH_VIDEO_EXTENSIONS,
+  // m2 (glm-ocr review, owner-approved): extract-text accepts PDFs via
+  // the glm-ocr arm; a glob must not silently drop them.
+  ".pdf",
 ]);
 
 /**
@@ -487,6 +490,10 @@ const VISION_BATCH_MEDIA_EXTENSIONS: ReadonlySet<string> = new Set([
 function visionBatchAcceptedExtensions(subcommand: string): ReadonlySet<string> {
   if (subcommand === "video") return VISION_BATCH_VIDEO_EXTENSIONS;
   if (subcommand === "diff") return VISION_BATCH_ZAI_IMAGE_EXTENSIONS;
+  // m2: extract-text's dry-run set includes the glm-ocr PDF gain.
+  if (subcommand === "extract-text") {
+    return new Set([...VISION_BATCH_IMAGE_EXTENSIONS, ".pdf"]);
+  }
   return VISION_BATCH_IMAGE_EXTENSIONS;
 }
 
@@ -506,8 +513,8 @@ interface VisionBatchInputFile {
   readonly file: string;
   /** Sanitized basename — the op's `name` (D2 rules). */
   readonly opName: string;
-  /** Extension-driven subcommand inference (D10). */
-  readonly subcommand: "analyze" | "video";
+  /** Extension-driven subcommand inference (D10; PDF → extract-text, m2). */
+  readonly subcommand: "analyze" | "video" | "extract-text";
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -576,7 +583,11 @@ async function expandVisionBatchGlob(glob: string): Promise<readonly VisionBatch
     inputs.push({
       file: path.resolve(directory, name),
       opName: sanitizeVisionBatchName(name),
-      subcommand: VISION_BATCH_VIDEO_EXTENSIONS.has(ext) ? "video" : "analyze",
+      subcommand: VISION_BATCH_VIDEO_EXTENSIONS.has(ext)
+        ? "video"
+        : ext === ".pdf"
+          ? "extract-text"
+          : "analyze",
     });
   }
   if (inputs.length === 0) {

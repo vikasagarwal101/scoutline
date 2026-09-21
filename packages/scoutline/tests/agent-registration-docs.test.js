@@ -120,7 +120,7 @@ const changelog = fs.readFile(new URL("../../../CHANGELOG.md", import.meta.url),
 // section header now cites ADR-0012 (0004 superseded) and its merge
 // description states fusion ranking + near-dup clustering + occurrence
 // escape hatch (was: occurrence ranking). No other body copy changed.
-const SKILL_BODY_SHA256 = "6f7147e54985f8afd014fb1850bd7f85e0c632d9c615e14eb32809a1bc194f7f";
+const SKILL_BODY_SHA256 = "97dc653d0277c8605ae8c0ffa6de2f26455a645c395b4c94210821788773a90e";
 
 // AC-10 budget: codex/qwen load name+description before any body
 // byte; the old enumeration (~1500 chars) blows the disclosure

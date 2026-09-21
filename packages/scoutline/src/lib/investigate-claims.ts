@@ -112,9 +112,10 @@ export function splitClaims(statement: string): string[] {
 /**
  * The negation-cue list behind `contradicted`. FROZEN and versioned:
  * additions change verdicts and are release-visible (the parent-owned
- * CHANGELOG bullet names them). Multi-word forms are mini-grammars in
- * parentheses: `fail(ed) to` = "fail to" | "failed to"; `denie(s/d)` =
- "denie" | "denies" | "denied"; refute(s/d) and dispute(s/d) likewise.
+ * CHANGELOG bullet names them). Every cue is a LITERAL whole-word
+ * string (fix-round m1: the parenthesized inflection grammar is gone —
+ * variants spell out; a missing-absence family covers "without",
+ * "lacks", "untrue", "false", "absent", "rarely", "seldom").
  *
  * DISCLOSED as hint-grade: `contradicted` means "a term-matching
  * passage carries a negation cue", NOT semantic contradiction —
@@ -138,25 +139,25 @@ export const NEGATION_CUES: readonly string[] = Object.freeze([
   "didn't",
   "won't",
   "wouldn't",
-  "fail(ed) to",
-  "denie(s/d)",
-  "refute(s/d)",
-  "dispute(s/d)",
+  "fail to",
+  "fails to",
+  "failed to",
+  "denies",
+  "denied",
+  "refutes",
+  "refuted",
+  "disputes",
+  "disputed",
+  "without",
+  "lacks",
+  "untrue",
+  "false",
+  "absent",
+  "rarely",
+  "seldom",
 ]);
 
-/** Expand a cue's parenthesized inflection grammar into its literals. */
-function cueExpansions(cue: string): string[] {
-  const match = cue.match(/^(.*?)\((.*?)\)(.*)$/);
-  if (match === null) return [cue];
-  const prefix = match[1]!;
-  const alts = match[2]!;
-  const suffix = match[3]!;
-  return alts.split("/").filter((a) => a.length > 0).map((alt) => `${prefix}${alt}${suffix}`);
-}
-
-const CUE_LITERALS: readonly string[] = Object.freeze(
-  NEGATION_CUES.flatMap(cueExpansions),
-);
+const CUE_LITERALS: readonly string[] = NEGATION_CUES;
 
 // ---------------------------------------------------------------------------
 // Claim↔evidence matching

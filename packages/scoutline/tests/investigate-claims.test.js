@@ -146,7 +146,7 @@ describe("splitClaims (extract-grammar terminators; pure, no cap)", () => {
 // ---------------------------------------------------------------------------
 
 describe("NEGATION_CUES (frozen, versioned contract)", () => {
-  it("is frozen and exports exactly the documented cues", () => {
+  it("is frozen and exports exactly the documented cues (fix-round m1 enriched list)", () => {
     assert.ok(Object.isFrozen(NEGATION_CUES));
     assert.deepEqual(NEGATION_CUES, [
       "not",
@@ -164,10 +164,25 @@ describe("NEGATION_CUES (frozen, versioned contract)", () => {
       "didn't",
       "won't",
       "wouldn't",
-      "fail(ed) to",
-      "denie(s/d)",
-      "refute(s/d)",
-      "dispute(s/d)",
+      // m1: inflected variants spelled out as literal whole-word cues
+      // (the parenthesized grammar is gone — every cue is a literal).
+      "fail to",
+      "fails to",
+      "failed to",
+      "denies",
+      "denied",
+      "refutes",
+      "refuted",
+      "disputes",
+      "disputed",
+      // m1: missing-absence cues (pre-release ruling).
+      "without",
+      "lacks",
+      "untrue",
+      "false",
+      "absent",
+      "rarely",
+      "seldom",
     ]);
   });
 });
@@ -289,7 +304,7 @@ describe("matchClaimsToEvidence (hand-computed fixture)", () => {
     assert.strictEqual(block.claims[0].negationCues, 0);
   });
 
-  it("multi-word cue forms match their expansions (fail(ed) to, refute(s/d))", () => {
+  it("multi-word cue forms match their literal spellings (fix-round m1: fails/failed to, refutes)", () => {
     const sources = [
       mkSource(0, ["The reactor failed to start. This study refutes that claim about studies."]),
     ];
@@ -300,6 +315,45 @@ describe("matchClaimsToEvidence (hand-computed fixture)", () => {
     });
     assert.strictEqual(block.claims[0].verdict, "contradicted"); // "failed to"
     assert.strictEqual(block.claims[1].verdict, "contradicted"); // "refutes"
+  });
+
+  it("m1: 'the study fails to replicate' fires the fails-to cue → contradicted", () => {
+    const sources = [
+      mkSource(0, ["Replication review notes. The study fails to replicate the earlier findings."]),
+    ];
+    const block = matchClaimsToEvidence({
+      statement: "Studies replicate findings.",
+      claims: ["Studies replicate findings."],
+      sources,
+    });
+    assert.strictEqual(block.claims[0].verdict, "contradicted");
+    assert.strictEqual(block.claims[0].negationCues, 1);
+  });
+
+  it("m1: 'without' fires as a whole-word cue", () => {
+    const sources = [
+      mkSource(0, ["Coverage review text. The schema ships without validation guards entirely."]),
+    ];
+    const block = matchClaimsToEvidence({
+      statement: "Schemas carry validation guards.",
+      claims: ["Schemas carry validation guards."],
+      sources,
+    });
+    assert.strictEqual(block.claims[0].verdict, "contradicted"); // "without"
+    assert.strictEqual(block.claims[0].negationCues, 1);
+  });
+
+  it("m1: 'withouts'-class near-misses never fire (whole-word only)", () => {
+    const sources = [
+      mkSource(0, ["Falsely tagged content stays neutral when cues embed mid-word."]),
+    ];
+    const block = matchClaimsToEvidence({
+      statement: "Tagged content stays neutral.",
+      claims: ["Tagged content stays neutral."],
+      sources,
+    });
+    assert.strictEqual(block.claims[0].verdict, "corroborated");
+    assert.strictEqual(block.claims[0].negationCues, 0);
   });
 
   it("zero sources (every read failed) → every claim unresolved, pack still valid", () => {

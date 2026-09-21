@@ -477,6 +477,84 @@ describe("investigate --verify: budget ladder extension", () => {
     const medium = applyBudget(pack, Math.floor(full * 0.75), INVESTIGATE_LADDER);
     assert.ok(medium.projection.verify.claims.some((c) => c.evidence.length > 0));
   });
+
+  // -------------------------------------------------------------------------
+  // Fix round M1: dangling evidence pointers under --max-chars. The
+  // source-drop rule runs BEFORE the pointer-drop rule, so a dropped
+  // source index leaves claims pointing past the truncated sources
+  // array (decode's isSafeIndex checks non-negative only — the
+  // dangling pointer ships). The fix scrubs pointers at the dropped
+  // index INSIDE the source-drop rule (no ladder reorder: question-
+  // mode projection order stays byte-stable). Probe band below sweeps
+  // the reviewer's 509–955 budgets.
+  // -------------------------------------------------------------------------
+  it("M1: every surviving claim's evidence dereferences cleanly across the 509–955 probe band (no pointer >= sources.length)", async () => {
+    const { applyBudget } = await import("../dist/lib/output-budget.js");
+    const pack = verifyPackFixture();
+    for (let budget = 509; budget <= 955; budget += 7) {
+      const { projection } = applyBudget(pack, budget, INVESTIGATE_LADDER);
+      for (const claim of projection.verify.claims) {
+        for (const pointer of claim.evidence) {
+          assert.ok(
+            pointer.sourceIndex < projection.sources.length,
+            `budget ${budget}: claim "${claim.text}" carries dangling pointer ` +
+              `${JSON.stringify(pointer)} into ${projection.sources.length} sources`,
+          );
+          const source = projection.sources[pointer.sourceIndex];
+          assert.ok(
+            pointer.passageIndex < source.passages.length,
+            `budget ${budget}: passage pointer ${JSON.stringify(pointer)} past ` +
+              `${source.url}'s ${source.passages.length} passages`,
+          );
+        }
+      }
+      // The never-cut invariant holds at every probe budget too.
+      assert.deepEqual(
+        projection.verify.claims.map((c) => [c.text, c.verdict]),
+        [
+          [CLAIM_A, "corroborated"],
+          [CLAIM_B, "contradicted"],
+          [CLAIM_C, "unresolved"],
+        ],
+        `budget ${budget}: claim text/verdicts never cut`,
+      );
+    }
+  });
+
+  it("M1: a scrubbed pointer set is whole-per-claim (never partial); verdict/cue count survive the scrub", async () => {
+    const { applyBudget, measurePayload } = await import("../dist/lib/output-budget.js");
+    const pack = verifyPackFixture();
+    // A budget in the band where s2 (claim B's only evidence) drops:
+    // claim B must end with [] (whole scrub), never a dangling [{1,0}].
+    const oneSource = measurePayload({ ...pack, sources: pack.sources.slice(0, 1) });
+    const { projection } = applyBudget(pack, oneSource + 100, INVESTIGATE_LADDER);
+    if (projection.sources.length === 1) {
+      const claimB = projection.verify.claims.find((c) => c.text === CLAIM_B);
+      assert.deepEqual(claimB.evidence, [], "dropped source's pointers scrubbed whole");
+      // The verdict + cue count ride the ORIGINAL match state (they
+      // describe the evidence found, not the budgeted residue).
+      assert.equal(claimB.verdict, "contradicted");
+      assert.equal(claimB.negationCues, 1);
+    } else {
+      assert.fail(`probe budget did not reach the 1-source level: ${projection.sources.length}`);
+    }
+  });
+
+  it("M1: question-mode A/B — pointer scrubbing changes nothing when no verify block rides the pack", async () => {
+    const { applyBudget, measurePayload } = await import("../dist/lib/output-budget.js");
+    const { verify: _verify, ...questionPack } = verifyPackFixture();
+    void _verify;
+    const full = measurePayload(questionPack);
+    // Same band, no verify block: the projection must be IDENTICAL to
+    // the shipped (pre-fix) question-mode shape — the scrub lives only
+    // in the verify-bearing branch of the rule.
+    for (const factor of [0.9, 0.75, 0.5]) {
+      const { projection } = applyBudget(questionPack, Math.floor(full * factor), INVESTIGATE_LADDER);
+      assert.ok(!("verify" in projection), "question pack stays verify-free");
+      assert.ok(Array.isArray(projection.sources));
+      assert.equal(projection.question, questionPack.question);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

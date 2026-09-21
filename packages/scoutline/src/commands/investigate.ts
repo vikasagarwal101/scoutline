@@ -367,13 +367,41 @@ const trimPassagesRule: LadderRule = {
   },
 };
 
-/** One late-source drop step: the LAST source drops whole (search's drop-lowest-rank analog). */
+/**
+ * One late-source drop step: the LAST source drops whole (search's
+ * drop-lowest-rank analog). Fix-round M1: when a verify block rides
+ * the pack, evidence pointers at the dropped index are scrubbed HERE
+ * (per claim, whole) — otherwise the pack ships dangling pointers
+ * (decode's index guard checks non-negative only) that only the later
+ * pointer-drop rule would remove, leaving a window of budgets with
+ * unrecoverable references. Question-mode packs (no verify block)
+ * take the byte-identical pre-fix path — the scrub is verify-only.
+ */
 const dropLastSourceRule: LadderRule = {
   name: "drop-late-source",
   apply: (envelope) => {
     const pack = envelope as EvidencePack;
     if (pack.sources.length <= 0) return pack;
-    return { ...pack, sources: pack.sources.slice(0, -1) };
+    const droppedIndex = pack.sources.length - 1;
+    const sources = pack.sources.slice(0, -1);
+    if (pack.verify === undefined) {
+      return { ...pack, sources };
+    }
+    return {
+      ...pack,
+      sources,
+      verify: {
+        ...pack.verify,
+        claims: pack.verify.claims.map((claim) =>
+          claim.evidence.some((p) => p.sourceIndex === droppedIndex)
+            ? {
+                ...claim,
+                evidence: claim.evidence.filter((p) => p.sourceIndex !== droppedIndex),
+              }
+            : claim,
+        ),
+      },
+    };
   },
 };
 
@@ -384,6 +412,14 @@ const dropLastSourceRule: LadderRule = {
  * verdicts, and cue counts are never cut (expressed by omission —
  * this rule touches only `evidence`). Runs after the source drop so
  * pointer elimination is the last loss before the floor.
+ *
+ * ponytail: near the floor this rule is COARSE — it clears every
+ * claim's pointers in one step rather than shedding one claim's at a
+ * time, so budgets just above the floor can overshoot down to a
+ * pointer-free pack. Fine-grained per-claim shedding (or per-pointer,
+ * cheapest-first) is the upgrade path if a consumer ever needs to
+ * keep SOME pointers at extreme budgets; nothing today reads pointers
+ * partially.
  */
 const dropEvidencePointersRule: LadderRule = {
   name: "drop-evidence-pointers",

@@ -66,6 +66,7 @@ import { createYouDescriptor } from "../dist/providers/you/adapter.js";
 import { createLinkupDescriptor } from "../dist/providers/linkup/adapter.js";
 import { createInMemoryAsyncJobStateFile } from "../dist/lib/async-job-state.js";
 import { UnsupportedOptionError } from "../dist/lib/errors.js";
+import { withTempDir } from "./helpers/temp-dir.js";
 
 // ---------------------------------------------------------------------------
 // Findings registry — every `dropped` row must point here. These are the
@@ -3521,6 +3522,249 @@ describe("controls class-guard — table integrity", () => {
 // ---------------------------------------------------------------------------
 // The guard itself: one generated test per row.
 // ---------------------------------------------------------------------------
+
+
+// ---------------------------------------------------------------------------
+// investigate-pipeline T6 — CLI-wired controls conformance (PRD AC-1:
+// every documented control wire-consumed or validation-rejected;
+// accept-and-drop is the banned class). investigate has NO adapter-level
+// control surface (its controls are parsed and threaded by the index.ts
+// handler, not per-provider validate()/invoke()), so these rows run at
+// the main() seam the command actually lives at: fixture descriptors
+// (no transports, no network), hermeticMainDeps isolation. Row grammar:
+//   expect "consumed"     — exit 0 AND the control's observable effect
+//                           on the pack (the `effect` predicate).
+//   expect "rejected"     — exit 1 + VALIDATION_ERROR naming the flag
+//                           (the rejection IS the feature, PRD AC-1).
+// Source of truth for the surface: INVESTIGATE_HELP (commands/
+// investigate.ts). --synthesize is T7's; its row landed with the flag's
+// documentation (T7, same commit) so the help↔rows integrity row below
+// stays honest.
+// ---------------------------------------------------------------------------
+
+const INVESTIGATE_HELP_TEXT = (
+  await import("../dist/commands/investigate.js")
+).INVESTIGATE_HELP;
+
+function investigateFixtures() {
+  const searchDescriptor = {
+    id: "tavily",
+    isConfigured: () => true,
+    capabilities: () => new Set(["search"]),
+    create: () => ({
+      id: "tavily",
+      search: {
+        validate() {},
+        cacheIdentity(request) {
+          return {
+            provider: "tavily",
+            capability: "search",
+            credentialFingerprint: "fp-tavily",
+            request,
+            legacyCandidates: [],
+          };
+        },
+        async invoke() {
+          return [
+            { title: "one page summary", url: "https://e/s1", summary: "s" },
+            { title: "two page summary", url: "https://e/s2", summary: "s" },
+          ];
+        },
+      },
+    }),
+  };
+  const readerDescriptor = {
+    id: "zai",
+    isConfigured: () => true,
+    capabilities: () => new Set(["reader"]),
+    create: () => ({
+      id: "zai",
+      reader: {
+        fetch: {
+          kind: "reader-fetch",
+          validate() {},
+          cacheIdentity(request) {
+            return {
+              provider: "zai",
+              capability: "reader",
+              operation: "reader-fetch",
+              credentialFingerprint: "fp-zai",
+              request,
+              legacyCandidates: [],
+            };
+          },
+          decodeCached(value) {
+            return value === null || typeof value !== "object" ? null : value;
+          },
+          async invoke(request) {
+            return {
+              schemaVersion: 1,
+              url: request.url,
+              finalUrl: request.url,
+              title: "t",
+              content: "alpha body. beta body.",
+              contentFormat: "markdown",
+            };
+          },
+        },
+      },
+    }),
+  };
+  return [searchDescriptor, readerDescriptor];
+}
+
+async function runInvestigateMain(argv, extraEnv = {}) {
+  const stdout = [];
+  const stderr = [];
+  const { main } = await import("../dist/index.js");
+  const { hermeticMainDeps } = await import("./helpers/hermetic-main.js");
+  const status = await main(argv, {
+    ...hermeticMainDeps({
+      invocation: {
+        stdoutIsTTY: false,
+        stdinIsTTY: false,
+        environmentOutputMode: "data",
+        readStdin: async () => "",
+        writeStdout: (v) => stdout.push(v),
+        writeStderr: (v) => stderr.push(v),
+        runQuietly: async (op) => op(),
+        setExitCode: () => {},
+      },
+      env: extraEnv,
+      providerDescriptors: investigateFixtures(),
+      // T7: --synthesize's transport is injected, never constructed here
+      // (no network in a conformance row) — the row asserts the flag is
+      // wire-CONSUMED, which the brief's presence proves.
+      synthesize: async () => "CONFORMANCE BRIEF",
+    }),
+  });
+  const envelopeLine = stderr.find((l) => l.trim().startsWith("{"));
+  return {
+    status,
+    stdout,
+    stderr,
+    pack: stdout.length > 0 ? JSON.parse(stdout[0]) : undefined,
+    error: envelopeLine === undefined ? undefined : JSON.parse(envelopeLine),
+  };
+}
+
+const INVESTIGATE_CONTROLS = [
+  {
+    control: "provider",
+    note: "comma-list fans out (coverage.armsUsed)",
+    argv: ["--provider", "tavily,exa", "investigate", "alpha | beta"],
+    expect: "consumed",
+    effect: (run) => run.pack?.coverage?.armsUsed === 2,
+  },
+  {
+    control: "context",
+    note: "derived sub-queries replace the grid",
+    argv: (dir) => ["--provider", "tavily", "investigate", "alpha beta", "--context", path.join(dir, "notes.md")],
+    setup: (dir) =>
+      fs.writeFileSync(path.join(dir, "notes.md"), "# Heading One\n- What about alpha limits?\n"),
+    expect: "consumed",
+    effect: (run) =>
+      run.pack?.subQueries?.some((q) => q.includes("alpha limits") || q === "Heading One") === true,
+  },
+  {
+    control: "sources",
+    note: "read cap threads into the pack",
+    argv: ["--provider", "tavily,exa", "investigate", "alpha | beta", "--sources", "1"],
+    expect: "consumed",
+    effect: (run) => run.pack?.sources?.length === 1,
+  },
+  {
+    control: "max-chars",
+    note: "budget stamp in-band (passages trim before sources drop)",
+    argv: ["--provider", "tavily", "investigate", "alpha | beta", "--max-chars", "400"],
+    expect: "consumed",
+    effect: (run) => typeof run.pack?.compaction?.budget === "number",
+  },
+  {
+    control: "no-cache",
+    argv: ["--provider", "tavily,exa", "investigate", "alpha | beta", "--no-cache"],
+    expect: "consumed",
+    effect: (run) => run.pack?.schemaVersion === 1 && run.pack?.coverage !== undefined,
+  },
+  {
+    control: "no-journal",
+    argv: ["--provider", "tavily,exa", "investigate", "alpha | beta", "--no-journal"],
+    expect: "consumed",
+    effect: (run) => run.pack?.schemaVersion === 1,
+  },
+  {
+    // T7: additive-only escape hatch. The observable effect is the
+    // ADDED key — the fixture dep returns a fixed string, so a run that
+    // accepted-and-dropped the flag would fail here.
+    control: "synthesize",
+    note: "additive brief attached (Z.AI-only escape hatch)",
+    argv: ["--provider", "tavily,exa", "investigate", "alpha | beta", "--synthesize"],
+    expect: "consumed",
+    effect: (run) => run.pack?.brief === "CONFORMANCE BRIEF",
+  },
+  {
+    control: "depth",
+    argv: ["investigate", "q", "--depth", "2"],
+    expect: "rejected",
+  },
+  {
+    control: "arms",
+    argv: ["investigate", "q", "--arms", "3"],
+    expect: "rejected",
+  },
+  {
+    control: "budget-tokens",
+    argv: ["investigate", "q", "--budget-tokens", "1000"],
+    expect: "rejected",
+  },
+  {
+    control: "context-stdin",
+    argv: ["investigate", "q", "--context-stdin"],
+    expect: "rejected",
+  },
+];
+
+describe("controls class-guard — investigate (CLI-wired; wire-consumed or rejected, never dropped)", () => {
+  it("INVESTIGATE_HELP documents exactly the controls the rows cover (no undocumented surface)", () => {
+    // The documented surface: the Options block names provider, context,
+    // sources, max-chars, no-cache, no-journal, save-family, isolated;
+    // the rejected block names depth, arms, budget-tokens,
+    // context-stdin. A help row without a conformance row (or vice
+    // versa) is drift — the same enumeration discipline as the
+    // provider tables above.
+    const documented = INVESTIGATE_CONTROLS.map((r) => r.control).sort();
+    for (const control of documented) {
+      assert.ok(
+        INVESTIGATE_HELP_TEXT.includes(`--${control}`),
+        `row control --${control} must be documented in INVESTIGATE_HELP`,
+      );
+    }
+    assert.ok(INVESTIGATE_HELP_TEXT.includes("--save"), "--save documented");
+    assert.ok(INVESTIGATE_HELP_TEXT.includes("--isolated"), "--isolated documented");
+  });
+
+  for (const row of INVESTIGATE_CONTROLS) {
+    const variant = row.note ? ` [${row.note}]` : "";
+    it(`${row.expect} | investigate ${row.control}${variant}`, async (t) => {
+      if (row.expect === "rejected") {
+        const run = await runInvestigateMain(row.argv);
+        assert.strictEqual(run.status, 1, `--${row.control} must reject`);
+        const code = typeof run.error?.error === "string" ? run.error?.code : run.error?.error?.code ?? run.error?.code;
+        assert.strictEqual(code, "VALIDATION_ERROR", `--${row.control} rejects VALIDATION_ERROR`);
+        return;
+      }
+      // consumed: run in a temp dir (context rows write a notes file).
+      await withTempDir(t, async (dir) => {
+        const argv = typeof row.argv === "function" ? row.argv(dir) : row.argv;
+        row.setup?.(dir);
+        const run = await runInvestigateMain(argv, { SCOUTLINE_ARTIFACTS_DIR: dir });
+        assert.strictEqual(run.status, 0, `--${row.control} consumed: stderr=${JSON.stringify(run.error)}`);
+        const ok = row.effect(run);
+        assert.ok(ok, `--${row.control} wire-consumed (observable effect on the pack)`);
+      });
+    });
+  }
+});
 
 describe("controls class-guard — reject or consume, never silently drop", () => {
   for (const row of ROWS) {

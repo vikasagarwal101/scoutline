@@ -23,6 +23,7 @@
 - **Crawl** — Multi-page website traversal with depth, breadth, and path filters
 - **Map** — Discover URL structure without fetching page content
 - **Research** — Asynchronous deep research with cited sources
+- **Investigation** — Local, transparent, cache-resumable pipeline (`investigate`): fan-out search, Fusion merge, top-K reads, and deterministic passage extraction into an EvidencePack; `--synthesize` attaches an additive Z.AI brief (ADR-0013)
 - **Vision** — Analyze images, screenshots, diagrams, charts, and videos
 - **Repo** — Search and read GitHub repository code
 - **Research journal** — Always-on local memory of every `search`/`read`/`research`/`science` call: thin skeletons (query, provider, url+title identity, content hash) recorded to `~/.scoutline/artifacts/` and re-found offline via `history recall`; opt out per call (`--no-journal`) or globally (`journal: false`)
@@ -258,9 +259,22 @@ SCOUTLINE_PROVIDER=minimax scoutline quota
 
 Selecting a provider that doesn't support a capability auto-reroutes to the next eligible configured provider in registry order and emits a stderr notice (the default since 0.11.0). Pass `--no-fallback` (or set `SCOUTLINE_NO_FALLBACK=1`) to restore the previous strict `UNSUPPORTED_CAPABILITY` behavior for scripting or cost-sensitive workflows.
 
+## Investigation (`investigate`)
+
+`scoutline investigate <question>` composes Scoutline's own capabilities into a local, transparent, cache-resumable pipeline ([ADR-0013](docs/adr/0013-local-investigation-pipeline.md)): plan sub-queries → fan-out search → Fusion merge → read the top `--sources` (default 5) → deterministic passage extraction → an EvidencePack. No provider-side job runs — distinct from Research, an opaque billed provider job. The pack is data, not prose: agents consume it directly, text output modes fall back to JSON, and `--synthesize` attaches an additive Z.AI brief for humans (Z.AI-only, absent by default). Sources surfaced but unread land in `coverage.unread` with a reason code — never silently dropped.
+
+```bash
+scoutline investigate "rust async runtime benchmarks"
+scoutline investigate "rust async | rust tokio"          # pipes split explicit sub-queries
+scoutline investigate "topic" --provider tavily,exa      # fan-out over both arms
+scoutline investigate "topic" --context notes.md --synthesize
+```
+
+Sub-query planning precedence: explicit pipes (the `--merge` grammar) > `--context <path>` (a local notes file — it never leaves the machine) > deterministic templates of the bare question (original, key terms, overview/evidence/criticism; deduped, capped at 5). Provider selection reuses search's fan-out activation tiers verbatim; the cost notice states the arithmetic before any billable work: **N sub-queries × M arms billable searches + up to K reads**. Warm re-runs replay the response cache (`coverage.cacheHits` reflects it).
+
 ## Saved Artifacts (`--save` + `history`)
 
-Any provider-backed command (`search`, `read`, `crawl`, `map`, `research`, `repo`, `vision`) can save its result as a durable, clean report — content plus a request id, nothing else — while stdout stays exactly what it would be without the flag:
+Any provider-backed command (`search`, `read`, `crawl`, `map`, `research`, `investigate`, `repo`, `vision`) can save its result as a durable, clean report — content plus a request id, nothing else — while stdout stays exactly what it would be without the flag:
 
 ```bash
 scoutline search "rust vs go" --save ~/report.json          # master copy + export copy
@@ -378,6 +392,7 @@ Stateful commands refuse at parse time (`VALIDATION_ERROR`, exit 1) rather than 
 | Crawl | No | No | Yes | No | No | Yes (async) | No | No | No | No | No | Yes (sync) | No | No | No | `scoutline crawl` |
 | Map | No | No | Yes | No | No | Yes | No | No | No | No | No | Yes | No | No | No | `scoutline map` |
 | Research | No | No | Yes | Yes | No | No | Yes | Yes | Yes | Yes | Yes | No | No | No | No | `scoutline research` |
+| Investigation | Yes | No | Yes | Yes | No | Yes | Yes | No | Yes | Yes | Yes | Yes | No | No | No | `scoutline investigate` (`--synthesize` Z.AI-only) |
 | Vision (interpret-image) | Yes | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline vision analyze` |
 | Quota | Yes | Yes | Yes | No | Yes (rate-limit window) | Yes (credits) | No | No | Yes (rate-limit telemetry, not spend) | No | Yes (credits) | Yes (credits) | No | Yes (credits) | No | `scoutline quota` |
 | Diagnostics | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | `scoutline doctor` |

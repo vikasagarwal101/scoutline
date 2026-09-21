@@ -254,14 +254,17 @@ describe("interim controls-vs-supplier: pinned rejecting supplier fails UNSUPPOR
 describe("dispatch enumeration pins have teeth (mutation evidence)", () => {
   const SOURCE = readFileSync(fileURLToPath(new URL("../src/index.ts", import.meta.url)), "utf8");
 
-  it("science is a dispatched noun and the dispatch surface is 23 (14 switch cases + 9 if arms)", () => {
+  it("science is a dispatched noun and the dispatch surface is 24 (15 switch cases + 9 if arms)", () => {
     // GROUND: TASKS T8 "DISPATCHED_COMMANDS pin widened 22→23 (one
     // `science` noun)" / PRD AC-10b. The equality against the
     // hand-maintained audit-list literal lives in
     // output-budget-rejection.test.js; here the source-derived counts
     // are re-pinned so the numeral cannot drift independently.
     assert.ok(DISPATCHED_COMMANDS.has("science"), "science is a dispatched noun");
-    assert.equal(SWITCH_CASES.size + IF_ARMS.size, 23, "14 switch cases + 9 if arms");
+    // investigate-pipeline T6 widened the surface 23→24 (orchestrator
+    // ruling 2026-09-20; the science dispatch precedent widened it
+    // 22→23 in-commit).
+    assert.equal(SWITCH_CASES.size + IF_ARMS.size, 24, "15 switch cases + 9 if arms");
     assert.equal(
       SWITCH_CASES.size + IF_ARMS.size,
       DISPATCHED_COMMANDS.size,
@@ -312,7 +315,16 @@ describe("dispatch enumeration pins have teeth (mutation evidence)", () => {
     // a set where science is neither) fails the walk. Mirrors the
     // existing omission-guard idiom in output-budget-rejection.test.js
     // with the real current sets.
-    const ladder = new Set(["search", "read", "crawl", "research", "repo", "science"]);
+    const ladder = new Set([
+      "search",
+      "read",
+      "crawl",
+      "research",
+      "repo",
+      "science",
+      // investigate-pipeline T6: INVESTIGATE_LADDER surface.
+      "investigate",
+    ]);
     const badSet = new Set([...DISPATCHED_COMMANDS, "transmogrify"]);
     const uncovered = [];
     for (const command of badSet) {

@@ -35,10 +35,12 @@ features next; features that reverse a written decision (ADR) last.
   supersedes ADR-0004. Plan set: PRD (12 ACs) / DESIGN (D1–D7) /
   TASKS (T1–T7).
 - **GLM-OCR: supersede the vision-model OCR path**
-  (`docs/plans/v2/20-glm-ocr-supersede-vision-ocr.md`) — purpose-built
-  0.9B OCR model (SOTA OmniDocBench 94.6) via the `layout_parsing`
-  endpoint; empirically NOT covered by the GLM Coding Plan (PAYG $0.03);
-  grill resolves the supersession-vs-cost tension before plan flesh-out.
+  (`docs/plans/v2/20-glm-ocr-supersede-vision-ocr.md`) — **grilled
+  2026-09-20 with live API investigation (funded-key probes);
+  ADR-0014 accepted**: exhaustion-aware routing for `vision
+  extract-text` (1113 → loud fallback to plan-covered vision chat),
+  token-metered $0.03/1M, layout_parsing cached (content-hash key),
+  no ZHIPU parity. Pickup-ready for plan flesh-out.
 - **Science-vertical search commands**
   (`docs/plans/v2/18-science-verticals.md`) — **SHIPPED** (PR #139; polish
   + execution-hardening rounds in 0.21.1: PRs #162/#169 closed #141/#145/

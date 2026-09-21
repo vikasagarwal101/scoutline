@@ -105,6 +105,22 @@ function makeNotices() {
   return { lines, notice: (line) => lines.push(line) };
 }
 
+// Isolated cache dir per test (T3 cache is live on the OCR arm).
+let tmpCacheRoot;
+let savedCacheDir;
+
+beforeEach(async () => {
+  tmpCacheRoot = await fs.mkdtemp(path.join(os.tmpdir(), "glm-ocr-t2-cache-"));
+  savedCacheDir = process.env.SCOUTLINE_CACHE_DIR;
+  process.env.SCOUTLINE_CACHE_DIR = tmpCacheRoot;
+});
+
+afterEach(async () => {
+  if (savedCacheDir === undefined) delete process.env.SCOUTLINE_CACHE_DIR;
+  else process.env.SCOUTLINE_CACHE_DIR = savedCacheDir;
+  await fs.rm(tmpCacheRoot, { recursive: true, force: true });
+});
+
 function makeAdapter({ rest, mcp, notices }) {
   const descriptor = createZaiDescriptor({
     clientFactory: mcp,

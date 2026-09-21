@@ -64,7 +64,7 @@ import { getMcpToolName } from "../../lib/mcp-config.js";
 import {
   ZaiMcpClient,
 } from "../../lib/mcp-client.js";
-import { buildLegacyRepositoryCacheKey } from "../../lib/cache.js";
+import { buildLegacyRepositoryCacheKey, buildProviderCacheKey, readCacheInDir, writeCacheInDir, responseCacheDir } from "../../lib/cache.js";
 import { resolveTimeoutMs } from "./monitor-client.js";
 import { applySearchTopic } from "../../lib/search-topic.js";
 import { isZaiConfigured, requireZaiApiKey } from "./credentials.js";
@@ -469,6 +469,11 @@ interface ZaiVisionCapabilityOptions {
   readonly layoutParsingFetch?: ProviderQuotaFetch;
   /** Notice channel (D5): default silent; index.ts wires stderr. */
   readonly notice?: (line: string) => void;
+  /**
+   * Cache-dir env override for the OCR cache (T3 tests isolate
+   * SCOUTLINE_CACHE_DIR per suite; production resolves ambient).
+   */
+  readonly layoutParsingCacheEnv?: NodeJS.ProcessEnv;
 }
 
 /** The pinned fallback notice text (PRD AC-2, owner-approved). */
@@ -549,7 +554,22 @@ async function invokeZaiExtractTextOcrArm(
   apiKey: string,
   notice: (line: string) => void,
   layoutParsingFetch: ProviderQuotaFetch | undefined,
+  cacheEnv: NodeJS.ProcessEnv | undefined,
 ): Promise<string> {
+  const resolved = resolveOcrSource(request.source);
+  const isUrl = /^https?:\/\//i.test(resolved);
+  const fileValue = isUrl ? resolved : await readOcrSourceAsBase64(resolved);
+
+  // Cache probe (D4) BEFORE any notice or transport: a warm hit emits
+  // no strip notices, constructs no transport, and records no ledger
+  // row. The key covers only {model, file-identity} — strip-notice
+  // state never enters it.
+  const key = ocrCacheKey(apiKey, ocrFileIdentity(resolved, isUrl ? undefined : fileValue));
+  const cached = await readOcrCache(key, cacheEnv);
+  if (cached !== null) {
+    return cached;
+  }
+
   if (request.programmingLanguage) {
     notice(GLM_OCR_LANGUAGE_STRIP_NOTICE);
   }
@@ -557,13 +577,11 @@ async function invokeZaiExtractTextOcrArm(
     notice(GLM_OCR_PROMPT_STRIP_NOTICE);
   }
 
-  const resolved = resolveOcrSource(request.source);
-  const isUrl = /^https?:\/\//i.test(resolved);
-  const fileValue = isUrl ? resolved : await readOcrSourceAsBase64(resolved);
-
   const deps = layoutParsingFetch !== undefined ? { fetch: layoutParsingFetch } : {};
   try {
-    return await parseLayout({ apiKey, file: fileValue }, LAYOUT_PARSING_TIMERS, deps);
+    const result = await parseLayout({ apiKey, file: fileValue }, LAYOUT_PARSING_TIMERS, deps);
+    await writeOcrCache(key, result, cacheEnv);
+    return result;
   } catch (error) {
     // One prefetch-to-base64 retry on a URL source whose REST attempt
     // failed with a fallback-eligible error (server-side URL fetching
@@ -573,7 +591,9 @@ async function invokeZaiExtractTextOcrArm(
     if (isUrl && isFallbackEligibleError(error)) {
       try {
         const dataUri = await prefetchOcrUrlAsDataUri(resolved, layoutParsingFetch);
-        return await parseLayout({ apiKey, file: dataUri }, LAYOUT_PARSING_TIMERS, deps);
+        const retried = await parseLayout({ apiKey, file: dataUri }, LAYOUT_PARSING_TIMERS, deps);
+        await writeOcrCache(key, retried, cacheEnv);
+        return retried;
       } catch {
         // Failed prefetch is terminal 422 (AC-3) — never surfaced as a
         // raw transport TypeError and never rethrown for engine
@@ -591,6 +611,65 @@ interface ExtractTextRequest {
   source: string;
   instruction: string;
   programmingLanguage?: string;
+}
+
+// ---------------------------------------------------------------------------
+// GLM-OCR cache (ADR-0014 D4 — glm-ocr lane T3)
+// ---------------------------------------------------------------------------
+
+/** Cache capability segment of the key namespace. */
+const GLM_OCR_CACHE_CAPABILITY = "vision-ocr-layout-parsing";
+
+/**
+ * File identity for the OCR cache key (D4): the canonical URL string
+ * for URL sources, or `sha256:<hex>` of the local file CONTENT — same
+ * bytes at different paths share one entry (path never enters the
+ * key). The content hash rides the SAME read pass that produces the
+ * base64 upload value (one `readFile` per invocation).
+ */
+function ocrFileIdentity(resolvedSource: string, contentBase64: string | undefined): string {
+  if (/^https?:\/\//i.test(resolvedSource)) return resolvedSource;
+  // contentBase64 is the file bytes in base64; hashing the decoded
+  // bytes equals hashing the file content.
+  const bytes = Buffer.from(contentBase64 ?? "", "base64");
+  return `sha256:${crypto.createHash("sha256").update(bytes).digest("hex")}`;
+}
+
+/**
+ * Build the OCR cache key through the shared provider-key grammar:
+ * `v2.vision-ocr-layout-parsing.zai.<credential-hash>.<request-hash>.json`
+ * where `<request-hash>` covers `{model, file-identity}` — the model is
+ * constant, so the file identity is the only varying input.
+ */
+function ocrCacheKey(apiKey: string, fileIdentity: string): string {
+  return buildProviderCacheKey({
+    provider: "zai",
+    capability: GLM_OCR_CACHE_CAPABILITY,
+    credentialFingerprint: credentialFingerprint(apiKey),
+    request: { model: "glm-ocr", file: fileIdentity },
+  });
+}
+
+/** Read the OCR cache; a miss/mismatch/poison returns null (fresh run). */
+async function readOcrCache(
+  key: string,
+  cacheEnv: NodeJS.ProcessEnv | undefined,
+): Promise<string | null> {
+  const value = await readCacheInDir(
+    responseCacheDir(cacheEnv as never),
+    key,
+    (raw): string | null => (typeof raw === "string" && raw.length > 0 ? raw : null),
+  );
+  return value;
+}
+
+/** Write the OCR cache (best-effort; the shared module never throws). */
+async function writeOcrCache(
+  key: string,
+  value: string,
+  cacheEnv: NodeJS.ProcessEnv | undefined,
+): Promise<void> {
+  await writeCacheInDir(responseCacheDir(cacheEnv as never), key, value);
 }
 
 /**
@@ -637,6 +716,7 @@ function createZaiVisionCapability(options: ZaiVisionCapabilityOptions): VisionC
             resolveApiKey(),
             notice,
             options.layoutParsingFetch,
+            options.layoutParsingCacheEnv,
           );
         } catch (error) {
           if (error instanceof QuotaError) {
@@ -1126,6 +1206,9 @@ export function createZaiDescriptor(dependencies?: ZaiAdapterDependencies): Prov
         clientFactory: envBoundClientFactory,
         layoutParsingFetch: dependencies?.layoutParsingFetch,
         notice: dependencies?.notice,
+        ...(dependencies?.layoutParsingCacheEnv !== undefined && {
+          layoutParsingCacheEnv: dependencies.layoutParsingCacheEnv,
+        }),
       });
       const quotaOptions: ZaiQuotaCapabilityOptions = { env: context.env, ...quotaTransport };
       const quota = createZaiQuotaCapability(quotaOptions);

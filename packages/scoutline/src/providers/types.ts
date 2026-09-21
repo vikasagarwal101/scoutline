@@ -439,6 +439,12 @@ export interface ZaiAdapterDependencies {
   readonly layoutParsingFetch?: ProviderQuotaFetch;
   readonly notice?: (line: string) => void;
   /**
+   * Optional cache-dir env override for the OCR cache (T3 seam —
+   * tests isolate SCOUTLINE_CACHE_DIR per suite; production resolves
+   * the ambient environment).
+   */
+  readonly layoutParsingCacheEnv?: NodeJS.ProcessEnv;
+  /**
    * Optional Repository Capability close-bound override in
    * milliseconds (P6-04A). When omitted, the production default of
    * 2000 ms (matching `ZaiMcpClient.close`) applies. Tests inject a

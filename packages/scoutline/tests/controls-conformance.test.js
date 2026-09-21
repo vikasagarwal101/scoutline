@@ -3537,7 +3537,9 @@ describe("controls class-guard — table integrity", () => {
 //   expect "rejected"     — exit 1 + VALIDATION_ERROR naming the flag
 //                           (the rejection IS the feature, PRD AC-1).
 // Source of truth for the surface: INVESTIGATE_HELP (commands/
-// investigate.ts). --synthesize is T7's and has no row yet.
+// investigate.ts). --synthesize is T7's; its row landed with the flag's
+// documentation (T7, same commit) so the help↔rows integrity row below
+// stays honest.
 // ---------------------------------------------------------------------------
 
 const INVESTIGATE_HELP_TEXT = (
@@ -3630,12 +3632,17 @@ async function runInvestigateMain(argv, extraEnv = {}) {
       },
       env: extraEnv,
       providerDescriptors: investigateFixtures(),
+      // T7: --synthesize's transport is injected, never constructed here
+      // (no network in a conformance row) — the row asserts the flag is
+      // wire-CONSUMED, which the brief's presence proves.
+      synthesize: async () => "CONFORMANCE BRIEF",
     }),
   });
   const envelopeLine = stderr.find((l) => l.trim().startsWith("{"));
   return {
     status,
     stdout,
+    stderr,
     pack: stdout.length > 0 ? JSON.parse(stdout[0]) : undefined,
     error: envelopeLine === undefined ? undefined : JSON.parse(envelopeLine),
   };
@@ -3684,6 +3691,16 @@ const INVESTIGATE_CONTROLS = [
     argv: ["--provider", "tavily,exa", "investigate", "alpha | beta", "--no-journal"],
     expect: "consumed",
     effect: (run) => run.pack?.schemaVersion === 1,
+  },
+  {
+    // T7: additive-only escape hatch. The observable effect is the
+    // ADDED key — the fixture dep returns a fixed string, so a run that
+    // accepted-and-dropped the flag would fail here.
+    control: "synthesize",
+    note: "additive brief attached (Z.AI-only escape hatch)",
+    argv: ["--provider", "tavily,exa", "investigate", "alpha | beta", "--synthesize"],
+    expect: "consumed",
+    effect: (run) => run.pack?.brief === "CONFORMANCE BRIEF",
   },
   {
     control: "depth",

@@ -23,6 +23,15 @@
  *   6. extractPassages (T3) per read result.
  *   7. EvidencePack assembly per the T1 types.
  *
+ * `--synthesize` (T7, PRD AC-7, DESIGN D6, ADR-0013 §2) is the explicit
+ * Z.AI-only escape hatch and is ADDITIVE-ONLY BY CONSTRUCTION: the pack
+ * is fully assembled (searches, reads, extraction, coverage) BEFORE the
+ * synthesis dep is ever called, so the brief can only ever be ADDED as
+ * the LAST key — a failed synthesis is the invocation's terminal error
+ * and never degrades, shrinks, or reorders the pack. The command holds
+ * no transport: construction is handler-seam wiring, exactly like every
+ * other capability, and the dep is injected.
+ *
  * Reader supplier selection mirrors handleRead: the FIRST descriptor
  * in registry order whose injected `readerCapabilityFor` resolves a
  * ReaderCapability serves every read (the same first-configured-capable
@@ -85,11 +94,41 @@ import { SHARED_PROVIDER_FLAG_IDS } from "../providers/catalog.js";
 // ---------------------------------------------------------------------------
 
 /**
- * `investigate --help` (T6). The command's rejected-flag contract is part
- * of the surface: --depth/--arms/--budget-tokens DO NOT EXIST (PRD AC-1 —
- * the rejection is the feature), and --context-stdin is deliberately not
- * investigate's (search-only spelling; pipes and --context cover the
- * sub-query sources). --synthesize is T7 and is not advertised yet.
+ * `--synthesize` escape hatch (T7). The deterministic brief prompt: the
+ * bare question, the planned sub-query grid, and the extracted passage
+ * quotes (bounded). No clock, no randomness — identical fixtures produce
+ * a byte-identical prompt.
+ */
+export interface SynthesisPrompt {
+  readonly question: string;
+  readonly subQueries: readonly string[];
+  /** Extracted passage quotes, in pack order, capped at
+   * {@link SYNTHESIS_QUOTE_CAP}. */
+  readonly quotes: readonly string[];
+}
+
+/**
+ * Passage-quote cap for the brief prompt. Bounded so the prompt cannot
+ * grow with the read pool: 20 quotes ≈ the first few sources' passages,
+ * well inside the Z.AI chat context even at the passage cap (5 per
+ * source). Deterministic (first N in pack order), never sampled.
+ */
+export const SYNTHESIS_QUOTE_CAP = 20;
+
+/**
+ * The synthesis dep shape. `synthesize?` is threaded from the handler
+ * seam (index.ts), which owns the transport — the command never
+ * constructs one. Production passes a Z.AI chat-completions caller;
+ * tests pass a fixture.
+ */
+export type SynthesizeBrief = (prompt: SynthesisPrompt) => Promise<string>;
+
+/**
+ * `investigate --help` (T6/T7). The command's rejected-flag contract is
+ * part of the surface: --depth/--arms/--budget-tokens DO NOT EXIST (PRD
+ * AC-1 — the rejection is the feature), and --context-stdin is
+ * deliberately not investigate's (search-only spelling; pipes and
+ * --context cover the sub-query sources).
  */
 export const INVESTIGATE_HELP = `
 Investigate Command - Local investigation pipeline (EvidencePack)
@@ -134,6 +173,13 @@ Options:
                       never cut; the full untrimmed pack is saved to the
                       artifacts store — recover with
                       "scoutline history show").
+  --synthesize        Attach an ADDITIVE \`brief\` (Z.AI chat) to the pack.
+                      Absent by default. Z.AI-only: it ignores --provider
+                      (a stderr notice fires when another provider is
+                      pinned) and always synthesizes through Z.AI. The
+                      pack is assembled first, so the brief only ever
+                      ADDS a key — a synthesis failure is this run's
+                      terminal error, never a degraded pack.
   --no-cache          Skip the response cache for this run's searches
                       and reads.
   --no-journal        Skip the research journal entries for this run's
@@ -170,6 +216,7 @@ Examples:
   scoutline --provider tavily,exa investigate "alpha | beta"
   scoutline investigate "vector dbs" --context notes.md --sources 3
   scoutline investigate "k8s cost" --max-chars 4000        # budgeted pack
+  scoutline investigate "wasm runtimes" --synthesize       # + Z.AI brief
 
 Default JSON shape (EvidencePack, schemaVersion 1):
   {
@@ -240,6 +287,14 @@ export interface InvestigateOptions {
    * VALIDATION_ERROR at the trust boundary.
    */
   readonly maxChars?: number;
+  /**
+   * `--synthesize` (T7, PRD AC-7): attach an additive `brief` to the
+   * pack via the injected {@link InvestigateExecutionDependencies.
+   * synthesize} dep. Z.AI-only (the notice lives at the handler seam,
+   * where the raw provider pin is visible). Set without a dep is a
+   * wiring bug — the command throws rather than silently skipping.
+   */
+  readonly synthesize?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -355,6 +410,12 @@ export interface InvestigateExecutionDependencies {
    * Omitted (direct tests, no secrets) → no-op redaction.
    */
   readonly secrets?: string[];
+  /**
+   * T7: the synthesis transport (handler-seam wiring — this command
+   * never constructs one). Consulted ONLY when `--synthesize` is set,
+   * and only AFTER the pack is fully assembled.
+   */
+  synthesize?: SynthesizeBrief;
 }
 
 const DEFAULT_SOURCES = 5;
@@ -773,7 +834,34 @@ export async function investigate(
       unread,
     },
   };
-  // 8. Output Budget (T5, D7): the pack is fully assembled first — the
+  // 8. `--synthesize` (T7): the pack is COMPLETE above — every search,
+  //    every read, every passage — so the brief is attached here by
+  //    construction and can only ever ADD a trailing key. A throwing
+  //    dep propagates as this invocation's terminal error (house error
+  //    contract) and the assembled pack is NOT emitted: a flag-bearing
+  //    failure is loud, never a silent degradation to agent-synthesis.
+  let payload: EvidencePack & { brief?: string } = pack;
+  if (options.synthesize === true) {
+    if (deps.synthesize === undefined) {
+      // Wiring bug, not a user error: the flag is documented and
+      // parsed, so a missing dep means the handler seam forgot to
+      // inject the transport. Fail loud — never silently skip.
+      throw new Error(
+        "investigate: --synthesize was requested but no synthesis dep is wired",
+      );
+    }
+    const quotes: string[] = [];
+    for (const source of sources) {
+      for (const passage of source.passages) {
+        if (quotes.length >= SYNTHESIS_QUOTE_CAP) break;
+        quotes.push(passage.quote);
+      }
+      if (quotes.length >= SYNTHESIS_QUOTE_CAP) break;
+    }
+    const brief = await deps.synthesize({ question, subQueries, quotes });
+    payload = { ...pack, brief };
+  }
+  // 9. Output Budget (T5, D7): the pack is fully assembled first — the
   // compaction artifact is the FULL untrimmed pack, so the budget
   // rides AFTER assembly by construction.
   const investigateArgs: Readonly<Record<string, unknown>> = {
@@ -783,7 +871,7 @@ export async function investigate(
     ...(options.isolated ? { isolated: true } : {}),
   };
   return applyInvestigateOutputBudget(
-    { kind: "data", data: pack },
+    { kind: "data", data: payload },
     options.maxChars,
     {
       context: context ?? { stdinIsTTY: false, readStdin: async () => "", notice: () => {} },

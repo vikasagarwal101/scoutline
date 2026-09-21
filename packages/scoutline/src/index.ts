@@ -91,7 +91,13 @@ import { handleFetch, FETCH_HELP } from "./commands/fetch.js";
 import { handleArchive, parseArchiveArgs, ARCHIVE_HELP } from "./commands/archive.js";
 import { handleWatch } from "./commands/watch.js";
 import { handleScience } from "./commands/science.js";
-import { investigate, INVESTIGATE_HELP } from "./commands/investigate.js";
+import {
+  investigate,
+  INVESTIGATE_HELP,
+  type SynthesisPrompt,
+  type SynthesizeBrief,
+} from "./commands/investigate.js";
+import { ZaiApiClient } from "./lib/api-client.js";
 import {
   buildProviderCacheKey,
   cacheStats,
@@ -142,6 +148,7 @@ import { buildJournalCacheKeyMap, buildJournalRepeatMarker } from "./lib/journal
 import { applyBudget, type LadderRule } from "./lib/output-budget.js";
 import { persistCompaction } from "./lib/output-budget-persistence.js";
 import {
+  ApiError,
   ConfigurationError,
   FileError,
   ValidationError,
@@ -679,6 +686,7 @@ export const STRICT_FLAG_ALLOWLIST: Readonly<Record<string, ReadonlySet<string>>
     "max-chars",
     "no-cache",
     "no-journal",
+    "synthesize",
   ]),
 };
 
@@ -1255,6 +1263,12 @@ function bestEffortOutputMode(
  */
 export interface HandlerDependencies {
   readonly invocation: CommandInvocationAdapter;
+  /**
+   * T7: synthesis transport for `investigate --synthesize`. Production
+   * wires it from `MainDependencies.synthesize`; undefined → the
+   * handler seam builds the Z.AI chat-completions default.
+   */
+  readonly synthesize?: SynthesizeBrief;
   readonly env: NodeJS.ProcessEnv;
   readonly secrets: string[];
   readonly now?: () => number;
@@ -4928,10 +4942,82 @@ async function handleInvestigate(
       ),
   );
 
+  // T7 (PRD AC-7): --synthesize is VALUELESS. parseArgs assigns the
+  // next non-dash token as a flag value, so `--synthesize foo` would
+  // swallow the value; the =-form parses as a garbage key and is
+  // silently dropped (#172 review F6). Both reject here, before the
+  // help-gate, like every other malformed-flag guard in this handler.
+  for (const token of args) {
+    if (typeof token === "string" && token.startsWith("--synthesize=")) {
+      throw new ValidationError(
+        `Invalid flag "${token}": the --flag=value form is not supported; --synthesize takes no value.`,
+        "Pass the bare --synthesize to enable it, or omit it.",
+      );
+    }
+  }
+  if (flags.synthesize !== undefined && flags.synthesize !== true) {
+    throw new ValidationError(
+      "--synthesize is a boolean flag and takes no value",
+      "Pass the bare --synthesize to enable it, or omit it.",
+    );
+  }
+  const synthesize = flags.synthesize === true;
+
   if (flags.help || flags.h || positional.length === 0) {
     deps.invocation.writeStdout(INVESTIGATE_HELP);
     return 0;
   }
+
+  // Z.AI-only (PRD AC-7, the Code Mode precedent): the escape hatch
+  // is Z.AI chat regardless of the provider pin. The handler is the
+  // seam where the RAW pin is visible — the command cannot see it —
+  // so the notice fires here, before any billable work.
+  if (synthesize && deps.provider !== undefined && deps.provider.trim().length > 0) {
+    const pinned = deps.provider.trim().toLowerCase();
+    if (pinned !== "zai") {
+      deps.invocation.writeStderr(
+        `investigate: --synthesize is Z.AI-only; ignoring the --provider ${pinned} pin for the brief (the pack still uses it).`,
+      );
+    }
+  }
+
+  // The synthesis dep (T7): a Z.AI chat completion through the
+  // in-repo /chat/completions surface. Built HERE, at the handler
+  // seam, exactly like every other capability — the command holds no
+  // transport. `visionComplete` is the only chat-completions method
+  // on ZaiApiClient; the transport is fetch-per-call (no client to
+  // close), and nothing is constructed when the flag is absent.
+  const synthesizeDep: SynthesizeBrief | undefined = !synthesize
+    ? undefined
+    : deps.synthesize ??
+      (async (prompt: SynthesisPrompt) => {
+        const client = new ZaiApiClient(undefined, deps.env);
+        const response = await client.visionComplete([
+          {
+            role: "system",
+            content:
+              "You are given an evidence pack assembled from web sources: a question, " +
+              "its planned sub-queries, and verbatim passage quotes extracted from the " +
+              "read sources. Write a short, direct brief answering the question using " +
+              "ONLY the quoted evidence. Do not invent facts, do not add citations that " +
+              "are not in the quotes, and say plainly when the evidence is insufficient.",
+          },
+          {
+            role: "user",
+            // Deterministic serialization: fixed key order, compact JSON.
+            content: JSON.stringify({
+              question: prompt.question,
+              subQueries: [...prompt.subQueries],
+              quotes: [...prompt.quotes],
+            }),
+          },
+        ]);
+        const content = response.choices?.[0]?.message?.content;
+        if (typeof content !== "string") {
+          throw new ApiError("synthesis returned no brief text", 502);
+        }
+        return content;
+      });
 
   // Count-class validation BEFORE provider resolution (Fixup D order):
   // a bad --sources is VALIDATION_ERROR even with no credentials, and
@@ -4965,6 +5051,7 @@ async function handleInvestigate(
     ...(deps.provider !== undefined ? { provider: deps.provider } : {}),
     ...(sources !== undefined ? { sources } : {}),
     ...(flags["no-cache"] === true ? { "no-cache": true } : {}),
+    ...(synthesize ? { synthesize: true } : {}),
   };
   const investigateProviderRouting: ProviderRouting =
     fanoutPlan.mode === "fanout"
@@ -5029,6 +5116,7 @@ async function handleInvestigate(
           ...(maxChars !== undefined ? { maxChars } : {}),
           noCache: flags["no-cache"] === true,
           noJournal: collectLongFlagValues(args, "no-journal").length > 0,
+          ...(synthesize ? { synthesize: true } : {}),
         },
         {
           descriptors: deps.providerDescriptors,
@@ -5056,6 +5144,7 @@ async function handleInvestigate(
               })
             ).text,
           readerCapabilityFor: (descriptor) => descriptor.create({ env: deps.env }).reader,
+          ...(synthesizeDep !== undefined ? { synthesize: synthesizeDep } : {}),
         },
         context,
       );
@@ -5831,6 +5920,13 @@ function createJournalHook(
 
 export interface MainDependencies {
   readonly invocation: CommandInvocationAdapter;
+  /**
+   * T7: injectable synthesis transport for `investigate --synthesize`.
+   * Production leaves it undefined and the handler seam builds the
+   * Z.AI chat-completions default; tests inject a fixture so the
+   * escape hatch runs with no network.
+   */
+  readonly synthesize?: SynthesizeBrief;
   readonly env: NodeJS.ProcessEnv;
   readonly now?: () => number;
   /**
@@ -6474,6 +6570,7 @@ export async function main(
     credFusion: HandlerDependencies["fusionMode"] = undefined,
   ): HandlerDependencies => ({
     invocation,
+    synthesize: dependencies.synthesize,
     env: credEnv,
     secrets: credSecrets,
     now,

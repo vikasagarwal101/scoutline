@@ -86,6 +86,43 @@ export interface EvidencePack {
   readonly subQueries: readonly string[];
   readonly sources: readonly EvidenceSource[];
   readonly coverage: EvidenceCoverage;
+  /**
+   * investigate-verify lane T2 (PRD AC-6): the additive claim-
+   * corroboration block. ABSENT on question-mode packs (byte-identity
+   * pin); present only when `investigate --verify` assembled the pack.
+   */
+  readonly verify?: VerifyBlock;
+}
+
+// ---------------------------------------------------------------------------
+// Verify block (investigate-verify lane, DESIGN D4; PRD AC-5/AC-6)
+// ---------------------------------------------------------------------------
+
+/** The deterministic verdict vocabulary (cue heuristic, PRD AC-5). */
+export type ClaimVerdict = "corroborated" | "contradicted" | "unresolved";
+
+/** One evidence pointer into the pack's own `sources` array. */
+export interface ClaimEvidencePointer {
+  readonly sourceIndex: number;
+  readonly passageIndex: number;
+}
+
+/**
+ * One claim row: the claim text, its verdict, the count of cue-bearing
+ * matching passages (agent re-judgment input — the cue heuristic is
+ * DISCLOSED hint-grade), and first-encounter evidence pointers.
+ */
+export interface ClaimRow {
+  readonly text: string;
+  readonly verdict: ClaimVerdict;
+  readonly negationCues: number;
+  readonly evidence: readonly ClaimEvidencePointer[];
+}
+
+/** The additive verify block: the statement plus one row per claim. */
+export interface VerifyBlock {
+  readonly statement: string;
+  readonly claims: readonly ClaimRow[];
 }
 
 // ---------------------------------------------------------------------------
@@ -242,11 +279,69 @@ function decodeInvestigationPackInner(value: unknown): EvidencePack | null {
   }
   const coverage = decodeCoverage(value.coverage);
   if (coverage === null) return null;
+  // investigate-verify lane T2 (D4): additive-optional `verify` — absent
+  // keeps the canonical subset (question-mode byte identity); present is
+  // validated row-by-row and fails closed on any malformed row.
+  const verify = decodeVerifyBlock(value.verify);
+  if (verify === undefined) return null;
   return {
     schemaVersion: 1,
     question: value.question,
     subQueries: [...value.subQueries],
     sources,
     coverage,
+    ...(verify !== null ? { verify } : {}),
   };
+}
+
+const CLAIM_VERDICTS: readonly string[] = ["corroborated", "contradicted", "unresolved"];
+
+/**
+ * Decode the additive verify block. `undefined` = malformed (the caller
+ * fails closed); `null` = absent (the canonical subset stands); the
+ * decoded block = present + valid.
+ */
+function decodeVerifyBlock(value: unknown): VerifyBlock | null | undefined {
+  if (value === undefined) return null;
+  if (!isPlainObject(value)) return undefined;
+  if (!isNonEmptyString(value.statement)) return undefined;
+  if (!Array.isArray(value.claims)) return undefined;
+  const claims: ClaimRow[] = [];
+  for (const raw of value.claims) {
+    if (!isPlainObject(raw)) return undefined;
+    if (!isNonEmptyString(raw.text)) return undefined;
+    if (typeof raw.verdict !== "string" || !CLAIM_VERDICTS.includes(raw.verdict)) {
+      return undefined;
+    }
+    if (
+      typeof raw.negationCues !== "number" ||
+      !Number.isSafeInteger(raw.negationCues) ||
+      raw.negationCues < 0
+    ) {
+      return undefined;
+    }
+    if (!Array.isArray(raw.evidence)) return undefined;
+    const evidence: ClaimEvidencePointer[] = [];
+    for (const pointer of raw.evidence) {
+      if (!isPlainObject(pointer)) return undefined;
+      if (!isSafeIndex(pointer.sourceIndex) || !isSafeIndex(pointer.passageIndex)) {
+        return undefined;
+      }
+      evidence.push({ sourceIndex: pointer.sourceIndex, passageIndex: pointer.passageIndex });
+    }
+    claims.push({
+      text: raw.text,
+      verdict: raw.verdict as ClaimVerdict,
+      negationCues: raw.negationCues,
+      evidence,
+    });
+  }
+  return { statement: value.statement, claims };
+}
+
+/** Finite, safe, non-negative integer index (evidence pointer guard). */
+function isSafeIndex(value: unknown): value is number {
+  return (
+    typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+  );
 }

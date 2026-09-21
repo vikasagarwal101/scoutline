@@ -58,10 +58,7 @@ describe("planSubQueries template tier", () => {
   });
 
   it("key-terms join equal to the original dedupes to one copy", async () => {
-    const result = await planSubQueries(
-      { query: "rust async runtime" },
-      templateDeps(),
-    );
+    const result = await planSubQueries({ query: "rust async runtime" }, templateDeps());
     assert.deepEqual(result.subQueries, [
       "rust async runtime",
       "rust async runtime overview",
@@ -88,10 +85,7 @@ describe("planSubQueries template tier", () => {
   });
 
   it("all-stopword/short-token question degrades to original only", async () => {
-    const result = await planSubQueries(
-      { query: "What is it?" },
-      templateDeps(),
-    );
+    const result = await planSubQueries({ query: "What is it?" }, templateDeps());
     assert.deepEqual(result.subQueries, ["What is it?"]);
     assert.equal(result.tier, "template");
   });
@@ -106,28 +100,19 @@ describe("planSubQueries template tier", () => {
 
 describe("planSubQueries explicit pipe tier", () => {
   it("splits on unescaped pipes, trimming and dropping empties", async () => {
-    const result = await planSubQueries(
-      { query: "alpha | beta || gamma " },
-      templateDeps(),
-    );
+    const result = await planSubQueries({ query: "alpha | beta || gamma " }, templateDeps());
     assert.deepEqual(result.subQueries, ["alpha", "beta", "gamma"]);
     assert.equal(result.tier, "explicit");
   });
 
   it("respects the escaped literal pipe (\\| does not split)", async () => {
-    const result = await planSubQueries(
-      { query: "rust\\|async | news" },
-      templateDeps(),
-    );
+    const result = await planSubQueries({ query: "rust\\|async | news" }, templateDeps());
     assert.deepEqual(result.subQueries, ["rust|async", "news"]);
     assert.equal(result.tier, "explicit");
   });
 
   it("splits every unescaped pipe in a multi-pipe query", async () => {
-    const result = await planSubQueries(
-      { query: "alpha|beta|gamma|delta" },
-      templateDeps(),
-    );
+    const result = await planSubQueries({ query: "alpha|beta|gamma|delta" }, templateDeps());
     assert.deepEqual(result.subQueries, ["alpha", "beta", "gamma", "delta"]);
   });
 
@@ -138,12 +123,29 @@ describe("planSubQueries explicit pipe tier", () => {
     );
   });
 
+  it("accepts exactly 8 explicit pipes (the MAX_SUBQUERIES precedent cap)", async () => {
+    const eight = Array.from({ length: 8 }, (_, i) => `q${i + 1}`).join("|");
+    const result = await planSubQueries({ query: eight }, templateDeps());
+    assert.equal(result.tier, "explicit");
+    assert.equal(result.subQueries.length, 8);
+    assert.deepEqual(
+      result.subQueries,
+      Array.from({ length: 8 }, (_, i) => `q${i + 1}`),
+    );
+  });
+
+  it("9 explicit pipes fail loud with VALIDATION_ERROR — no silent truncation (PR #264 R1)", async () => {
+    const nine = Array.from({ length: 9 }, (_, i) => `q${i + 1}`).join("|");
+    await assert.rejects(planSubQueries({ query: nine }, templateDeps()), (error) => {
+      assert.equal(error.code, "VALIDATION_ERROR");
+      assert.match(error.message, /8/);
+      return true;
+    });
+  });
+
   it("pipes beat --context with the override notice and no context read", async () => {
     const { deps, calls } = contextDeps("# Notes\n## Alpha");
-    const result = await planSubQueries(
-      { query: "one|two", contextFile: "/tmp/notes.md" },
-      deps,
-    );
+    const result = await planSubQueries({ query: "one|two", contextFile: "/tmp/notes.md" }, deps);
     assert.equal(result.tier, "explicit");
     assert.deepEqual(result.subQueries, ["one", "two"]);
     assert.match(result.notice ?? "", /--context/);

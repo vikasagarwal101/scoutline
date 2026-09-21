@@ -297,9 +297,12 @@ describe("investigate: fixture-adapter e2e (2 sub-queries × 2 arms)", () => {
     assert.strictEqual(sink.events.length, 9);
     assert.strictEqual(sink.events.filter((e) => e.capabilityId === "search").length, 4);
     assert.strictEqual(sink.events.filter((e) => e.capabilityId === "reader").length, 5);
-    // Cost notice pins the arithmetic literally.
+    // Cost notice pins the arithmetic literally (PR #264 F3: names
+    // sources, not reads — per-source supplier attempts can bill more).
     assert.ok(
-      notices.includes("investigate: 2 sub-queries × 2 arms = 4 billable searches + up to 5 reads"),
+      notices.includes(
+        "investigate: 2 sub-queries × 2 arms = 4 billable searches + up to 5 sources (per-source supplier attempts apply)",
+      ),
       `expected cost notice, got: ${JSON.stringify(notices)}`,
     );
   });
@@ -735,9 +738,11 @@ describe("investigate: single-arm mode (escaped-pipe join through search())", ()
     // Provider = the resolved arm on every source row (single mode
     // has no mergedFrom; the surfaced provider is the arm itself).
     assert.ok(pack.sources.every((s) => s.provider === "tavily"));
-    // Cost notice with M=1.
+    // Cost notice with M=1 (F3 wording: sources + supplier attempts).
     assert.ok(
-      notices.includes("investigate: 2 sub-queries × 1 arms = 2 billable searches + up to 5 reads"),
+      notices.includes(
+        "investigate: 2 sub-queries × 1 arms = 2 billable searches + up to 5 sources (per-source supplier attempts apply)",
+      ),
       `expected single-arm cost notice, got: ${JSON.stringify(notices)}`,
     );
     // Linearity: N×M + K = 2×1 + 4 = 6 (2 search + 4 reads).
@@ -862,7 +867,10 @@ describe("investigate: reader supplier fallback (registry order)", () => {
     // s2: zai fails, tavily serves → READ. b2: both fail → unread with
     // the LAST supplier's (tavily's) code.
     assert.strictEqual(pack.coverage.sourcesRead, 4);
-    assert.ok(pack.sources.some((s) => s.url === URLS.s2), "s2 recovered via fallback");
+    assert.ok(
+      pack.sources.some((s) => s.url === URLS.s2),
+      "s2 recovered via fallback",
+    );
     assert.deepEqual(pack.coverage.unread, [{ url: URLS.b2, reason: "reader-failed:QUOTA_ERROR" }]);
     // Base 9 + fallback attempts: s2 (1 extra), b2 (1 extra) = 11.
     assert.strictEqual(sink.events.length, 11);

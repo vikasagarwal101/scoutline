@@ -128,11 +128,16 @@ export function isValidContentSha256(value: unknown): value is string {
 // ---------------------------------------------------------------------------
 
 function decodeCharRange(value: unknown): value is CharRange {
+  // PR #264 F2: the documented `[start, end)` invariant, enforced at
+  // decode — safe integers, non-negative start, strictly increasing
+  // (an empty range cannot quote a non-empty passage).
   return (
     Array.isArray(value) &&
     value.length === 2 &&
-    isFiniteNumber(value[0]) &&
-    isFiniteNumber(value[1])
+    Number.isSafeInteger(value[0]) &&
+    Number.isSafeInteger(value[1]) &&
+    (value[0] as number) >= 0 &&
+    (value[1] as number) > (value[0] as number)
   );
 }
 
@@ -210,6 +215,17 @@ function decodeCoverage(value: unknown): EvidenceCoverage | null {
  * to the canonical subset.
  */
 export function decodeInvestigationPack(value: unknown): EvidencePack | null {
+  // PR #264 F1: total containment for the never-throws contract — a
+  // throwing getter or Proxy trap on untrusted input must surface as
+  // a fail-closed null, never as an exception out of the decoder.
+  try {
+    return decodeInvestigationPackInner(value);
+  } catch {
+    return null;
+  }
+}
+
+function decodeInvestigationPackInner(value: unknown): EvidencePack | null {
   if (!isPlainObject(value)) return null;
   if (value.schemaVersion !== 1) return null;
   if (!isNonEmptyString(value.question)) return null;

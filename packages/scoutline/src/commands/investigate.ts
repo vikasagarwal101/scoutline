@@ -72,11 +72,7 @@ import type { ConsumptionSink } from "../lib/consumption.js";
 import type { ProviderDescriptor, ProviderId } from "../providers/types.js";
 import { UnsupportedCapabilityError, ValidationError } from "../lib/errors.js";
 import { redactSecrets } from "../lib/redact.js";
-import {
-  applyBudget,
-  type BudgetCompaction,
-  type LadderRule,
-} from "../lib/output-budget.js";
+import { applyBudget, type BudgetCompaction, type LadderRule } from "../lib/output-budget.js";
 import { persistCompaction } from "../lib/output-budget-persistence.js";
 import {
   executeFanoutPlan,
@@ -147,13 +143,16 @@ Provider selection (precedence: explicit flag, then SCOUTLINE_PROVIDER, then zai
         activation tiers, verbatim); a single id runs one arm;
         \`scoutline config set fanout true\` (no pin) is a standing fan-out.
 
-Cost: the run bills N sub-queries × M arms searches + up to K reads —
+Cost: the run bills N sub-queries × M arms searches + up to K sources
+(per-source reader supplier attempts can bill more than one read) —
 one stderr notice states the exact arithmetic before any billable work.
 
 Sub-query planning (precedence: pipes > --context > template):
   Pipes   An unescaped \`|\` in the question splits it into explicit
           sub-queries (the --merge grammar; escape with \\| for a
-          literal pipe). Wins over --context with a stderr notice.
+          literal pipe). Capped at 8 — a longer split fails loud
+          with VALIDATION_ERROR (never silently truncated). Wins over
+          --context with a stderr notice.
   --context <path>  Read a local notes file and derive up to 8
           sub-queries (headings/questions), exactly like search.
   Template  Deterministic transforms of the bare question (original,
@@ -430,9 +429,7 @@ function validateOptions(options: InvestigateOptions): number {
   // no early return may shield a later field's check.
   if (typeof options.sources === "number") {
     if (!Number.isInteger(options.sources) || options.sources <= 0) {
-      throw new ValidationError(
-        `--sources must be a positive integer (got ${options.sources}).`,
-      );
+      throw new ValidationError(`--sources must be a positive integer (got ${options.sources}).`);
     }
   }
   // T5 (D7): strict positive-integer --max-chars (parseBriefMaxChars
@@ -463,7 +460,11 @@ async function applyInvestigateOutputBudget(
     readonly context: { notice(message: string): void };
     readonly deps: InvestigateExecutionDependencies;
     readonly args: Readonly<Record<string, unknown>>;
-    readonly providerRouting: { mode: "single" | "fanout"; effective?: string; arms?: readonly string[] };
+    readonly providerRouting: {
+      mode: "single" | "fanout";
+      effective?: string;
+      arms?: readonly string[];
+    };
   },
 ): Promise<CommandResult> {
   if (maxChars === undefined || result.kind !== "data") return result;
@@ -581,7 +582,9 @@ async function serveRead(
           ? String((error as { code: unknown }).code)
           : "UNKNOWN_ERROR";
       lastReason =
-        error instanceof UnsupportedCapabilityError ? "no-reader-supplier" : `reader-failed:${code}`;
+        error instanceof UnsupportedCapabilityError
+          ? "no-reader-supplier"
+          : `reader-failed:${code}`;
     }
   }
   return { url, reason: lastReason, warm: false };
@@ -668,9 +671,7 @@ function selectReaderSuppliers(
 // ---------------------------------------------------------------------------
 
 function joinSubQueries(subQueries: readonly string[]): string {
-  return subQueries
-    .map((s) => s.replace(/\\+$/, "").replace(/\|/g, "\\|"))
-    .join("|");
+  return subQueries.map((s) => s.replace(/\\+$/, "").replace(/\|/g, "\\|")).join("|");
 }
 
 // ---------------------------------------------------------------------------
@@ -718,10 +719,13 @@ export async function investigate(
   });
   const M = fanoutPlan.arms.length;
 
-  // Cost notice (AC-3): the arithmetic stated literally, N/M/K spelled
-  // out, BEFORE any billable work runs.
+  // Cost notice (AC-3; PR #264 F3 wording): the arithmetic stated
+  // literally, N/M/K spelled out, BEFORE any billable work runs. K
+  // counts SOURCES — the per-read supplier fallthrough can bill more
+  // than one reader attempt per source, so the notice names sources
+  // and discloses the attempt semantics instead of understating.
   context?.notice(
-    `investigate: ${N} sub-queries × ${M} arms = ${N * M} billable searches + up to ${sourcesCap} reads`,
+    `investigate: ${N} sub-queries × ${M} arms = ${N * M} billable searches + up to ${sourcesCap} sources (per-source supplier attempts apply)`,
   );
   if (fanoutPlan.suppress) context?.notice(fanoutPlan.suppress);
 
@@ -813,9 +817,7 @@ export async function investigate(
   // per member — the T2-exposed term shape), case-folded and
   // stopword-filtered by normalizeTerms inside extractPassages.
   const terms = [
-    ...new Set(
-      [question, ...subQueries].flatMap((q) => deriveTemplateTopic(q).split(" ")),
-    ),
+    ...new Set([question, ...subQueries].flatMap((q) => deriveTemplateTopic(q).split(" "))),
   ].filter((t) => t.length > 0);
   const nowWall = deps.nowWall ?? (() => new Date());
   const sources: EvidenceSource[] = [];
@@ -830,8 +832,7 @@ export async function investigate(
     // Provider provenance: the merged row's surfaced provider — first
     // mergedFrom (fan-out) or the resolved arm (single mode). NOT the
     // reader supplier: the row says who FOUND it, not who read it.
-    const surfacedProvider =
-      row.mergedFrom?.[0] ?? singleArmProviderId ?? suppliers[0]?.id ?? "";
+    const surfacedProvider = row.mergedFrom?.[0] ?? singleArmProviderId ?? suppliers[0]?.id ?? "";
     sources.push({
       url: row.url,
       finalUrl: result.finalUrl,
@@ -870,9 +871,7 @@ export async function investigate(
       // Wiring bug, not a user error: the flag is documented and
       // parsed, so a missing dep means the handler seam forgot to
       // inject the transport. Fail loud — never silently skip.
-      throw new Error(
-        "investigate: --synthesize was requested but no synthesis dep is wired",
-      );
+      throw new Error("investigate: --synthesize was requested but no synthesis dep is wired");
     }
     const quotes: string[] = [];
     for (const source of sources) {
@@ -894,22 +893,18 @@ export async function investigate(
     ...(noCache ? { "no-cache": true } : {}),
     ...(options.isolated ? { isolated: true } : {}),
   };
-  return applyInvestigateOutputBudget(
-    { kind: "data", data: payload },
-    options.maxChars,
-    {
-      context: context ?? { stdinIsTTY: false, readStdin: async () => "", notice: () => {} },
-      deps,
-      args: investigateArgs,
-      providerRouting: {
-        mode: fanoutPlan.mode,
-        ...(fanoutPlan.mode === "fanout"
-          ? { arms: fanoutPlan.arms }
-          : { effective: singleArmProviderId ?? "" }),
-        ...(options.provider !== undefined ? { requested: options.provider } : {}),
-      } as { mode: "single" | "fanout"; effective?: string; arms?: readonly string[] },
-    },
-  );
+  return applyInvestigateOutputBudget({ kind: "data", data: payload }, options.maxChars, {
+    context: context ?? { stdinIsTTY: false, readStdin: async () => "", notice: () => {} },
+    deps,
+    args: investigateArgs,
+    providerRouting: {
+      mode: fanoutPlan.mode,
+      ...(fanoutPlan.mode === "fanout"
+        ? { arms: fanoutPlan.arms }
+        : { effective: singleArmProviderId ?? "" }),
+      ...(options.provider !== undefined ? { requested: options.provider } : {}),
+    } as { mode: "single" | "fanout"; effective?: string; arms?: readonly string[] },
+  });
 }
 
 /**

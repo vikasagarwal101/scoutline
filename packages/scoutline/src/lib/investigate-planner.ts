@@ -19,11 +19,16 @@
  * production wiring lives in the orchestrator command.
  */
 
-import {
-  STOPWORDS,
-  deriveSubQueries,
-  parseContextText,
-} from "./context-file.js";
+import { ValidationError } from "./errors.js";
+import { STOPWORDS, deriveSubQueries, parseContextText } from "./context-file.js";
+
+/**
+ * PR #264 R1 (owner-approved): explicit pipe plans are capped at 8
+ * sub-queries — the context tier's MAX_SUBQUERIES precedent. Exceeding
+ * the cap fails loud with VALIDATION_ERROR (silent truncation rejected:
+ * a truncated plan would silently under-bill the user's intent).
+ */
+export const MAX_EXPLICIT_SUBQUERIES = 8;
 
 /**
  * Pinned to `src/commands/search.ts` `splitMergeSubQueries` — the
@@ -95,6 +100,7 @@ export function deriveTemplateTopic(query: string): string {
 /**
  * Explicit tier split — see the grammar pin above. Same fail-loud
  * contract as `search --merge`: no non-empty fragments is an error.
+ * R1: > 8 fragments is VALIDATION_ERROR (never silent truncation).
  */
 function splitExplicit(query: string): string[] {
   const subQueries = query
@@ -102,8 +108,12 @@ function splitExplicit(query: string): string[] {
     .map((q) => q.replace(MERGE_UNESCAPE, "|").trim())
     .filter((q) => q.length > 0);
   if (subQueries.length === 0) {
-    throw new Error(
-      "--merge requires at least one non-empty query (split with '|')",
+    throw new Error("--merge requires at least one non-empty query (split with '|')");
+  }
+  if (subQueries.length > MAX_EXPLICIT_SUBQUERIES) {
+    throw new ValidationError(
+      `Explicit pipe plan exceeds the ${MAX_EXPLICIT_SUBQUERIES}-sub-query cap (${subQueries.length} fragments).`,
+      "Split fewer sub-queries with '|', or move the investigation into a --context file (the context tier derives up to 8).",
     );
   }
   return subQueries;
@@ -111,7 +121,7 @@ function splitExplicit(query: string): string[] {
 
 /**
  * Resolve the sub-query plan for an investigation. Throws only on the
- * explicit-tier fail-loud case (all fragments empty).
+ * explicit-tier fail-loud cases (all fragments empty; > 8 fragments).
  */
 export async function planSubQueries(
   options: PlanSubQueriesOptions,
@@ -122,8 +132,7 @@ export async function planSubQueries(
     return {
       subQueries: splitExplicit(options.query),
       tier: "explicit",
-      notice:
-        "--context ignored: explicit pipe split takes precedence over the context file",
+      notice: "--context ignored: explicit pipe split takes precedence over the context file",
     };
   }
 
@@ -133,8 +142,7 @@ export async function planSubQueries(
     // Orchestrator ruling (T2 pickup): search's zero-derivation
     // fallback precedent — an empty derivation degrades to the
     // original query rather than an empty grid.
-    const subQueries =
-      derived.length > 0 ? derived : [options.query];
+    const subQueries = derived.length > 0 ? derived : [options.query];
     return { subQueries, tier: "context" };
   }
 

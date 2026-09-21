@@ -59,8 +59,7 @@ function buildValidPack() {
         contentSha256: sha256of(SOURCE_A_CONTENT),
         passages: [
           {
-            quote:
-              "The fusion merge ranks candidates by reciprocal rank.",
+            quote: "The fusion merge ranks candidates by reciprocal rank.",
             charRange: [0, 54],
           },
         ],
@@ -82,9 +81,7 @@ function buildValidPack() {
       sourcesConsidered: 7,
       sourcesRead: 2,
       cacheHits: 1,
-      unread: [
-        { url: "https://example.com/nosupplier", reason: "no-reader-supplier" },
-      ],
+      unread: [{ url: "https://example.com/nosupplier", reason: "no-reader-supplier" }],
     },
   };
 }
@@ -218,6 +215,44 @@ describe("decodeInvestigationPack — fail closed", () => {
     weird.coverage = new Proxy({}, { get: () => 1 });
     assert.equal(decodeInvestigationPack(weird), null);
   });
+
+  it("never throws on a THROWING getter — total decode returns null (PR #264 F1)", () => {
+    const boom = buildValidPack();
+    Object.defineProperty(boom, "subQueries", {
+      get() {
+        throw new Error("getter boom");
+      },
+    });
+    assert.equal(decodeInvestigationPack(boom), null);
+  });
+
+  it("never throws on a throwing Proxy get trap — total decode returns null (PR #264 F1)", () => {
+    const inner = buildValidPack();
+    const trapped = new Proxy(inner, {
+      get(target, prop) {
+        if (prop === "sources") throw new Error("proxy trap boom");
+        return target[prop];
+      },
+    });
+    assert.equal(decodeInvestigationPack(trapped), null);
+  });
+
+  it("rejects charRange invariant violations — negative, fractional, reversed, empty (PR #264 F2)", () => {
+    for (const bad of [
+      [-1, 5], // negative start
+      [1.5, 5], // fractional
+      [5, 3], // reversed (end < start)
+      [3, 3], // empty range (start === end)
+    ]) {
+      const pack = buildValidPack();
+      pack.sources[0].passages[0].charRange = bad;
+      assert.equal(
+        decodeInvestigationPack(pack),
+        null,
+        `charRange ${JSON.stringify(bad)} must fail closed`,
+      );
+    }
+  });
 });
 
 describe("isValidContentSha256", () => {
@@ -227,7 +262,14 @@ describe("isValidContentSha256", () => {
   });
 
   it("rejects everything else", () => {
-    for (const bad of ["", "ABC".repeat(22).slice(0, 64), "g".repeat(64), "a".repeat(63), 42, null]) {
+    for (const bad of [
+      "",
+      "ABC".repeat(22).slice(0, 64),
+      "g".repeat(64),
+      "a".repeat(63),
+      42,
+      null,
+    ]) {
       assert.equal(isValidContentSha256(bad), false);
     }
   });

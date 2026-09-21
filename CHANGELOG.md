@@ -1,6 +1,9 @@
 # Changelog
 
 ## [Unreleased]
+### Changed
+
+- **`vision extract-text` routes to GLM-OCR with exhaustion-aware fallback (ADR-0014):** the Z.AI engine for extract-text is now the purpose-built `glm-ocr` specialist (`POST /paas/v4/layout_parsing`, token-metered at $0.03/1M tokens uniform input+output — PAYG balance required; NOT covered by the GLM Coding Plan, live-verified): verbatim document-order markdown extraction, PDF input up to 50MB on the existing surface (a capability gain; images ≤10MB), and content-hash caching under the `v2.vision-ocr-layout-parsing.zai.*` namespace — a deliberate, scoped departure from the vision no-cache rule for the deterministic OCR arm (disable for a run with `SCOUTLINE_CACHE=0`; same file bytes at different paths hit one entry; cache hits construct no transport and record no usage rows). Accounts without PAYG credits get the pre-lane plan-covered vision model through a loud one-line stderr fallback (wire error 1113 → `QUOTA_ERROR` → fallback; non-1113 errors propagate unchanged with no engine fallback). `--language` and custom prompts are warn-and-strip on the OCR arm (honored verbatim on the fallback arm and on MiniMax); the usage ledger counts attempts (warm OCR run = 1 row, 1113+fallback = 2, cache hit = 0); `vision batch` inherits the routing including PDFs in globs. The capability contract, `VisionOperation` set, and MiniMax path are byte-identical.
 
 ## [0.23.0] - 2026-09-19
 

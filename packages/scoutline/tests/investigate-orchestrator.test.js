@@ -56,7 +56,12 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { investigate } from "../dist/commands/investigate.js";
 import { createInMemoryConsumptionSink } from "../dist/lib/consumption.js";
-import { ApiError, UnsupportedCapabilityError, ValidationError } from "../dist/lib/errors.js";
+import {
+  ApiError,
+  ScoutlineError,
+  UnsupportedCapabilityError,
+  ValidationError,
+} from "../dist/lib/errors.js";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -770,6 +775,168 @@ describe("investigate: single-arm mode (escaped-pipe join through search())", ()
     assert.deepEqual(
       pack.sources.map((s) => s.url),
       ["https://e/lp", "https://e/nw"],
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 10. Reader fallback across suppliers (AC-4 "provider fallback"; review fix #2)
+// ---------------------------------------------------------------------------
+
+describe("investigate: reader supplier fallback (registry order)", () => {
+  /**
+   * Two reader suppliers in registry order: "zai" (first) and "tavily"
+   * (second). zai fails terminally (ApiError 403) on one source;
+   * tavily serves it. Base grid is the 5-row fan-out fixture
+   * (4 search events + 5 reads = 9 baseline; the fallback adds ONE
+   * extra billable read attempt on the failed source → 10).
+   */
+  function fallbackGrid(zaiFailures, tavilyResults) {
+    const grid = baseGrid();
+    const zai = makeReaderDescriptor("zai", {
+      results: {
+        [URLS.s1]: { content: CONTENTS[URLS.s1], title: "s1" },
+        [URLS.va]: { content: CONTENTS[URLS.va], title: "va" },
+        [URLS.s3]: { content: CONTENTS[URLS.s3], title: "s3" },
+        [URLS.s2]: { content: CONTENTS[URLS.s2], title: "s2" },
+      },
+      failures: zaiFailures,
+    });
+    const tavilyReader = makeReaderDescriptor("tavily", { results: tavilyResults });
+    return { grid, zai, tavilyReader };
+  }
+
+  const FULL_TAVILY_RESULTS = {
+    [URLS.b2]: { content: CONTENTS[URLS.b2], title: "b2 via tavily" },
+  };
+
+  it("supplier #1 terminal failure falls through to supplier #2; source is READ, provider provenance unchanged", async () => {
+    const { grid, zai, tavilyReader } = fallbackGrid(
+      { [URLS.b2]: new ApiError("fixture forbidden", 403) },
+      FULL_TAVILY_RESULTS,
+    );
+    const { deps, sink } = makeDeps({ searchDescriptors: grid, readerDescriptor: zai });
+    // Registry order: zai first, tavily reader second — both in the
+    // injected descriptor list AFTER the search arms.
+    deps.descriptors = [...deps.descriptors, tavilyReader.descriptor];
+    const result = await investigate(QUESTION, BASE_OPTIONS, deps, makeContext().context);
+    const pack = result.data;
+
+    // b2 IS read (fallback succeeded), not unread.
+    assert.deepEqual(pack.coverage.unread, []);
+    assert.strictEqual(pack.coverage.sourcesRead, 5);
+    // Provider provenance UNCHANGED: the row's mergedFrom (search arm
+    // that surfaced it), NOT the reader that served the fallback.
+    const b2 = pack.sources.find((s) => s.url === URLS.b2);
+    assert.ok(b2, "b2 present");
+    assert.strictEqual(b2.provider, "tavily");
+    assert.strictEqual(b2.title, "b2 via tavily");
+    // Consumption: base 9 + 1 extra fallback attempt = 10 exactly
+    // (5 reads each billed once + 1 failed attempt on b2).
+    assert.strictEqual(sink.events.length, 10);
+    assert.strictEqual(sink.events.filter((e) => e.capabilityId === "reader").length, 6);
+    // Both suppliers were attempted on b2, in registry order.
+    assert.ok(zai.invokes.includes(URLS.b2), "zai attempted b2");
+    assert.ok(tavilyReader.invokes.includes(URLS.b2), "tavily served b2");
+  });
+
+  it("all suppliers fail → unread row with the LAST supplier's reason code; pool continues", async () => {
+    const { grid, zai, tavilyReader } = fallbackGrid(
+      {
+        [URLS.s2]: new ApiError("zai forbidden", 403),
+        [URLS.b2]: new ApiError("zai forbidden on b2 too", 403),
+      },
+      // tavily reader also fails b2 (last supplier → its code surfaces).
+      {},
+    );
+    // Make tavily reader fail b2 terminally too.
+    const tavilyFailing = makeReaderDescriptor("tavily", {
+      results: { [URLS.s2]: { content: CONTENTS[URLS.s2], title: "s2 via tavily" } },
+      failures: { [URLS.b2]: new ScoutlineError("tavily forbidden", "QUOTA_ERROR") },
+    });
+    const { deps, sink } = makeDeps({ searchDescriptors: grid, readerDescriptor: zai });
+    deps.descriptors = [...deps.descriptors, tavilyFailing.descriptor];
+    const result = await investigate(QUESTION, BASE_OPTIONS, deps, makeContext().context);
+    const pack = result.data;
+
+    // s2: zai fails, tavily serves → READ. b2: both fail → unread with
+    // the LAST supplier's (tavily's) code.
+    assert.strictEqual(pack.coverage.sourcesRead, 4);
+    assert.ok(pack.sources.some((s) => s.url === URLS.s2), "s2 recovered via fallback");
+    assert.deepEqual(pack.coverage.unread, [{ url: URLS.b2, reason: "reader-failed:QUOTA_ERROR" }]);
+    // Base 9 + fallback attempts: s2 (1 extra), b2 (1 extra) = 11.
+    assert.strictEqual(sink.events.length, 11);
+  });
+
+  it("UnsupportedCapabilityError from a supplier advances to the next (no-supplier ≠ failed-supplier)", async () => {
+    // A supplier that exists but rejects the capability classifies as a
+    // fallback step, not a terminal unread — the next supplier serves.
+    const grid = baseGrid();
+    const incapable = {
+      id: "minimax",
+      isConfigured: () => true,
+      capabilities: () => new Set(["reader"]),
+      create: () => ({
+        id: "minimax",
+        reader: {
+          fetch: {
+            kind: "reader-fetch",
+            validate() {},
+            cacheIdentity(request) {
+              return {
+                provider: "minimax",
+                capability: "reader",
+                operation: "reader-fetch",
+                credentialFingerprint: "fp-minimax",
+                request,
+                legacyCandidates: [],
+              };
+            },
+            decodeCached: () => null,
+            async invoke() {
+              throw new UnsupportedCapabilityError("minimax", "reader");
+            },
+          },
+        },
+      }),
+    };
+    const reader = baseReader();
+    const { deps, sink } = makeDeps({ searchDescriptors: grid, readerDescriptor: reader });
+    // Registry order: incapable FIRST, then the serving reader.
+    deps.descriptors = [incapable, ...deps.descriptors];
+    const result = await investigate(QUESTION, BASE_OPTIONS, deps, makeContext().context);
+    const pack = result.data;
+    // Every source still read by the second supplier.
+    assert.strictEqual(pack.coverage.sourcesRead, 5);
+    assert.deepEqual(pack.coverage.unread, []);
+    // The incapable supplier's attempt billed (attempt doctrine) —
+    // 5 sources × 1 extra attempt each = base 9 + 5 = 14.
+    assert.strictEqual(sink.events.length, 14);
+  });
+
+  it("no-supplier case stays: empty supplier list → all unread(no-reader-supplier)", async () => {
+    // Existing behavior pinned again under the new selection shape.
+    const grid = baseGrid();
+    const { deps, sink } = makeDeps({ searchDescriptors: grid });
+    const result = await investigate(QUESTION, BASE_OPTIONS, deps, makeContext().context);
+    assert.strictEqual(result.data.coverage.sourcesRead, 0);
+    assert.ok(result.data.coverage.unread.every((r) => r.reason === "no-reader-supplier"));
+    assert.strictEqual(sink.events.length, 4);
+  });
+
+  it("option validation is unconditional: bad maxChars rejects even when sources is provided", async () => {
+    const grid = baseGrid();
+    const reader = baseReader();
+    const { deps } = makeDeps({ searchDescriptors: grid, readerDescriptor: reader });
+    await assert.rejects(
+      () =>
+        investigate(
+          QUESTION,
+          { ...BASE_OPTIONS, sources: 3, maxChars: 0 },
+          deps,
+          makeContext().context,
+        ),
+      (error) => error.code === "VALIDATION_ERROR" && /max-chars/.test(error.message),
     );
   });
 });

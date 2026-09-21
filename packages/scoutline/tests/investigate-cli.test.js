@@ -649,3 +649,58 @@ describe("investigate: --max-chars consumed through main()", () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// 9. Redaction at the compaction seam (review fix #1, DESIGN D7): a
+// fired --max-chars persists the FULL untrimmed pack through
+// persistCompaction POST-REDACTION — the handler threads deps.secrets
+// into the command's execution deps; a missing thread leaves
+// redactSecrets(pack, undefined) a no-op and the artifact leaks the
+// secret token.
+// ---------------------------------------------------------------------------
+
+describe("investigate: --max-chars compaction artifact is redacted (review fix #1)", () => {
+  it("the persisted master artifact and the printed pack both omit the secret token", async (t) => {
+    await withTempDir(t, async (artifactsDir) => {
+      const SECRET = "sk-fixture-secret-token-9f1a";
+      // Long passages so the assembled pack exceeds the 900-char budget.
+      const LONG = `alpha evidence with ${SECRET} embedded sentence number one ${"detail ".repeat(20)}`;
+      const arm = makeSearchDescriptor("tavily", {
+        alpha: [{ title: "one", url: "https://e/s1", summary: "s" }],
+        beta: [{ title: "two", url: "https://e/s2", summary: "s" }],
+      });
+      const reader = makeReaderDescriptor("zai", {
+        "https://e/s1": { content: LONG },
+        "https://e/s2": { content: LONG },
+      });
+      const { adapter, stdout, stderr } = makeAdapter();
+      const status = await main(
+        ["--provider", "tavily", "investigate", "alpha | beta", "--max-chars", "900"],
+        {
+          ...hermeticMainDeps({
+            invocation: adapter,
+            // The secret rides a credential env door so main()'s
+            // configuredSecrets(resolvedEnv) picks it up — the
+            // production path for deps.secrets.
+            env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir, TAVILY_API_KEY: SECRET },
+            providerDescriptors: [arm.descriptor, reader.descriptor],
+          }),
+        },
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      assert.ok(JSON.parse(stdout[0]).compaction, "budget fired");
+      // Printed pack: redacted (invokeCommand boundary).
+      assert.ok(!stdout.join("").includes(SECRET), "stdout omits the secret");
+      // Persisted artifact: the FULL untrimmed pack, post-redaction.
+      const log = JSON.parse(fs.readFileSync(path.join(artifactsDir, "index.json"), "utf8"));
+      const printed = JSON.parse(stdout[0]);
+      const entry = log.entries.find(
+        (e) => e.command === "investigate" && e.requestId === printed.compaction.ref,
+      );
+      assert.ok(entry, "compaction log entry present");
+      const master = fs.readFileSync(path.join(artifactsDir, entry.masterPath), "utf8");
+      assert.ok(master.includes("alpha evidence"), "artifact holds the untrimmed content");
+      assert.ok(!master.includes(SECRET), "artifact omits the secret (post-redaction)");
+    });
+  });
+});

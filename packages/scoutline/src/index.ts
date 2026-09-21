@@ -5144,6 +5144,7 @@ async function handleInvestigate(
               })
             ).text,
           readerCapabilityFor: (descriptor) => descriptor.create({ env: deps.env }).reader,
+          ...(deps.secrets !== undefined ? { secrets: deps.secrets } : {}),
           ...(synthesizeDep !== undefined ? { synthesize: synthesizeDep } : {}),
         },
         context,

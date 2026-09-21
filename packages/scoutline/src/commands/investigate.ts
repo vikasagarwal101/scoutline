@@ -426,13 +426,14 @@ const DEFAULT_READ_CONCURRENCY = 4;
 // ---------------------------------------------------------------------------
 
 function validateOptions(options: InvestigateOptions): number {
+  // Review fix #4: every provided field validates UNCONDITIONALLY —
+  // no early return may shield a later field's check.
   if (typeof options.sources === "number") {
     if (!Number.isInteger(options.sources) || options.sources <= 0) {
       throw new ValidationError(
         `--sources must be a positive integer (got ${options.sources}).`,
       );
     }
-    return options.sources;
   }
   // T5 (D7): strict positive-integer --max-chars (parseBriefMaxChars
   // class) — validated at the boundary so a bad value is
@@ -443,7 +444,7 @@ function validateOptions(options: InvestigateOptions): number {
       throw new ValidationError("--max-chars must be a positive integer");
     }
   }
-  return DEFAULT_SOURCES;
+  return typeof options.sources === "number" ? options.sources : DEFAULT_SOURCES;
 }
 
 /**
@@ -509,57 +510,81 @@ interface ReadOutcome {
 }
 
 /**
- * Serve one read through the shared cache. One client per read
- * (D3 #5): `deps.readerCapabilityFor` resolves the supplier's
- * capability per call (`descriptor.create` per read — `create` is
- * side-effect-free metadata capture; the operation's invoke owns and
- * closes its transport inside executeReaderOperation, so no transport
- * outlives the call). cacheHits instrumentation: a warm serve is a
- * read-only cache `get()` on the operation's exact partition key that
- * decodes non-null through the operation's own decoder. Boundary: the
- * executor's legacy read-through candidates are miss-then-set serves
+ * Serve one read through the shared cache, trying suppliers in
+ * registry order (review fix #2 — AC-4 "provider fallback"). One
+ * client per ATTEMPT: `deps.readerCapabilityFor` resolves the
+ * supplier's capability per call (`descriptor.create` per attempt —
+ * `create` is side-effect-free metadata capture; the operation's
+ * invoke owns and closes its transport inside executeReaderOperation,
+ * so no transport outlives the call).
+ *
+ * Advance-to-next-supplier on ANY thrown error — an
+ * UnsupportedCapabilityError (supplier cannot serve the capability)
+ * and terminal failures alike (executeReaderOperation has already
+ * exhausted its internal retry for transient classes by the time the
+ * error escapes, so every escape is supplier-exhausted). ALL suppliers
+ * exhausted → the LAST supplier's reason code surfaces (most
+ * informative: the deepest attempt). Every attempt bills exactly one
+ * consumption event (executor behavior — fallback attempts are
+ * billable reads, consistent with the usage-ledger "retries count as
+ * attempts" doctrine; K in the N×M+K notice counts attempts).
+ *
+ * cacheHits instrumentation: a warm serve is a read-only cache `get()`
+ * on the FIRST supplier's partition key that decodes non-null through
+ * the operation's own decoder. ponytail: conservative undercount when
+ * a fallback supplier serves warm (first-supplier probe only); widen
+ * to per-attempt probes if a fallback-heavy workload needs exact hits.
+ * Boundary: legacy read-through candidates are miss-then-set serves
  * and count as misses (honest warm-serve count only).
  */
 async function serveRead(
   url: string,
-  descriptor: ProviderDescriptor,
+  suppliers: readonly ProviderDescriptor[],
   deps: InvestigateExecutionDependencies,
   noCache: boolean,
   cacheHits: { count: number },
 ): Promise<ReadOutcome> {
-  const capability = deps.readerCapabilityFor(descriptor);
-  if (capability === undefined) {
+  if (suppliers.length === 0) {
     return { url, reason: "no-reader-supplier", warm: false };
   }
-  const wasWarm = await readerCacheWasWarm(capability, url, deps, noCache);
-  try {
-    const result = await executeReaderOperation(
-      capability.fetch,
-      { url },
-      { noCache, ...(deps.retryPolicy !== undefined ? { retryPolicy: deps.retryPolicy } : {}) },
-      {
-        cache: deps.cache,
-        sleep: deps.sleep,
-        random: deps.random,
-        ...(deps.consume !== undefined ? { consume: deps.consume } : {}),
-        ...(deps.now !== undefined ? { now: deps.now } : {}),
-      },
-    );
-    if (wasWarm) cacheHits.count += 1;
-    return { url, result, warm: wasWarm };
-  } catch (error) {
-    if (error instanceof UnsupportedCapabilityError) {
-      // The selected reader supplier cannot serve this source at all.
-      return { url, reason: "no-reader-supplier", warm: false };
+  let lastReason = "no-reader-supplier";
+  for (const descriptor of suppliers) {
+    const capability = deps.readerCapabilityFor(descriptor);
+    if (capability === undefined) {
+      // Not a reader supplier at all — selection pre-filters these;
+      // kept as a guard for hand-built descriptor lists.
+      lastReason = "no-reader-supplier";
+      continue;
     }
-    // Terminal per-source failure: reason CODE only, redacted — no
-    // error prose crossing the interface (house rule, D5).
-    const code =
-      typeof error === "object" && error !== null && "code" in error
-        ? String((error as { code: unknown }).code)
-        : "UNKNOWN_ERROR";
-    return { url, reason: `reader-failed:${code}`, warm: false };
+    const wasWarm = await readerCacheWasWarm(capability, url, deps, noCache);
+    try {
+      const result = await executeReaderOperation(
+        capability.fetch,
+        { url },
+        { noCache, ...(deps.retryPolicy !== undefined ? { retryPolicy: deps.retryPolicy } : {}) },
+        {
+          cache: deps.cache,
+          sleep: deps.sleep,
+          random: deps.random,
+          ...(deps.consume !== undefined ? { consume: deps.consume } : {}),
+          ...(deps.now !== undefined ? { now: deps.now } : {}),
+        },
+      );
+      if (wasWarm) cacheHits.count += 1;
+      return { url, result, warm: wasWarm };
+    } catch (error) {
+      // Reason CODE only, redacted — no error prose crossing the
+      // interface (house rule, D5). Advances to the next supplier;
+      // this code surfaces only if every later supplier also fails.
+      const code =
+        typeof error === "object" && error !== null && "code" in error
+          ? String((error as { code: unknown }).code)
+          : "UNKNOWN_ERROR";
+      lastReason =
+        error instanceof UnsupportedCapabilityError ? "no-reader-supplier" : `reader-failed:${code}`;
+    }
   }
+  return { url, reason: lastReason, warm: false };
 }
 
 /**
@@ -595,12 +620,12 @@ async function readerCacheWasWarm(
  * Bounded-concurrency map over the selected sources (D3 #5). A read
  * slot is reused as soon as its previous read settles (start-aligned
  * workers over a shared index — no per-chunk scheduling, no timers).
- * `supplier` is the run's reader supplier (handleRead-parity
- * selection, see the module header).
+ * `suppliers` is the run's ordered reader supplier list (review fix
+ * #2); serveRead falls through it per source.
  */
 async function readPool(
   rows: readonly FormattedResult[],
-  supplier: ProviderDescriptor | undefined,
+  suppliers: readonly ProviderDescriptor[],
   deps: InvestigateExecutionDependencies,
   noCache: boolean,
   cacheHits: { count: number },
@@ -614,11 +639,7 @@ async function readPool(
       next += 1;
       const row = rows[index];
       if (row === undefined) return;
-      if (supplier === undefined) {
-        outcomes.push({ url: row.url, reason: "no-reader-supplier", warm: false });
-        continue;
-      }
-      outcomes.push(await serveRead(row.url, supplier, deps, noCache, cacheHits));
+      outcomes.push(await serveRead(row.url, suppliers, deps, noCache, cacheHits));
     }
   };
   await Promise.all(Array.from({ length: Math.min(limit, rows.length) }, worker));
@@ -626,18 +647,19 @@ async function readPool(
 }
 
 /**
- * The run's reader supplier: the FIRST descriptor in registry order
- * whose injected `readerCapabilityFor` resolves a capability — the
- * same first-configured-capable order handleRead's provider selection
- * walks (resolveEffectiveProvider over the same descriptor list).
+ * The run's reader supplier LIST (review fix #2): every descriptor in
+ * registry order whose injected `readerCapabilityFor` resolves a
+ * capability — the same first-configured-capable order handleRead's
+ * provider selection walks. serveRead falls through the list per
+ * source; an empty list keeps the legacy all-unread
+ * `no-reader-supplier` behavior.
  */
-function selectReaderSupplier(
+function selectReaderSuppliers(
   deps: InvestigateExecutionDependencies,
-): ProviderDescriptor | undefined {
-  for (const descriptor of deps.descriptors) {
-    if (deps.readerCapabilityFor(descriptor) !== undefined) return descriptor;
-  }
-  return undefined;
+): readonly ProviderDescriptor[] {
+  return deps.descriptors.filter(
+    (descriptor) => deps.readerCapabilityFor(descriptor) !== undefined,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -779,10 +801,11 @@ export async function investigate(
   const selected = merged.slice(0, sourcesCap);
 
   // 5. Reads — bounded-concurrency pool over the reader capability
-  //    seam; per-source terminal failures continue the pool.
-  const supplier = selectReaderSupplier(deps);
+  //    seam; per-source terminal failures continue the pool; suppliers
+  //    fall through in registry order (review fix #2).
+  const suppliers = selectReaderSuppliers(deps);
   const readerHits = { count: 0 };
-  const outcomes = await readPool(selected, supplier, deps, noCache, readerHits);
+  const outcomes = await readPool(selected, suppliers, deps, noCache, readerHits);
   const byUrl = new Map(outcomes.map((o) => [o.url, o]));
 
   // 6 + 7. Extraction (T3) + pack assembly (T1 types). Terms = union of
@@ -807,7 +830,8 @@ export async function investigate(
     // Provider provenance: the merged row's surfaced provider — first
     // mergedFrom (fan-out) or the resolved arm (single mode). NOT the
     // reader supplier: the row says who FOUND it, not who read it.
-    const surfacedProvider = row.mergedFrom?.[0] ?? singleArmProviderId ?? supplier?.id ?? "";
+    const surfacedProvider =
+      row.mergedFrom?.[0] ?? singleArmProviderId ?? suppliers[0]?.id ?? "";
     sources.push({
       url: row.url,
       finalUrl: result.finalUrl,

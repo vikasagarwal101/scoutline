@@ -872,10 +872,21 @@ function getCapability(adapter, capability) {
   if (capability === "crawl") return adapter.crawl.fetch;
   if (capability === "map") return adapter.map.fetch;
   if (capability === "science") return adapter.science.search;
+  if (capability === "vision") return adapter.vision;
   throw new Error(`unknown capability ${capability}`);
 }
 
 function buildRequest(row) {
+  if (row.capability === "vision") {
+    return {
+      operation: "extract-text",
+      source: "https://example.test/shot.png",
+      instruction: row.input.instruction ?? "Extract all text from this image.",
+      ...(row.input.programmingLanguage !== undefined
+        ? { programmingLanguage: row.input.programmingLanguage }
+        : {}),
+    };
+  }
   if (row.capability === "science") {
     return { query: SCIENCE_SEARCH_QUERY, controls: row.input };
   }
@@ -947,6 +958,38 @@ function isUnsupportedOptionErrorFor(row) {
     err.option === row.control;
 }
 
+/**
+ * Vision-strip harness (glm-ocr lane): one zai adapter whose OCR arm
+# posts to a capture REST double. Returns the capability; the caller
+ * asserts wire + stderr.
+ */
+function makeVisionStripHarness(row, captureBody, cacheDir) {
+  const json = { md_results: "# stripped-ok" };
+  const restFetch = async (url, init) => {
+    captureBody(JSON.parse(String(init?.body ?? "{}")));
+    return {
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify(json),
+      json: async () => json,
+    };
+  };
+  const descriptor = createZaiDescriptor({
+    clientFactory: () => {
+      throw new Error("documented-strip rows never reach the MCP arm");
+    },
+    layoutParsingFetch: restFetch,
+    notice: (line) => process.stderr.write(`${line}\n`),
+    layoutParsingCacheEnv: { SCOUTLINE_CACHE_DIR: cacheDir },
+  });
+  return descriptor.create({ env: ENV_BY_PROVIDER[row.provider] }).vision;
+}
+
+/** One fresh temp cache dir per vision strip row (OCR cache is live). */
+function tmpVisionCacheDir() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "controls-vision-"));
+}
+
 async function runRow(row) {
   const harness = makeHarness(row.provider, row.capability);
   const capability = getCapability(harness.adapter, row.capability);
@@ -1010,6 +1053,47 @@ async function runRow(row) {
       default:
         assert.fail(`unknown consume target ${row.on}`);
     }
+    return;
+  }
+
+  if (row.expect === "documented-strip" && row.capability === "vision") {
+    // glm-ocr lane (ADR-0014 D6): the strip disclosure rides the
+    // adapter's notice dep (D5). Accepted, completed, stripped from
+    // the wire, disclosed — all four legs asserted against the
+    // layout-parsing REST double.
+    const writes = [];
+    const realWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (chunk) => {
+      writes.push(String(chunk));
+      return true;
+    };
+    let wireBody = null;
+    const vision = makeVisionStripHarness(
+      row,
+      (body) => {
+        wireBody = body;
+      },
+      tmpVisionCacheDir(),
+    );
+    try {
+      await vision.invoke(request); // must resolve
+    } finally {
+      process.stderr.write = realWrite;
+    }
+    const serialized = JSON.stringify(wireBody ?? {}).toLowerCase();
+    const wireToken = (row.wireAbsentToken ?? row.absentToken).toLowerCase();
+    assert.ok(
+      !serialized.includes(wireToken),
+      `${row.provider} ${row.capability} ${row.control}: documented-strip requires the control to stay off the wire`,
+    );
+    assert.ok(
+      writes.some(
+        (w) =>
+          /not supported by glm-ocr; ignored/i.test(w) &&
+          w.toLowerCase().includes((row.noticeToken ?? row.absentToken).toLowerCase()),
+      ),
+      `${row.provider} ${row.capability} ${row.control}: documented-strip requires the stderr disclosure naming the stripped control; got ${JSON.stringify(writes)}`,
+    );
     return;
   }
 
@@ -1704,6 +1788,31 @@ const ROWS = [
     on: "body",
     path: "livecrawlTimeout",
     equals: 20000,
+  },
+
+  // ----- zai / vision — glm-ocr arm strips --language and custom prompt -----
+  // (ADR-0014 D6; consumed verbatim ONLY by the 1113 fallback arm —
+  // pinned in glm-ocr-adapter-routing.test.js.)
+  {
+    provider: "zai",
+    capability: "vision",
+    control: "language",
+    input: { programmingLanguage: "rust" },
+    expect: "documented-strip",
+    absentToken: "rust",
+    noticeToken: "--language",
+  },
+  {
+    provider: "zai",
+    capability: "vision",
+    control: "prompt",
+    input: { instruction: "give me only the tables please" },
+    expect: "documented-strip",
+    // The notice names the stripped control generically ("custom
+    // prompt"); the WIRE leg below still proves the instruction text
+    // itself never reaches the request body.
+    absentToken: "custom prompt",
+    wireAbsentToken: "give me only the tables",
   },
 
   // ----- exa / research — model maps to effort; the rest are stripped ------

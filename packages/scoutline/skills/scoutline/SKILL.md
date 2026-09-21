@@ -136,6 +136,14 @@ in registry order `[zai, minimax, tavily, exa, brave, firecrawl, parallel, perpl
   (`ui-artifact`, `extract-text`, `diagnose-error`, `diagram`, `chart`)
   follow the same registry and are mediated by MiniMax's compiled
   conformance registry.
+- `vision.extract-text` on Z.AI routes to the GLM-OCR specialist
+  (`layout_parsing`, PAYG balance-gated): verbatim markdown extraction,
+  PDF input accepted (≤50 MB; images ≤10 MB), content-hash cached for
+  24 h (`--no-cache` honored). On exhaustion (error 1113) it prints one
+  stderr notice and falls back to the plan-covered vision model with
+  identical invocation semantics. `--language` and a custom `[prompt]`
+  are warn-and-strip on the OCR arm (stderr notice) and honored
+  verbatim on the fallback arm and on MiniMax.
 - `quota` — Z.AI, MiniMax, Tavily, Firecrawl (credits), Brave
   (rate-limit window), Jina AI (rate-limit telemetry), Linkup and
   Spider.cloud (credit balance, limit unknown), and SearchApi (credits).
@@ -278,7 +286,7 @@ scoutline search "x" --no-journal                           # skip this one call
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Search | Yes | Yes (no domain/recency/content-size/location) | Yes (no location) | Yes (no location) | Yes (web/news/video; `--content-size high` → LLM Context) | Yes (no location; `--content-size high` = markdown, +1 credit/result) | Yes (domain, recency, location, content-size via `advanced_settings`; topic via keyword) | Yes (domain, recency, content-size; topic via keyword) | Yes (domain, location; rejects recency/content-size; topic via keyword) | Yes | Yes | Yes | Yes (no location/type; domain via `site:` prefix) | Yes (no content-size/type; domain via `site:` prefix) | Yes (no location/recency/content-size/type; domain via `site:` prefix; `--topic news` → `/api/v0/enrich/news`) | No | No | No | No | No | `scoutline search` |
 | General single-image interpretation | Yes | Yes (JPG/JPEG/PNG/WebP ≤50 MiB) | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline vision analyze` |
-| Specialized Vision (UI-to-code, OCR, error diagnosis, diagram) | Yes | Available (live-attested; conformance-gated) | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline vision ui-to-code`, `vision extract-text`, `vision diagnose-error`, `vision diagram` |
+| Specialized Vision (UI-to-code, OCR, error diagnosis, diagram) | Yes (extract-text = glm-ocr engine with exhaustion fallback; PDF ≤50 MB accepted) | Available (live-attested; conformance-gated) | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline vision ui-to-code`, `vision extract-text`, `vision diagnose-error`, `vision diagram` |
 | Specialized Vision (chart) | Yes | Pending (implemented; fixture image defect blocks live conformance) | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline vision chart` |
 | Two-image diff, video | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline vision diff`, `vision video` |
 | Quota (normalized) | Yes | Yes | Yes | **No** (deferred) | Yes (rate-limit window, not spend) | Yes (credits) | **No** | **No** | Yes (rate-limit telemetry, not spend) | **No** | Yes (credit balance, not spend) | Yes (credit balance, not spend) | No | Yes | No | No | No | No | No | No | `scoutline quota [--all-providers]` |

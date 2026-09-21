@@ -104,7 +104,7 @@ Provider selection (precedence: explicit flag, then SCOUTLINE_PROVIDER, then zai
 Commands:
   analyze <image> [prompt]            General image interpretation (shared: Z.AI + MiniMax)
   ui-to-code <image> [prompt]         Convert UI screenshot to code${uiSuffix}
-  extract-text <image> [prompt]       OCR for code, terminals, documents${extractSuffix}
+  extract-text <image|pdf> [prompt]    OCR for code, terminals, documents${extractSuffix}
   diagnose-error <image> [prompt]     Analyze error screenshots${diagnoseSuffix}
   diagram <image> [prompt]            Interpret technical diagrams${diagramSuffix}
   chart <image> [prompt]              Analyze data visualizations${chartSuffix}
@@ -134,6 +134,8 @@ Vision batch options (batch subcommand only):
 
 Constraints:
   Z.AI images: <=5MB, JPG/PNG/JPEG ; Z.AI videos: <=8MB, MP4/MOV/M4V (URLs supported)
+  Z.AI extract-text: GLM-OCR engine (PDF <=50MB, images <=10MB, JPG/PNG/JPEG;
+  --language/custom prompt warn-and-strip; exhaustion falls back to the vision model)
   MiniMax images: <=50MB, JPG/JPEG/PNG/WebP
 
 Examples:

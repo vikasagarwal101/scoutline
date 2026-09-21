@@ -379,6 +379,7 @@ Stateful commands refuse at parse time (`VALIDATION_ERROR`, exit 1) rather than 
 | Map | No | No | Yes | No | No | Yes | No | No | No | No | No | Yes | No | No | No | `scoutline map` |
 | Research | No | No | Yes | Yes | No | No | Yes | Yes | Yes | Yes | Yes | No | No | No | No | `scoutline research` |
 | Vision (interpret-image) | Yes | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline vision analyze` |
+| Vision extract-text (GLM-OCR, PDF ≤50MB; exhaustion falls back to the vision model) | Yes | Yes (vision model) | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline vision extract-text` |
 | Quota | Yes | Yes | Yes | No | Yes (rate-limit window) | Yes (credits) | No | No | Yes (rate-limit telemetry, not spend) | No | Yes (credits) | Yes (credits) | No | Yes (credits) | No | `scoutline quota` |
 | Diagnostics | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | `scoutline doctor` |
 | Repo exploration | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline repo` |
@@ -507,6 +508,7 @@ scoutline research "State of carbon capture 2025" --model pro
 
 # Vision
 scoutline vision analyze ./image.png "Describe this"
+scoutline vision extract-text ./doc.pdf     # GLM-OCR (PDF <=50MB); PAYG exhaustion falls back to the vision model
 scoutline vision diagnose-error ./error.png
 
 # Repo

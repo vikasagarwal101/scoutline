@@ -26,12 +26,14 @@
 
 import crypto from "node:crypto";
 import { promises as fsPromises } from "node:fs";
+import { readFile } from "node:fs/promises";
 
 import type {
   ProviderAdapter,
   ProviderCapability,
   ProviderContext,
   ProviderDescriptor,
+  ProviderQuotaFetch,
   ZaiAdapterClientPort,
   ZaiAdapterDependencies,
   ZaiMcpClientOptions,
@@ -62,13 +64,15 @@ import { getMcpToolName } from "../../lib/mcp-config.js";
 import {
   ZaiMcpClient,
 } from "../../lib/mcp-client.js";
-import { buildLegacyRepositoryCacheKey } from "../../lib/cache.js";
+import { buildLegacyRepositoryCacheKey, buildProviderCacheKey, readCacheInDir, writeCacheInDir, responseCacheDir } from "../../lib/cache.js";
 import { resolveTimeoutMs } from "./monitor-client.js";
 import { applySearchTopic } from "../../lib/search-topic.js";
 import { isZaiConfigured, requireZaiApiKey } from "./credentials.js";
 import {
   resolveImageSource,
   resolveVideoSource,
+  resolveOcrSource,
+  isOcrSourceFallbackEligible,
   fetchImageSource,
   fetchVideoSource,
 } from "./media.js";
@@ -76,6 +80,13 @@ import { createZaiQuotaCapability, type ZaiQuotaCapabilityOptions } from "./quot
 import { createZaiRepositoryCapability } from "./repository.js";
 import { createZaiReaderCapability } from "./reader.js";
 import type { ZaiMonitorFetch } from "./monitor-client.js";
+import { parseLayout } from "./layout-parsing.js";
+import { QuotaError } from "../../lib/errors.js";
+import {
+  defaultAmountForCapability,
+  emitConsumption,
+  type ConsumptionSink,
+} from "../../lib/consumption.js";
 
 const SEARCH_TOOL_PUBLIC_NAME = getMcpToolName("search", "web_search_prime");
 const VISION_ANALYZE_TOOL_PUBLIC_NAME = getMcpToolName("vision", "analyze_image");
@@ -216,7 +227,7 @@ function credentialFingerprint(apiKey: string): string {
 
 interface ZaiSearchCapabilityOptions {
   readonly env: NodeJS.ProcessEnv;
-  readonly clientFactory: ZaiAdapterDependencies["clientFactory"];
+  readonly clientFactory: NonNullable<ZaiAdapterDependencies["clientFactory"]>;
 }
 
 function createZaiSearchCapability(options: ZaiSearchCapabilityOptions): SearchCapability {
@@ -459,7 +470,241 @@ function normalizeZaiSearchResults(raw: readonly WebSearchResult[]): readonly Se
 
 interface ZaiVisionCapabilityOptions {
   readonly env: NodeJS.ProcessEnv;
-  readonly clientFactory: ZaiAdapterDependencies["clientFactory"];
+  readonly clientFactory: NonNullable<ZaiAdapterDependencies["clientFactory"]>;
+  /** GLM-OCR layout-parsing seam (glm-ocr lane T2, ADR-0014 D2/D5). */
+  readonly layoutParsingFetch?: ProviderQuotaFetch;
+  /** Notice channel (D5): default silent; index.ts wires stderr. */
+  readonly notice?: (line: string) => void;
+  /**
+   * Cache-dir env override for the OCR cache (T3 tests isolate
+   * SCOUTLINE_CACHE_DIR per suite; production resolves ambient).
+   */
+  readonly layoutParsingCacheEnv?: NodeJS.ProcessEnv;
+  /**
+   * Usage-ledger seam for the glm-ocr arm (T4, ADR-0014 D7): attempts
+   * are counted at the ADAPTER level because the OCR cache is
+   * adapter-internal — a warm hit never reaches the executor, and an
+   * 1113+fallback run is TWO attempts inside ONE executor invoke.
+   * index.ts threads the shared sink here for extract-text and
+   * suppresses its own emission on that path (one row per attempt,
+   * zero on a cache hit).
+   */
+  readonly layoutParsingConsume?: ConsumptionSink;
+  readonly layoutParsingConsumeNow?: () => number;
+}
+
+/** The pinned fallback notice text (PRD AC-2, owner-approved). */
+const GLM_OCR_FALLBACK_NOTICE =
+  "glm-ocr unavailable (no PAYG balance); falling back to vision model";
+const GLM_OCR_LANGUAGE_STRIP_NOTICE = "--language not supported by glm-ocr; ignored";
+const GLM_OCR_PROMPT_STRIP_NOTICE = "custom prompt not supported by glm-ocr; ignored";
+
+/** The default extract-text prompt (commands/vision.ts keeps the copy). */
+const DEFAULT_EXTRACT_TEXT_PROMPT = "Extract all text from this image.";
+
+/** Hermetic no-op timer pair for the layout-parsing client. */
+const LAYOUT_PARSING_TIMERS = { setTimeout, clearTimeout };
+
+/**
+ * Read a local OCR source to base64 (one read pass — the cache-key
+ * computation in T3 shares the same bytes).
+ */
+async function readOcrSourceAsBase64(resolvedPath: string): Promise<string> {
+  const bytes = await readFile(resolvedPath);
+  return bytes.toString("base64");
+}
+
+/**
+ * Prefetch a URL source to base64 for the layout-parsing retry (D3 —
+ * the recorded MCP URL-unreliability pattern applied to the REST arm).
+ * Returns the data-URI form the REST `file` value accepts.
+ */
+/** Response shape the prefetch reads (JSON + headers + arrayBuffer). */
+interface OcrPrefetchResponse {
+  readonly ok: boolean;
+  readonly status: number;
+  readonly headers?: { get(name: string): string | null };
+  arrayBuffer(): Promise<ArrayBuffer>;
+}
+
+async function prefetchOcrUrlAsDataUri(
+  url: string,
+  fetchImpl: ProviderQuotaFetch | undefined,
+): Promise<string> {
+  // Same duck-typed double shape other Z.AI transports use: the
+  // injected seam is the quota fetch (JSON-only); the ambient global
+  // fetch satisfies the wider headers/arrayBuffer view.
+  const f = ((input: string | URL, init: Record<string, unknown>) =>
+    fetchImpl
+      ? (fetchImpl(input, init) as unknown as Promise<OcrPrefetchResponse>)
+      : (globalThis.fetch(input as unknown as URL, init as unknown as RequestInit) as unknown as Promise<OcrPrefetchResponse>)) as (
+    input: string | URL,
+    init: Record<string, unknown>,
+  ) => Promise<OcrPrefetchResponse>;
+  let res: OcrPrefetchResponse;
+  try {
+    res = await f(url, { method: "GET" });
+  } catch {
+    // Failed prefetch is terminal 422 (AC-3): no engine fallback for a
+    // non-1113 failure, no retry loop around the retry.
+    throw new ApiError("Z.AI layout-parsing URL prefetch failed", 422);
+  }
+  if (!res.ok) {
+    throw new ApiError("Z.AI layout-parsing URL prefetch failed", 422);
+  }
+  const buffer = await res.arrayBuffer();
+  const mime = res.headers?.get?.("content-type")?.split(";")[0] || "application/octet-stream";
+  return `data:${mime};base64,${Buffer.from(buffer).toString("base64")}`;
+}
+
+/**
+ * The glm-ocr arm of extract-text (ADR-0014 D1/D2/D3/D6): resolve the
+ * source through the WIDER OCR media rules (images ≤10MB, PDF ≤50MB),
+ * warn-and-strip `--language` and a custom prompt, then POST
+ * layout_parsing. A 1113 (insufficient PAYG balance) rejection throws
+ * `QuotaError` — the caller's exhaustion seam. A URL-source REST
+ * failure retries ONCE via prefetch-to-base64; a failed prefetch is
+ * terminal 422.
+ */
+async function invokeZaiExtractTextOcrArm(
+  request: ExtractTextRequest,
+  apiKey: string,
+  notice: (line: string) => void,
+  layoutParsingFetch: ProviderQuotaFetch | undefined,
+  cacheEnv: NodeJS.ProcessEnv | undefined,
+  ocrLedger: (attempt: number) => Promise<void>,
+  adapterEnv: NodeJS.ProcessEnv,
+): Promise<string> {
+  const resolved = resolveOcrSource(request.source);
+  const isUrl = /^https?:\/\//i.test(resolved);
+  const fileValue = isUrl ? resolved : await readOcrSourceAsBase64(resolved);
+
+  // Cache probe (D4) BEFORE any notice, transport, or ledger row: a
+  // warm hit records NOTHING (AC-7). The key covers only
+  // {model, file-identity} — strip-notice state never enters it.
+  const key = ocrCacheKey(apiKey, ocrFileIdentity(resolved, isUrl ? undefined : fileValue));
+  const cached = await readOcrCache(key, cacheEnv, adapterEnv);
+  if (cached !== null) {
+    return cached;
+  }
+
+  if (request.programmingLanguage) {
+    notice(GLM_OCR_LANGUAGE_STRIP_NOTICE);
+  }
+  if (request.instruction !== DEFAULT_EXTRACT_TEXT_PROMPT) {
+    notice(GLM_OCR_PROMPT_STRIP_NOTICE);
+  }
+
+  const deps = layoutParsingFetch !== undefined ? { fetch: layoutParsingFetch } : {};
+  await ocrLedger(1);
+  try {
+    const result = await parseLayout({ apiKey, file: fileValue }, LAYOUT_PARSING_TIMERS, deps);
+    await writeOcrCache(key, result, cacheEnv, adapterEnv);
+    return result;
+  } catch (error) {
+    // One prefetch-to-base64 retry on a URL source whose REST attempt
+    // failed with a fallback-eligible error (server-side URL fetching
+    // shares the MCP's recorded unreliability). Exhaustion (1113),
+    // auth, and local-file sources never retry — they are not
+    // source-related.
+    if (isUrl && isFallbackEligibleError(error)) {
+      // m1 (review): the catch guards the PREFETCH step only — a
+      // failed retried parseLayout propagates its own taxonomy error
+      // (AC-2); only a failed prefetch is the terminal 422.
+      const dataUri = await prefetchOcrUrlAsDataUri(resolved, layoutParsingFetch).catch(() => {
+        throw new ApiError("Z.AI layout-parsing URL prefetch failed", 422);
+      });
+      await ocrLedger(2);
+      const retried = await parseLayout({ apiKey, file: dataUri }, LAYOUT_PARSING_TIMERS, deps);
+      await writeOcrCache(key, retried, cacheEnv, adapterEnv);
+      return retried;
+    }
+    throw error;
+  }
+}
+
+/** Narrowed request shape for the extract-text operation. */
+interface ExtractTextRequest {
+  operation: "extract-text";
+  source: string;
+  instruction: string;
+  programmingLanguage?: string;
+}
+
+// ---------------------------------------------------------------------------
+// GLM-OCR cache (ADR-0014 D4 — glm-ocr lane T3)
+// ---------------------------------------------------------------------------
+
+/** Cache capability segment of the key namespace. */
+const GLM_OCR_CACHE_CAPABILITY = "vision-ocr-layout-parsing";
+
+/**
+ * File identity for the OCR cache key (D4): the canonical URL string
+ * for URL sources, or `sha256:<hex>` of the local file CONTENT — same
+ * bytes at different paths share one entry (path never enters the
+ * key). The content hash rides the SAME read pass that produces the
+ * base64 upload value (one `readFile` per invocation).
+ */
+function ocrFileIdentity(resolvedSource: string, contentBase64: string | undefined): string {
+  if (/^https?:\/\//i.test(resolvedSource)) return resolvedSource;
+  // contentBase64 is the file bytes in base64; hashing the decoded
+  // bytes equals hashing the file content.
+  const bytes = Buffer.from(contentBase64 ?? "", "base64");
+  return `sha256:${crypto.createHash("sha256").update(bytes).digest("hex")}`;
+}
+
+/**
+ * Build the OCR cache key through the shared provider-key grammar:
+ * `v2.vision-ocr-layout-parsing.zai.<credential-hash>.<request-hash>.json`
+ * where `<request-hash>` covers `{model, file-identity}` — the model is
+ * constant, so the file identity is the only varying input.
+ */
+function ocrCacheKey(apiKey: string, fileIdentity: string): string {
+  return buildProviderCacheKey({
+    provider: "zai",
+    capability: GLM_OCR_CACHE_CAPABILITY,
+    credentialFingerprint: credentialFingerprint(apiKey),
+    request: { model: "glm-ocr", file: fileIdentity },
+  });
+}
+
+/**
+ * Resolve the OCR cache dir. M2/R1 (review): the env-var leg and the
+ * `--isolated` flag leg BOTH resolve through the adapter's OWN
+ * injected env (the descriptor's `create({env})` value — main()
+ * merges SCOUTLINE_ISOLATED into it), never a reread of ambient
+ * process.env. `SCOUTLINE_ISOLATED` reroutes to
+ * `cache/isolated/<pid>` (ADR-0006 §5: isolated runs never mutate the
+ * shared dir).
+ */
+function ocrCacheDir(
+  cacheEnv: NodeJS.ProcessEnv | undefined,
+  adapterEnv: NodeJS.ProcessEnv,
+): string {
+  return responseCacheDir((cacheEnv ?? adapterEnv) as never);
+}
+
+/** Read the OCR cache; a miss/mismatch/poison returns null (fresh run). */
+async function readOcrCache(
+  key: string,
+  cacheEnv: NodeJS.ProcessEnv | undefined,
+  adapterEnv: NodeJS.ProcessEnv,
+): Promise<string | null> {
+  return readCacheInDir(
+    ocrCacheDir(cacheEnv, adapterEnv),
+    key,
+    (raw): string | null => (typeof raw === "string" && raw.length > 0 ? raw : null),
+  );
+}
+
+/** Write the OCR cache (best-effort; the shared module never throws). */
+async function writeOcrCache(
+  key: string,
+  value: string,
+  cacheEnv: NodeJS.ProcessEnv | undefined,
+  adapterEnv: NodeJS.ProcessEnv,
+): Promise<void> {
+  await writeCacheInDir(ocrCacheDir(cacheEnv, adapterEnv), key, value);
 }
 
 /**
@@ -474,6 +719,26 @@ interface ZaiVisionCapabilityOptions {
  */
 function createZaiVisionCapability(options: ZaiVisionCapabilityOptions): VisionCapability {
   const { env, clientFactory } = options;
+  const notice = options.notice ?? (() => {});
+  // D7 adapter-owned ledger for the extract-text OCR arm (+ its
+  // fallback attempt). No-op when the seam is unwired (tests that
+  // don't care; the executor emission then stays active because the
+  // descriptor is not seam-marked).
+  const ocrLedger = async (attempt: number): Promise<void> => {
+    if (options.layoutParsingConsume === undefined) return;
+    await emitConsumption(
+      options.layoutParsingConsume,
+      {
+        provider: "zai",
+        capabilityId: "vision.extract-text",
+        category: "vision",
+        unit: "tokens",
+        amount: defaultAmountForCapability("vision"),
+      },
+      attempt,
+      options.layoutParsingConsumeNow ?? Date.now,
+    );
+  };
 
   // Shared credential resolver (Fixup A — B4/B7).
   function resolveApiKey(): string {
@@ -492,6 +757,51 @@ function createZaiVisionCapability(options: ZaiVisionCapabilityOptions): VisionC
       // Unsupported operations never reach here: the descriptor-level
       // gate and `supports()` reject first (defence in depth).
       resolveApiKey();
+
+      // glm-ocr lane (ADR-0014 D1): extract-text routes to the
+      // layout-parsing REST arm FIRST; on 1113 (no PAYG balance) it
+      // falls back — with one pinned stderr notice — to the pre-lane
+      // MCP path below with the SAME instruction semantics. Every
+      // other operation dispatches through the MCP path unchanged.
+      if (request.operation === "extract-text") {
+        try {
+          return await invokeZaiExtractTextOcrArm(
+            request,
+            resolveApiKey(),
+            notice,
+            options.layoutParsingFetch,
+            options.layoutParsingCacheEnv,
+            ocrLedger,
+            env,
+          );
+        } catch (error) {
+          if (error instanceof QuotaError) {
+            // G2 (PR #265): inputs the legacy vision MCP arm cannot
+            // accept (PDFs; images over its 5 MiB ceiling) fail
+            // TERMINAL here — naming both engines and the remedy —
+            // instead of dispatching an incompatible source to a late
+            // validation error.
+            if (!isOcrSourceFallbackEligible(request.source)) {
+              throw new ApiError(
+                "Z.AI extract-text input is only supported by glm-ocr " +
+                  "(PDF or oversized image), and glm-ocr is unavailable " +
+                  "(no PAYG balance). A PAYG balance is required for this input.",
+                422,
+              );
+            }
+            notice(GLM_OCR_FALLBACK_NOTICE);
+            // D7: the fallback attempt is its own ledger row (an
+            // 1113 + fallback run = 2 rows). Emitted here because the
+            // executor emission is suppressed on this seam-marked
+            // path (the adapter owns extract-text rows).
+            await ocrLedger(2);
+            // Fall through to the pre-lane MCP path (no rethrow).
+          } else {
+            throw error;
+          }
+        }
+      }
+
       const tempPaths: string[] = [];
       try {
         // First attempt: HTTP(S) URLs pass straight through to the
@@ -560,7 +870,7 @@ function createZaiVisionCapability(options: ZaiVisionCapabilityOptions): VisionC
  * replaces a successful result nor masks the primary failure.
  */
 async function invokeZaiVisionOnce(
-  clientFactory: ZaiAdapterDependencies["clientFactory"],
+  clientFactory: NonNullable<ZaiAdapterDependencies["clientFactory"]>,
   toolName: string,
   args: Record<string, unknown>,
 ): Promise<unknown> {
@@ -805,7 +1115,7 @@ function normalizeZaiVisionResult(raw: unknown): string {
 
 interface ZaiDiagnosticsCapabilityOptions {
   readonly env: NodeJS.ProcessEnv;
-  readonly clientFactory: ZaiAdapterDependencies["clientFactory"];
+  readonly clientFactory: NonNullable<ZaiAdapterDependencies["clientFactory"]>;
 }
 
 /**
@@ -891,7 +1201,9 @@ function defaultZaiClientFactory(options: ZaiMcpClientOptions): ZaiAdapterClient
  * built and torn down per invocation.
  */
 export function createZaiDescriptor(dependencies?: ZaiAdapterDependencies): ProviderDescriptor {
-  const clientFactory = dependencies?.clientFactory ?? defaultZaiClientFactory;
+  const clientFactory =
+    dependencies?.clientFactory ??
+    ((options: ZaiMcpClientOptions) => defaultZaiClientFactory(options));
 
   // Quota-monitor transport injection (tests). Production uses the
   // global fetch and timers resolved inside the monitor client.
@@ -968,6 +1280,17 @@ export function createZaiDescriptor(dependencies?: ZaiAdapterDependencies): Prov
       const vision = createZaiVisionCapability({
         env: context.env,
         clientFactory: envBoundClientFactory,
+        layoutParsingFetch: dependencies?.layoutParsingFetch,
+        notice: dependencies?.notice,
+        ...(dependencies?.layoutParsingCacheEnv !== undefined && {
+          layoutParsingCacheEnv: dependencies.layoutParsingCacheEnv,
+        }),
+        ...(dependencies?.layoutParsingConsume !== undefined && {
+          layoutParsingConsume: dependencies.layoutParsingConsume,
+        }),
+        ...(dependencies?.layoutParsingConsumeNow !== undefined && {
+          layoutParsingConsumeNow: dependencies.layoutParsingConsumeNow,
+        }),
       });
       const quotaOptions: ZaiQuotaCapabilityOptions = { env: context.env, ...quotaTransport };
       const quota = createZaiQuotaCapability(quotaOptions);

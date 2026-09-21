@@ -101,7 +101,7 @@ function helpNeedleFor(op) {
   const suffix = ATTESTED_OPS.has(op) ? "(Z.AI + MiniMax)" : "(Z.AI; MiniMax gated)";
   const labels = {
     "ui-artifact": `ui-to-code <image> [prompt]         Convert UI screenshot to code ${suffix}`,
-    "extract-text": `extract-text <image> [prompt]       OCR for code, terminals, documents ${suffix}`,
+    "extract-text": `extract-text <image|pdf> [prompt]    OCR for code, terminals, documents ${suffix}`,
     "diagnose-error": `diagnose-error <image> [prompt]     Analyze error screenshots ${suffix}`,
     diagram: `diagram <image> [prompt]            Interpret technical diagrams ${suffix}`,
     chart: `chart <image> [prompt]              Analyze data visualizations ${suffix}`,

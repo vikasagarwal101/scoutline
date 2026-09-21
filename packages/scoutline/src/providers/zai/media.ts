@@ -49,6 +49,23 @@ const ZAI_VIDEO_FORMAT_HELP =
   "Supported Z.AI video formats: MP4, MOV, M4V, AVI, WebM, WMV (max 8 MiB)";
 
 // ---------------------------------------------------------------------------
+// GLM-OCR layout-parsing media rules (ADR-0014 §3 — glm-ocr lane).
+// The layout_parsing endpoint accepts images ≤10MB and PDFs ≤50MB —
+// wider than the vision MCP's 5 MiB image ceiling, and PDF is a
+// capability GAIN on the extract-text surface. These limits apply ONLY
+// to the glm-ocr arm; every other operation keeps the sets above.
+// ---------------------------------------------------------------------------
+
+const ZAI_OCR_DOCUMENT_EXTENSIONS = [".pdf"];
+/** glm-ocr image ceiling per Z.AI's own docs (10MB, not 5 MiB). */
+export const ZAI_OCR_MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+/** glm-ocr PDF ceiling per Z.AI's own docs (50MB). */
+export const ZAI_OCR_MAX_PDF_BYTES = 50 * 1024 * 1024;
+
+const ZAI_OCR_IMAGE_FORMAT_HELP =
+  "Supported Z.AI extract-text formats: JPG, JPEG, PNG (max 10 MB), PDF (max 50 MB)";
+
+// ---------------------------------------------------------------------------
 // Source classification
 // ---------------------------------------------------------------------------
 
@@ -148,6 +165,64 @@ export function resolveVideoSource(source: string): string {
     ZAI_VIDEO_EXTENSIONS,
     ZAI_MAX_VIDEO_BYTES,
     ZAI_VIDEO_FORMAT_HELP,
+  );
+}
+
+/**
+ * G2 (PR #265): whether an OCR-accepted source is ALSO acceptable to
+ * the legacy vision MCP fallback arm (images <=5 MiB; no PDFs). URL
+ * sources are eligible (the MCP fetches server-side under its own
+ * limits); local files are checked against the vision arm's ceiling.
+ */
+export function isOcrSourceFallbackEligible(source: string): boolean {
+  const kind = classifySource(source);
+  if (kind === "http") return true;
+  if (kind === "unsupported-url") return false;
+  const ext = path.extname(path.resolve(source)).toLowerCase();
+  if (ext === ".pdf") return false;
+  try {
+    return fs.statSync(path.resolve(source)).size <= ZAI_MAX_IMAGE_BYTES;
+  } catch (error) {
+    // A missing file is simply ineligible; anything else (permissions,
+    // I/O failure) is unexpected and must not read as "eligible".
+    if (error instanceof Error && (error as NodeJS.ErrnoException).code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Resolve a source for the glm-ocr layout-parsing arm of extract-text
+ * (glm-ocr lane D3): images ≤10MB AND PDFs ≤50MB are accepted — the
+ * wider OCR-endpoint limits, not the vision MCP's 5 MiB image ceiling.
+ * URLs pass through verbatim (the REST endpoint fetches server-side);
+ * local files validate existence, size, and extension.
+ */
+export function resolveOcrSource(source: string): string {
+  const kind = classifySource(source);
+  if (kind === "http") return source;
+  if (kind === "unsupported-url") {
+    throw new ValidationError(
+      `Unsupported source scheme for Z.AI extract-text`,
+      "Use an HTTP(S) URL or a local file path",
+    );
+  }
+  const resolved = path.resolve(source);
+  const ext = path.extname(resolved).toLowerCase();
+  if (ext === ".pdf") {
+    return validateLocalMedia(
+      source,
+      ZAI_OCR_DOCUMENT_EXTENSIONS,
+      ZAI_OCR_MAX_PDF_BYTES,
+      ZAI_OCR_IMAGE_FORMAT_HELP,
+    );
+  }
+  return validateLocalMedia(
+    source,
+    ZAI_IMAGE_EXTENSIONS,
+    ZAI_OCR_MAX_IMAGE_BYTES,
+    ZAI_OCR_IMAGE_FORMAT_HELP,
   );
 }
 

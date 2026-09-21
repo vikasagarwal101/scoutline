@@ -62,7 +62,10 @@ import {
  * deferred-resolution half.
  */
 export const BUILT_IN_PROVIDER_DESCRIPTORS: readonly ProviderDescriptor[] = [
-  createZaiDescriptor(),
+  // glm-ocr lane (ADR-0014 D5): production notice wiring — the zai
+  // adapter's stderr-visible channel (1113 fallback disclosure +
+  // off-wire control strips). Pure wiring, no I/O at construction.
+  createZaiDescriptor({ notice: (line) => process.stderr.write(`${line}\n`) }),
   createMiniMaxDescriptor(),
   createTavilyDescriptor(),
   createExaDescriptor(),

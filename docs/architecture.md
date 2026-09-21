@@ -104,7 +104,7 @@ for the rationale and the accepted async double-charge risk.
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | `search` | Yes | Yes | Yes | Yes | Yes (web/news/video; `--content-size high` → LLM Context) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No | No | No | No | No | `scoutline search` |
 | `vision.interpret-image` | Yes | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline vision analyze` |
-| Specialized Vision operations | Yes | 4 of 5 (`ui-to-code`, `extract-text`, `diagnose-error`, `diagram` live-attested; `chart` pending) | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline vision ui-to-code`, `extract-text`, `diagnose-error`, `diagram`, `chart` |
+| Specialized Vision operations | Yes (extract-text = GLM-OCR `layout_parsing` engine with exhaustion fallback to the vision model; PDF ≤50MB accepted; `--language`/custom prompt warn-and-strip on the OCR arm; content-hash cached 24h) | 4 of 5 (`ui-to-code`, `extract-text`, `diagnose-error`, `diagram` live-attested; `chart` pending) | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline vision ui-to-code`, `extract-text`, `diagnose-error`, `diagram`, `chart` |
 | Image diff / video | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline vision diff`, `vision video` |
 | `quota` | Yes | Yes | Yes | No (deferred) | Yes (rate-limit window, not spend) | Yes (credits) | No | No | Yes (rate-limit telemetry, not spend) | No | Yes (credit balance, not spend) | Yes (credit balance, not spend) | No | Yes | No | No | No | No | No | No | `scoutline quota` |
 | `diagnostics` | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes (keyless probe) | Yes (keyless probe) | Yes (keyless probe) | Yes (keyless probe) | Yes (keyless probe) | `scoutline doctor` |
@@ -840,7 +840,7 @@ key, a wire request, or the artifacts log's `args` allow-list.
 `src/lib/mcp-client.ts` is the main Z.AI integration boundary. It initializes UTCP once per client, registers MCP services, resolves tool names, normalizes failures into CLI error classes, and closes transports.
 
 - Retriable failures use bounded exponential backoff with jitter. Retrying closes the current client before trying again.
-- Search/read/ZRead calls use the response cache unless `--no-cache` is supplied. Vision calls are never cached.
+- Search/read/ZRead calls use the response cache unless `--no-cache` is supplied. Vision analyze-family calls are never cached; extract-text's glm-ocr arm is content-hash cached (see the capability matrix).
 - Multi-query search creates one client per concurrent query because UTCP clients are not concurrency-safe for parallel calls.
 - Tool discovery has a separate cache from normal response caching. Both caches share one on-disk root (`~/.scoutline/`) and one env-var policy; each owns its own subdirectory I/O (`cache/` for responses, `tools/` for tool discovery). Inspect or clear either via `scoutline cache stats` / `scoutline cache clear`.
 

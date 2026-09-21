@@ -422,11 +422,40 @@ export interface ZaiAdapterClientPort {
 
 /** Dependencies the Z.AI Search Adapter accepts through injection. */
 export interface ZaiAdapterDependencies {
-  clientFactory(options: ZaiMcpClientOptions): ZaiAdapterClientPort;
+  /**
+   * Client factory. Optional since the glm-ocr lane: the adapter
+   * falls back to `defaultZaiClientFactory` (production registry
+   * passes only `notice`; tests inject the whole seam).
+   */
+  clientFactory?(options: ZaiMcpClientOptions): ZaiAdapterClientPort;
   /** Optional Z.AI quota-monitor transport injection (tests). */
   readonly quotaFetch?: ProviderQuotaFetch;
   readonly quotaSetTimeout?: typeof setTimeout;
   readonly quotaClearTimeout?: typeof clearTimeout;
+  /**
+   * GLM-OCR layout-parsing seam (glm-ocr lane T2, ADR-0014 D2/D5).
+   * Injected fetch + timers for the extract-text REST arm; production
+   * omits both and the layout-parsing client resolves the global fetch
+   * and ambient timers. `notice` is the stderr-visible notice channel
+   * (1113 fallback disclosure + off-wire control strips); default no-op
+   * keeps the adapter silent — index.ts forwards to stderr in
+   * production wiring.
+   */
+  readonly layoutParsingFetch?: ProviderQuotaFetch;
+  readonly notice?: (line: string) => void;
+  /**
+   * Optional cache-dir env override for the OCR cache (T3 seam —
+   * tests isolate SCOUTLINE_CACHE_DIR per suite; production resolves
+   * the ambient environment).
+   */
+  readonly layoutParsingCacheEnv?: NodeJS.ProcessEnv;
+  /**
+   * GLM-OCR usage-ledger seam (T4, ADR-0014 D7): attempts counted at
+   * the adapter (the OCR cache is adapter-internal). index.ts threads
+   * the shared sink here for extract-text.
+   */
+  readonly layoutParsingConsume?: import("../lib/consumption.js").ConsumptionSink;
+  readonly layoutParsingConsumeNow?: () => number;
   /**
    * Optional Repository Capability close-bound override in
    * milliseconds (P6-04A). When omitted, the production default of

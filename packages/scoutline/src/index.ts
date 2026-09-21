@@ -228,6 +228,7 @@ import {
   parseProviderId,
 } from "./providers/selection.js";
 import { BUILT_IN_PROVIDER_DESCRIPTORS } from "./providers/registry.js";
+import { createZaiDescriptor } from "./providers/zai/adapter.js";
 import { PROVIDER_IDS } from "./providers/types.js";
 import { SHARED_PROVIDER_FLAG_IDS, SHARED_PROVIDER_IDS } from "./providers/catalog.js";
 import type {
@@ -1555,7 +1556,19 @@ async function handleVision(
             // descriptor ID is the *attempted* provider (not the
             // registry-derived effective provider) so fallback attempts
             // record the actual descriptor that invoked transport.
-            ...(deps.consume !== undefined ? { consume: deps.consume } : {}),
+            // glm-ocr lane (ADR-0014 D7): extract-text on zai counts
+            // usage-ledger attempts at the ADAPTER (the OCR cache is
+            // adapter-internal; an 1113+fallback run is two attempts
+            // inside one executor invoke; a cache hit is zero). The
+            // adapter's seam receives the sink through the zai
+            // descriptor's layoutParsingConsume dep (threaded at
+            // registry construction below); the executor emission is
+            // suppressed here so attempts are counted exactly once.
+            ...((deps.consume !== undefined &&
+              !((descriptor as { zaiOcrLedgerSeam?: boolean }).zaiOcrLedgerSeam === true &&
+                operation === "extract-text"))
+              ? { consume: deps.consume }
+              : {}),
             ...(deps.consume !== undefined ? { provider: descriptor.id } : {}),
             ...(deps.now !== undefined ? { now: deps.now } : {}),
           };
@@ -6252,7 +6265,37 @@ export async function main(
   const loadScoutlineConfig =
     dependencies.loadScoutlineConfig ??
     (depsConfig !== undefined ? async () => depsConfig : undefined);
+  // glm-ocr lane (ADR-0014 D7): in full production mode (no injected
+  // descriptor list), rebuild the zai entry with the shared consumption
+  // sink threaded into its layoutParsingConsume seam so the extract-text
+  // OCR arm counts ledger attempts at the adapter (cache hits = zero
+  // rows; 1113+fallback = two rows). The sink binding exists BELOW this
+  // point (main body order), so this is a lazy rebuild: the array holds
+  // a descriptor whose create() closes over a sink REFERENCE resolved
+  // at first vision dispatch. Tests injecting providerDescriptors keep
+  // full control (their descriptor carries their own seams).
   const providerDescriptors = dependencies.providerDescriptors ?? BUILT_IN_PROVIDER_DESCRIPTORS;
+  const productionZaiLedgerDescriptors = dependencies.providerDescriptors
+    ? providerDescriptors
+    : providerDescriptors.map((descriptor) =>
+        descriptor.id === "zai"
+          ? Object.assign(
+              createZaiDescriptor({
+                notice: (line) => process.stderr.write(`${line}\n`),
+                layoutParsingConsume: {
+                  record: (event) => {
+                    if (zaiLedgerSink === undefined) return Promise.resolve();
+                    return zaiLedgerSink.record(event);
+                  },
+                },
+              }),
+              // Marker: this descriptor's zai adapter owns extract-text
+              // ledger rows through its seam (checked in handleVision
+              // to suppress the executor emission exactly once).
+              { zaiOcrLedgerSeam: true },
+            )
+          : descriptor,
+      );
   // Resolve configured Provider credentials from the INJECTED env (B3) so
   // redaction follows the same environment the handlers see — a secret
   // that exists only in MainDependencies.env is still redacted from output.
@@ -6525,6 +6568,9 @@ export async function main(
   // like the quota sink). The composite isolates each side — one
   // sink's failure becomes one redacted warning and never blocks or
   // fails the other.
+  // glm-ocr lane: late-bound sink reference for the rebuilt zai
+  // descriptor (assigned immediately after `consume` below).
+  let zaiLedgerSink: ConsumptionSink | undefined;
   const consume: ConsumptionSink | undefined =
     dependencies.consume ??
     // ADR-0006 §5: --isolated runs skip local state persistence
@@ -6547,6 +6593,7 @@ export async function main(
           }),
         )
       : undefined);
+  zaiLedgerSink = consume;
   // PB-T4: quota snapshot for selection. Declared here so
   // `buildHandlerDeps` closes over the binding; assigned AFTER the
   // PB-T1 pre-command refresh so observational commands' fresh data is
@@ -6576,7 +6623,7 @@ export async function main(
     secrets: credSecrets,
     now,
     provider,
-    providerDescriptors,
+    providerDescriptors: productionZaiLedgerDescriptors,
     fallbackEnabled: credFallback,
     routing: credRouting,
     configFanout: credFanout,
@@ -7278,10 +7325,13 @@ export async function main(
     (config as { journal?: unknown }).journal !== false
       ? {}
       : undefined;
+  // M1 (glm-ocr review): journal/save chains build from the ledger-
+  // rebuilt list so --save vision runs keep the adapter-owned
+  // extract-text seam (marker survives the capture spread).
   const journalingDescriptors =
     journalCapture === undefined
-      ? providerDescriptors
-      : captureServingDescriptors(providerDescriptors, journalCapture);
+      ? productionZaiLedgerDescriptors
+      : captureServingDescriptors(productionZaiLedgerDescriptors, journalCapture);
   const journalWiring =
     journalCapture === undefined
       ? undefined

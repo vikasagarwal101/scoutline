@@ -1085,7 +1085,23 @@ function recordingZaiClientFactory() {
 describe("Z.AI Adapter — specialized operation mappings (P3-04)", () => {
   it("maps each discriminated request to its dedicated MCP tool + arguments", async () => {
     const { factory, calls } = recordingZaiClientFactory();
-    const descriptor = createRealZaiDescriptor({ clientFactory: factory });
+    // glm-ocr lane: extract-text now routes to the layout-parsing REST
+    // arm first; inject a 1113 exhaustion double so it falls back to
+    // the pre-lane MCP path this test pins. Strip notices go to the
+    // default no-op channel.
+    const layoutCalls = [];
+    const descriptor = createRealZaiDescriptor({
+      clientFactory: factory,
+      layoutParsingFetch: async (url, init) => {
+        layoutCalls.push({ url, body: JSON.parse(init?.body ?? "{}") });
+        return {
+          ok: false,
+          status: 429,
+          text: async () => "",
+          json: async () => ({ error: { code: "1113", message: "Insufficient balance" } }),
+        };
+      },
+    });
     const adapter = descriptor.create({ env: { Z_AI_API_KEY: "test-key" } });
     const img = "https://example.test/a.png";
 
@@ -1169,6 +1185,11 @@ describe("Z.AI Adapter — specialized operation mappings (P3-04)", () => {
     ];
 
     assert.strictEqual(calls.length, expected.length, "one transport call per operation");
+    // glm-ocr lane pin: exactly ONE layout-parsing attempt — the
+    // extract-text op — carrying the minimal wire shape; 1113 then fell
+    // back to the MCP row asserted above.
+    assert.strictEqual(layoutCalls.length, 1, "exactly one extract-text op hit layout_parsing");
+    assert.deepStrictEqual(layoutCalls[0].body, { model: "glm-ocr", file: img });
     for (let i = 0; i < expected.length; i += 1) {
       assert.strictEqual(calls[i].name, expected[i].name, `call ${i}: tool name`);
       assert.deepStrictEqual(calls[i].args, expected[i].args, `call ${i}: args`);

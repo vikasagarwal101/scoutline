@@ -26,12 +26,14 @@
 
 import crypto from "node:crypto";
 import { promises as fsPromises } from "node:fs";
+import { readFile } from "node:fs/promises";
 
 import type {
   ProviderAdapter,
   ProviderCapability,
   ProviderContext,
   ProviderDescriptor,
+  ProviderQuotaFetch,
   ZaiAdapterClientPort,
   ZaiAdapterDependencies,
   ZaiMcpClientOptions,
@@ -69,6 +71,7 @@ import { isZaiConfigured, requireZaiApiKey } from "./credentials.js";
 import {
   resolveImageSource,
   resolveVideoSource,
+  resolveOcrSource,
   fetchImageSource,
   fetchVideoSource,
 } from "./media.js";
@@ -76,6 +79,8 @@ import { createZaiQuotaCapability, type ZaiQuotaCapabilityOptions } from "./quot
 import { createZaiRepositoryCapability } from "./repository.js";
 import { createZaiReaderCapability } from "./reader.js";
 import type { ZaiMonitorFetch } from "./monitor-client.js";
+import { parseLayout } from "./layout-parsing.js";
+import { QuotaError } from "../../lib/errors.js";
 
 const SEARCH_TOOL_PUBLIC_NAME = getMcpToolName("search", "web_search_prime");
 const VISION_ANALYZE_TOOL_PUBLIC_NAME = getMcpToolName("vision", "analyze_image");
@@ -460,6 +465,132 @@ function normalizeZaiSearchResults(raw: readonly WebSearchResult[]): readonly Se
 interface ZaiVisionCapabilityOptions {
   readonly env: NodeJS.ProcessEnv;
   readonly clientFactory: ZaiAdapterDependencies["clientFactory"];
+  /** GLM-OCR layout-parsing seam (glm-ocr lane T2, ADR-0014 D2/D5). */
+  readonly layoutParsingFetch?: ProviderQuotaFetch;
+  /** Notice channel (D5): default silent; index.ts wires stderr. */
+  readonly notice?: (line: string) => void;
+}
+
+/** The pinned fallback notice text (PRD AC-2, owner-approved). */
+const GLM_OCR_FALLBACK_NOTICE =
+  "glm-ocr unavailable (no PAYG balance); falling back to vision model";
+const GLM_OCR_LANGUAGE_STRIP_NOTICE = "--language not supported by glm-ocr; ignored";
+const GLM_OCR_PROMPT_STRIP_NOTICE = "custom prompt not supported by glm-ocr; ignored";
+
+/** The default extract-text prompt (commands/vision.ts keeps the copy). */
+const DEFAULT_EXTRACT_TEXT_PROMPT = "Extract all text from this image.";
+
+/** Hermetic no-op timer pair for the layout-parsing client. */
+const LAYOUT_PARSING_TIMERS = { setTimeout, clearTimeout };
+
+/**
+ * Read a local OCR source to base64 (one read pass — the cache-key
+ * computation in T3 shares the same bytes).
+ */
+async function readOcrSourceAsBase64(resolvedPath: string): Promise<string> {
+  const bytes = await readFile(resolvedPath);
+  return bytes.toString("base64");
+}
+
+/**
+ * Prefetch a URL source to base64 for the layout-parsing retry (D3 —
+ * the recorded MCP URL-unreliability pattern applied to the REST arm).
+ * Returns the data-URI form the REST `file` value accepts.
+ */
+/** Response shape the prefetch reads (JSON + headers + arrayBuffer). */
+interface OcrPrefetchResponse {
+  readonly ok: boolean;
+  readonly status: number;
+  readonly headers?: { get(name: string): string | null };
+  arrayBuffer(): Promise<ArrayBuffer>;
+}
+
+async function prefetchOcrUrlAsDataUri(
+  url: string,
+  fetchImpl: ProviderQuotaFetch | undefined,
+): Promise<string> {
+  // Same duck-typed double shape other Z.AI transports use: the
+  // injected seam is the quota fetch (JSON-only); the ambient global
+  // fetch satisfies the wider headers/arrayBuffer view.
+  const f = ((input: string | URL, init: Record<string, unknown>) =>
+    fetchImpl
+      ? (fetchImpl(input, init) as unknown as Promise<OcrPrefetchResponse>)
+      : (globalThis.fetch(input as unknown as URL, init as unknown as RequestInit) as unknown as Promise<OcrPrefetchResponse>)) as (
+    input: string | URL,
+    init: Record<string, unknown>,
+  ) => Promise<OcrPrefetchResponse>;
+  let res: OcrPrefetchResponse;
+  try {
+    res = await f(url, { method: "GET" });
+  } catch {
+    // Failed prefetch is terminal 422 (AC-3): no engine fallback for a
+    // non-1113 failure, no retry loop around the retry.
+    throw new ApiError("Z.AI layout-parsing URL prefetch failed", 422);
+  }
+  if (!res.ok) {
+    throw new ApiError("Z.AI layout-parsing URL prefetch failed", 422);
+  }
+  const buffer = await res.arrayBuffer();
+  const mime = res.headers?.get?.("content-type")?.split(";")[0] || "application/octet-stream";
+  return `data:${mime};base64,${Buffer.from(buffer).toString("base64")}`;
+}
+
+/**
+ * The glm-ocr arm of extract-text (ADR-0014 D1/D2/D3/D6): resolve the
+ * source through the WIDER OCR media rules (images ≤10MB, PDF ≤50MB),
+ * warn-and-strip `--language` and a custom prompt, then POST
+ * layout_parsing. A 1113 (insufficient PAYG balance) rejection throws
+ * `QuotaError` — the caller's exhaustion seam. A URL-source REST
+ * failure retries ONCE via prefetch-to-base64; a failed prefetch is
+ * terminal 422.
+ */
+async function invokeZaiExtractTextOcrArm(
+  request: ExtractTextRequest,
+  apiKey: string,
+  notice: (line: string) => void,
+  layoutParsingFetch: ProviderQuotaFetch | undefined,
+): Promise<string> {
+  if (request.programmingLanguage) {
+    notice(GLM_OCR_LANGUAGE_STRIP_NOTICE);
+  }
+  if (request.instruction !== DEFAULT_EXTRACT_TEXT_PROMPT) {
+    notice(GLM_OCR_PROMPT_STRIP_NOTICE);
+  }
+
+  const resolved = resolveOcrSource(request.source);
+  const isUrl = /^https?:\/\//i.test(resolved);
+  const fileValue = isUrl ? resolved : await readOcrSourceAsBase64(resolved);
+
+  const deps = layoutParsingFetch !== undefined ? { fetch: layoutParsingFetch } : {};
+  try {
+    return await parseLayout({ apiKey, file: fileValue }, LAYOUT_PARSING_TIMERS, deps);
+  } catch (error) {
+    // One prefetch-to-base64 retry on a URL source whose REST attempt
+    // failed with a fallback-eligible error (server-side URL fetching
+    // shares the MCP's recorded unreliability). Exhaustion (1113),
+    // auth, and local-file sources never retry — they are not
+    // source-related.
+    if (isUrl && isFallbackEligibleError(error)) {
+      try {
+        const dataUri = await prefetchOcrUrlAsDataUri(resolved, layoutParsingFetch);
+        return await parseLayout({ apiKey, file: dataUri }, LAYOUT_PARSING_TIMERS, deps);
+      } catch {
+        // Failed prefetch is terminal 422 (AC-3) — never surfaced as a
+        // raw transport TypeError and never rethrown for engine
+        // fallback.
+        throw new ApiError("Z.AI layout-parsing URL prefetch failed", 422);
+      }
+    }
+    throw error;
+  }
+}
+
+/** Narrowed request shape for the extract-text operation. */
+interface ExtractTextRequest {
+  operation: "extract-text";
+  source: string;
+  instruction: string;
+  programmingLanguage?: string;
 }
 
 /**
@@ -474,6 +605,7 @@ interface ZaiVisionCapabilityOptions {
  */
 function createZaiVisionCapability(options: ZaiVisionCapabilityOptions): VisionCapability {
   const { env, clientFactory } = options;
+  const notice = options.notice ?? (() => {});
 
   // Shared credential resolver (Fixup A — B4/B7).
   function resolveApiKey(): string {
@@ -492,6 +624,30 @@ function createZaiVisionCapability(options: ZaiVisionCapabilityOptions): VisionC
       // Unsupported operations never reach here: the descriptor-level
       // gate and `supports()` reject first (defence in depth).
       resolveApiKey();
+
+      // glm-ocr lane (ADR-0014 D1): extract-text routes to the
+      // layout-parsing REST arm FIRST; on 1113 (no PAYG balance) it
+      // falls back — with one pinned stderr notice — to the pre-lane
+      // MCP path below with the SAME instruction semantics. Every
+      // other operation dispatches through the MCP path unchanged.
+      if (request.operation === "extract-text") {
+        try {
+          return await invokeZaiExtractTextOcrArm(
+            request,
+            resolveApiKey(),
+            notice,
+            options.layoutParsingFetch,
+          );
+        } catch (error) {
+          if (error instanceof QuotaError) {
+            notice(GLM_OCR_FALLBACK_NOTICE);
+            // Fall through to the pre-lane MCP path (no rethrow).
+          } else {
+            throw error;
+          }
+        }
+      }
+
       const tempPaths: string[] = [];
       try {
         // First attempt: HTTP(S) URLs pass straight through to the
@@ -968,6 +1124,8 @@ export function createZaiDescriptor(dependencies?: ZaiAdapterDependencies): Prov
       const vision = createZaiVisionCapability({
         env: context.env,
         clientFactory: envBoundClientFactory,
+        layoutParsingFetch: dependencies?.layoutParsingFetch,
+        notice: dependencies?.notice,
       });
       const quotaOptions: ZaiQuotaCapabilityOptions = { env: context.env, ...quotaTransport };
       const quota = createZaiQuotaCapability(quotaOptions);

@@ -428,6 +428,17 @@ export interface ZaiAdapterDependencies {
   readonly quotaSetTimeout?: typeof setTimeout;
   readonly quotaClearTimeout?: typeof clearTimeout;
   /**
+   * GLM-OCR layout-parsing seam (glm-ocr lane T2, ADR-0014 D2/D5).
+   * Injected fetch + timers for the extract-text REST arm; production
+   * omits both and the layout-parsing client resolves the global fetch
+   * and ambient timers. `notice` is the stderr-visible notice channel
+   * (1113 fallback disclosure + off-wire control strips); default no-op
+   * keeps the adapter silent — index.ts forwards to stderr in
+   * production wiring.
+   */
+  readonly layoutParsingFetch?: ProviderQuotaFetch;
+  readonly notice?: (line: string) => void;
+  /**
    * Optional Repository Capability close-bound override in
    * milliseconds (P6-04A). When omitted, the production default of
    * 2000 ms (matching `ZaiMcpClient.close`) applies. Tests inject a

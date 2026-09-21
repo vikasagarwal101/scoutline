@@ -169,6 +169,25 @@ export function resolveVideoSource(source: string): string {
 }
 
 /**
+ * G2 (PR #265): whether an OCR-accepted source is ALSO acceptable to
+ * the legacy vision MCP fallback arm (images <=5 MiB; no PDFs). URL
+ * sources are eligible (the MCP fetches server-side under its own
+ * limits); local files are checked against the vision arm's ceiling.
+ */
+export function isOcrSourceFallbackEligible(source: string): boolean {
+  const kind = classifySource(source);
+  if (kind === "http") return true;
+  if (kind === "unsupported-url") return false;
+  const ext = path.extname(path.resolve(source)).toLowerCase();
+  if (ext === ".pdf") return false;
+  try {
+    return fs.statSync(path.resolve(source)).size <= ZAI_MAX_IMAGE_BYTES;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Resolve a source for the glm-ocr layout-parsing arm of extract-text
  * (glm-ocr lane D3): images ≤10MB AND PDFs ≤50MB are accepted — the
  * wider OCR-endpoint limits, not the vision MCP's 5 MiB image ceiling.

@@ -72,6 +72,7 @@ import {
   resolveImageSource,
   resolveVideoSource,
   resolveOcrSource,
+  isOcrSourceFallbackEligible,
   fetchImageSource,
   fetchVideoSource,
 } from "./media.js";
@@ -775,6 +776,19 @@ function createZaiVisionCapability(options: ZaiVisionCapabilityOptions): VisionC
           );
         } catch (error) {
           if (error instanceof QuotaError) {
+            // G2 (PR #265): inputs the legacy vision MCP arm cannot
+            // accept (PDFs; images over its 5 MiB ceiling) fail
+            // TERMINAL here — naming both engines and the remedy —
+            // instead of dispatching an incompatible source to a late
+            // validation error.
+            if (!isOcrSourceFallbackEligible(request.source)) {
+              throw new ApiError(
+                "Z.AI extract-text input is only supported by glm-ocr " +
+                  "(PDF or oversized image), and glm-ocr is unavailable " +
+                  "(no PAYG balance). A PAYG balance is required for this input.",
+                422,
+              );
+            }
             notice(GLM_OCR_FALLBACK_NOTICE);
             // D7: the fallback attempt is its own ledger row (an
             // 1113 + fallback run = 2 rows). Emitted here because the

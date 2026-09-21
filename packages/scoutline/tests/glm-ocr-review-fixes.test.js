@@ -467,6 +467,135 @@ describe("glm-ocr review m2 — batch PDF surface", () => {
   });
 });
 
+describe("glm-ocr PR-265 G1 — timeout covers body decode", () => {
+  it("the timer is still armed when decode starts, and a stalled json() aborts to TimeoutError", async () => {
+    const { parseLayout } = await import("../dist/providers/zai/layout-parsing.js");
+    let cleared = false;
+    let clearedWhenDecodeCalled = null;
+    const timers = {
+      setTimeout: (fn) => {
+        setImmediate(fn);
+        return 0;
+      },
+      clearTimeout: () => {
+        cleared = true;
+      },
+    };
+    const fetch = async (url, init) => ({
+      ok: true,
+      status: 200,
+      text: async () => "{}",
+      json: () => {
+        // The G1 observable: the timer must STILL be armed when decode
+        // is invoked (a clear before this point is the unbounded-stall
+        // pre-fix shape).
+        clearedWhenDecodeCalled = cleared;
+        return new Promise((_resolve, reject) => {
+          const abort = () => {
+            const e = new Error("The operation was aborted");
+            e.name = "AbortError";
+            reject(e);
+          };
+          // AbortSignal semantics: a listener attached AFTER abort
+          // never fires — check the already-aborted case explicitly.
+          if (init.signal.aborted) abort();
+          else init.signal.addEventListener("abort", abort);
+        });
+      },
+    });
+    await assert.rejects(
+      parseLayout({ apiKey: "k", file: "x", fetch }, timers),
+      (error) => error.constructor.name === "TimeoutError",
+      "abort during decode must map to TimeoutError",
+    );
+    assert.strictEqual(
+      clearedWhenDecodeCalled,
+      false,
+      "the timeout timer must still be armed when response.json() is invoked (G1)",
+    );
+  });
+});
+
+describe("glm-ocr PR-265 G2 — fallback input honesty", () => {
+  function ineligibleSetup() {
+    const rest = makeRest([INSUFFICIENT]);
+    const notices = [];
+    return { rest, notices };
+  }
+
+  it("1113 + PDF → terminal error naming both engines and the PAYG remedy; NO MCP dispatch", async () => {
+    const pdf = path.join(tmpRoot, "doc.pdf");
+    await fs.writeFile(pdf, Buffer.from("%PDF-1.4 tiny"));
+    const { rest, notices } = ineligibleSetup();
+    const mcpLog = [];
+    const descriptor = createZaiDescriptor({
+      clientFactory: makeMcpFactory(mcpLog),
+      layoutParsingFetch: rest.fetch,
+      notice: (l) => notices.push(l),
+    });
+    const adapter = descriptor.create({ env: ENV });
+    await assert.rejects(
+      adapter.vision.invoke({
+        operation: "extract-text",
+        source: pdf,
+        instruction: "Extract all text from this image.",
+      }),
+      (error) =>
+        error instanceof ApiError &&
+        error.statusCode === 422 &&
+        /glm-ocr/.test(error.message) &&
+        /PAYG/.test(error.message),
+      "terminal error must name both engines and the PAYG remedy",
+    );
+    assert.strictEqual(mcpLog.length, 0, "no MCP dispatch for an ineligible fallback input");
+  });
+
+  it("1113 + local image >5 MiB → the same terminal error", async () => {
+    const big = path.join(tmpRoot, "big.png");
+    const handle = await fs.open(big, "w");
+    await handle.truncate(6 * 1024 * 1024); // 6 MiB — OCR-accepted, vision-ineligible
+    await handle.close();
+    const { rest, notices } = ineligibleSetup();
+    const mcpLog = [];
+    const descriptor = createZaiDescriptor({
+      clientFactory: makeMcpFactory(mcpLog),
+      layoutParsingFetch: rest.fetch,
+      notice: (l) => notices.push(l),
+    });
+    const adapter = descriptor.create({ env: ENV });
+    await assert.rejects(
+      adapter.vision.invoke({
+        operation: "extract-text",
+        source: big,
+        instruction: "Extract all text from this image.",
+      }),
+      (error) => error instanceof ApiError && error.statusCode === 422 && /PAYG/.test(error.message),
+    );
+    assert.strictEqual(mcpLog.length, 0);
+  });
+
+  it("1113 + eligible image (≤5 MiB) → fallback PROCEEDS (MCP invoked, result returned)", async () => {
+    const img = path.join(tmpRoot, "ok.png");
+    await fs.writeFile(img, Buffer.from("small"));
+    const rest = makeRest([INSUFFICIENT]);
+    const notices = [];
+    const mcpLog = [];
+    const descriptor = createZaiDescriptor({
+      clientFactory: makeMcpFactory(mcpLog),
+      layoutParsingFetch: rest.fetch,
+      notice: (l) => notices.push(l),
+    });
+    const adapter = descriptor.create({ env: ENV });
+    const result = await adapter.vision.invoke({
+      operation: "extract-text",
+      source: img,
+      instruction: "Extract all text from this image.",
+    });
+    assert.strictEqual(result, "mcp fallback text");
+    assert.strictEqual(mcpLog.length, 1, "fallback dispatched the MCP tool");
+  });
+});
+
 describe("glm-ocr review n2 — diff/video dispatch byte-identity pins", () => {
   it("diff and video map to the same MCP tools+args as pre-lane; no layout_parsing", async () => {
     const rest = makeRest([WARM]);

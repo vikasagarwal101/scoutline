@@ -42,7 +42,7 @@ import {
   TimeoutError,
 } from "../../lib/errors.js";
 import { clampTimeoutMs } from "../../lib/timeout.js";
-import type { ProviderQuotaFetch, ProviderQuotaFetchResponse } from "../types.js";
+import type { ProviderQuotaFetch } from "../types.js";
 import { getGlobalFetch } from "../types.js";
 
 /** Plain (non-coding) base: PAYG billing is account-level (D2). */
@@ -126,9 +126,14 @@ export async function parseLayout(
   const controller = new AbortController();
   const timerId = timers.setTimeout(() => controller.abort(), timeoutMs);
 
-  let response: ProviderQuotaFetchResponse;
+  // G1 (PR #265): the timeout covers fetch AND body decode — the timer
+  // clears exactly once in a finally on every path, so a stalled body or
+  // JSON decoder aborts within the documented bound (abort during decode
+  // maps to TimeoutError; malformed JSON stays ApiError).
+  let payload: unknown;
+  let responseStatus: number;
   try {
-    response = await f(url, {
+    const response = await f(url, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${request.apiKey}`,
@@ -137,18 +142,18 @@ export async function parseLayout(
       body: JSON.stringify({ model: LAYOUT_PARSING_MODEL, file: request.file }),
       signal: controller.signal,
     });
+    responseStatus = response.status;
+    try {
+      payload = await response.json();
+    } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") throw error;
+      // Fail closed: a non-JSON body is a malformed result.
+      throw new ApiError("Z.AI layout-parsing returned a malformed result", 500);
+    }
   } catch (error) {
-    timers.clearTimeout(timerId);
     throw normalizeTransportError(error, timeoutMs);
-  }
-  timers.clearTimeout(timerId);
-
-  let payload: unknown;
-  try {
-    payload = await response.json();
-  } catch {
-    // Fail closed: a non-JSON body is a malformed result.
-    throw new ApiError("Z.AI layout-parsing returned a malformed result", 500);
+  } finally {
+    timers.clearTimeout(timerId);
   }
 
   if (isInsufficientBalance(payload)) {
@@ -158,11 +163,11 @@ export async function parseLayout(
     );
   }
 
-  if (!response.ok) {
-    if (response.status === 401 || response.status === 403) {
+  if (responseStatus >= 400) {
+    if (responseStatus === 401 || responseStatus === 403) {
       throw new AuthError("Z.AI layout-parsing authentication failed");
     }
-    throw new ApiError("Z.AI layout-parsing request failed", response.status);
+    throw new ApiError("Z.AI layout-parsing request failed", responseStatus);
   }
 
   const mdResults = (payload as { md_results?: unknown }).md_results;

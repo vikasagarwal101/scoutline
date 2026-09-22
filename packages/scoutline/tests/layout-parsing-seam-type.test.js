@@ -84,7 +84,14 @@ void withBody; void arrayBufferOnly; void quotaShape;
           "--lib", "es2022,dom",
           file,
         ],
-        { cwd: PACKAGE_ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+        {
+          cwd: PACKAGE_ROOT,
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+          // Minimal env: the compiler needs only PATH + HOME; it must
+          // not inherit ambient config (SCOUTLINE_*, proxies, etc.).
+          env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" },
+        },
       );
     } catch (err) {
       stdout = String(err.stdout ?? err.message);

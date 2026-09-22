@@ -62,6 +62,10 @@ function buildValidPack() {
             quote: "The fusion merge ranks candidates by reciprocal rank.",
             charRange: [0, 54],
           },
+          {
+            quote: "Clusters collapse near-duplicate stories into one representative.",
+            charRange: [55, 119],
+          },
         ],
       },
       {
@@ -278,7 +282,7 @@ function buildValidVerifyBlock() {
         negationCues: 1,
         evidence: [
           { sourceIndex: 0, passageIndex: 1 },
-          { sourceIndex: 1, passageIndex: 0 },
+          { sourceIndex: 0, passageIndex: 0 },
         ],
       },
     ],
@@ -409,6 +413,38 @@ describe("decodeInvestigationPack — verify block (additive, schemaVersion 1)",
   it("deterministic: verify-bearing decode run twice deep-equal", () => {
     const pack = { ...buildValidPack(), verify: buildValidVerifyBlock() };
     assert.deepEqual(decodeInvestigationPack(pack), decodeInvestigationPack(pack));
+  });
+
+  it("PR #270 babysit: out-of-range pointers fail closed (cross-check against the pack's own sources)", () => {
+    // buildValidPack carries 2 sources: source 0 has 1 passage,
+    // source 1 has 0 passages. Any pointer past those bounds is
+    // malformed even though its SHAPE is safe — decode must null.
+    const cases = [
+      { sourceIndex: 2, passageIndex: 0 }, // past sources.length
+      { sourceIndex: 5, passageIndex: 0 }, // far past
+      { sourceIndex: 0, passageIndex: 2 }, // past source 0's passage count (2)
+      { sourceIndex: 1, passageIndex: 0 }, // source 1 has NO passages
+    ];
+    for (const pointer of cases) {
+      const pack = { ...buildValidPack(), verify: buildValidVerifyBlock() };
+      pack.verify.claims[0].evidence = [pointer];
+      assert.equal(
+        decodeInvestigationPack(pack),
+        null,
+        `out-of-range pointer ${JSON.stringify(pointer)} must fail closed`,
+      );
+    }
+  });
+
+  it("PR #270 babysit: zero-source pack keeps shape-only pointer validation (no sources to cross-check)", () => {
+    // A pack whose reads ALL failed (sources: []) has no ranges to
+    // cross-check — an unresolved claim with pointers decodes; the
+    // shape guards remain the floor there.
+    const pack = { ...buildValidPack(), sources: [], verify: buildValidVerifyBlock() };
+    pack.verify.claims[0].verdict = "unresolved";
+    const decoded = decodeInvestigationPack(pack);
+    assert.notEqual(decoded, null);
+    assert.deepEqual(decoded.verify.claims[0].evidence, [{ sourceIndex: 0, passageIndex: 0 }]);
   });
 });
 

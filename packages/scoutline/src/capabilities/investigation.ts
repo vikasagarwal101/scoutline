@@ -282,7 +282,9 @@ function decodeInvestigationPackInner(value: unknown): EvidencePack | null {
   // investigate-verify lane T2 (D4): additive-optional `verify` — absent
   // keeps the canonical subset (question-mode byte identity); present is
   // validated row-by-row and fails closed on any malformed row.
-  const verify = decodeVerifyBlock(value.verify);
+  const verify = decodeVerifyBlock(value.verify, sources.length, (sourceIndex) =>
+    sources[sourceIndex] === undefined ? 0 : sources[sourceIndex]!.passages.length,
+  );
   if (verify === undefined) return null;
   return {
     schemaVersion: 1,
@@ -300,8 +302,18 @@ const CLAIM_VERDICTS: readonly string[] = ["corroborated", "contradicted", "unre
  * Decode the additive verify block. `undefined` = malformed (the caller
  * fails closed); `null` = absent (the canonical subset stands); the
  * decoded block = present + valid.
+ *
+ * PR #270 babysit: pointer RANGE is cross-checked against the decoded
+ * sources of the SAME pack (sourceIndex < sourceCount; passageIndex <
+ * that source's passage count) — a shape-safe but out-of-range pointer
+ * is malformed. A zero-source pack (every read failed) has no ranges
+ * to check; the shape guards remain the floor there.
  */
-function decodeVerifyBlock(value: unknown): VerifyBlock | null | undefined {
+function decodeVerifyBlock(
+  value: unknown,
+  sourceCount: number,
+  passageCountAt: (sourceIndex: number) => number,
+): VerifyBlock | null | undefined {
   if (value === undefined) return null;
   if (!isPlainObject(value)) return undefined;
   if (!isNonEmptyString(value.statement)) return undefined;
@@ -326,6 +338,14 @@ function decodeVerifyBlock(value: unknown): VerifyBlock | null | undefined {
       if (!isPlainObject(pointer)) return undefined;
       if (!isSafeIndex(pointer.sourceIndex) || !isSafeIndex(pointer.passageIndex)) {
         return undefined;
+      }
+      if (sourceCount > 0) {
+        if (
+          pointer.sourceIndex >= sourceCount ||
+          pointer.passageIndex >= passageCountAt(pointer.sourceIndex)
+        ) {
+          return undefined;
+        }
       }
       evidence.push({ sourceIndex: pointer.sourceIndex, passageIndex: pointer.passageIndex });
     }

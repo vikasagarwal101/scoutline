@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Central `--flag=value` flag normalization (#263):** equals-form long flags now behave identically to their space form across every command (`--provider=brave` ≡ `--provider brave`) — normalized once at the shared seam before global options, best-effort mode, the strict-flag gate, and every handler parse. The split is first-`=` only, so values keep their own `=` (`--header=K:V=W` intact); `--flag=` degrades to the valueless form exactly like `--flag ""`; short flags (`-O=json`) and non-flag tokens are untouched (strict mode still rejects them as before, and strict mode now rejects unknown equals-form keys identically to space form). The two per-command local guards (archive's `#172` rejection, investigate's `--verify=`/`--synthesize=` scans) are deleted — one seam, no more silent garbage-key drops.
+
 ### Fixed
 
 - **OCR URL prefetch is incrementally bounded (#266):** the glm-ocr fallback's URL prefetch no longer accumulates the response via unbounded `arrayBuffer()` — it streams through the shared `readBoundedResponseBody` reader with an active byte counter and immediate cancel at the OCR media ceilings (10MB image / 50MB PDF; content-type selects the cap; declared `Content-Length` is ignored in favor of the counter — chunked servers understate it). An oversize prefetch is a media-rule violation (`VALIDATION_ERROR`), not a transport failure — it pierces the prefetch catch's terminal-422 remap exactly like its sibling `fetchUrlToTempPath` seam. Hostile or merely large URL sources can no longer OOM the process through the prefetch path.

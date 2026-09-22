@@ -41,27 +41,43 @@ export function normalizeTerms(terms: string[]): string[] {
   return [...seen];
 }
 
+/**
+ * Ideographic sentence terminators (issue #276): the ideographic full
+ * stop 。 (U+3002) and the fullwidth ！？. They terminate UNCONDITIONALLY
+ * — no space lookahead — because unspaced scripts never satisfy the
+ * ASCII rule's lookahead. Clause commas （，、) are deliberately NOT
+ * terminators: they separate clauses inside a sentence, not sentences.
+ * Exported: investigate-claims.ts's splitClaims shares this grammar.
+ */
+export const IDEOGRAPHIC_TERMINATORS = new Set(["。", "！", "？"]);
+
 /** A window is [start, end) with the terminator char owned by the window. */
-interface Window {
+export interface Window {
   start: number;
   end: number;
 }
 
 /**
  * Split content into sentence windows on `[.!?]` terminators followed
- * by a space (the literal `[.!?] +` grammar), plus newline
- * boundaries, tracking exact offsets into the original content.
- * Newlines terminate but never separate: "here.\n" ends at the `\n`.
+ * by a space (the literal `[.!?] +` grammar), the unconditional
+ * ideographic set (issue #276, see {@link IDEOGRAPHIC_TERMINATORS}),
+ * plus newline boundaries, tracking exact offsets into the original
+ * content. Newlines terminate but never separate: "here.\n" ends at
+ * the `\n`.
  */
-function splitWindows(content: string): Window[] {
+export function splitWindows(content: string): Window[] {
   const windows: Window[] = [];
   let start = 0;
   for (let i = 0; i < content.length; i += 1) {
     const ch = content.charAt(i);
     const next = content.charAt(i + 1);
+    // ASCII rule unchanged: `.!?` need a following space (or end) so
+    // "3.14" never splits. Ideographic terminators (issue #276) fire
+    // unconditionally — unspaced scripts never satisfy a lookahead.
     const isTerminator =
-      (ch === "." || ch === "!" || ch === "?") &&
-      (i + 1 >= content.length || next === " ");
+      ((ch === "." || ch === "!" || ch === "?") &&
+        (i + 1 >= content.length || next === " ")) ||
+      IDEOGRAPHIC_TERMINATORS.has(ch);
     const isNewline = ch === "\n";
     if (!isTerminator && !isNewline) {
       continue;

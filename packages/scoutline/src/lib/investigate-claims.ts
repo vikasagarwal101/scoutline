@@ -3,9 +3,10 @@
  * `investigate --verify` (investigate-verify lane, Ticket T1; DESIGN
  * D2, PRD AC-2/AC-4/AC-5).
  *
- * splitClaims: the extract grammar's terminator rules verbatim
- * (lib/investigate-extract.ts splitWindows) — `[.!?]` followed by a
- * space (or end of input), or a newline; the terminator char belongs
+ * splitClaims: the extract grammar's terminator rules — the SHARED
+ * splitWindows seam (lib/investigate-extract.ts, issue #276): `[.!?]`
+ * followed by a space (or end of input), the unconditional
+ * ideographic set 。！？, or a newline; the terminator char belongs
  * to the window, the separator run (spaces/tabs) to neither. The
  * splitter is PURE: the ≤ 8 claim cap is the CALLER's fail-loud
  * validation (commands/investigate.ts, T3) — a 9-sentence statement
@@ -25,7 +26,7 @@
  */
 
 import { STOPWORDS, tokenizeTerms } from "./context-file.js";
-import { normalizeTerms } from "./investigate-extract.js";
+import { normalizeTerms, splitWindows } from "./investigate-extract.js";
 import type { EvidenceSource } from "../capabilities/investigation.js";
 
 // ---------------------------------------------------------------------------
@@ -42,51 +43,9 @@ const STOPWORD_SET: ReadonlySet<string> = new Set(STOPWORDS);
  */
 export const MAX_VERIFY_CLAIMS = 8;
 
-/** A window [start, end) with the terminator char owned by the window. */
-interface Window {
-  start: number;
-  end: number;
-}
-
-/**
- * Split input into sentence windows on the extract grammar: `[.!?]`
- * followed by a space (or end of input), plus newline boundaries.
- * Pinned to lib/investigate-extract.ts splitWindows — a decimal like
- * "3.14" has no space after the dot, so it never terminates.
- */
-function splitWindows(content: string): Window[] {
-  const windows: Window[] = [];
-  let start = 0;
-  for (let i = 0; i < content.length; i += 1) {
-    const ch = content.charAt(i);
-    const next = content.charAt(i + 1);
-    const isTerminator =
-      (ch === "." || ch === "!" || ch === "?") &&
-      (i + 1 >= content.length || next === " ");
-    const isNewline = ch === "\n";
-    if (!isTerminator && !isNewline) {
-      continue;
-    }
-    const end = i + 1; // terminator char owned by the window
-    windows.push({ start, end });
-    // Skip the horizontal-whitespace separator run; the next window
-    // starts at the first character that is neither space nor tab.
-    let cursor = end;
-    while (cursor < content.length) {
-      const sep = content.charAt(cursor);
-      if (sep !== " " && sep !== "\t") {
-        break;
-      }
-      cursor += 1;
-    }
-    start = cursor;
-    i = cursor - 1; // loop increment lands on `cursor`
-  }
-  if (start < content.length) {
-    windows.push({ start, end: content.length });
-  }
-  return windows;
-}
+// splitWindows and its Window shape live in lib/investigate-extract.ts
+// (issue #276: the terminator grammar is ONE shared seam — the ideographic
+// set extends both extract and claims from the single definition).
 
 /**
  * Split a statement into sentence-claims: extract-grammar windows,

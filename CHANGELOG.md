@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.24.1] - 2026-09-22
+
 ### Added
 
 - **Central `--flag=value` flag normalization (#263):** equals-form long flags now behave identically to their space form across every command (`--provider=brave` ≡ `--provider brave`) — normalized once at the shared seam before global options, best-effort mode, the strict-flag gate, and every handler parse. The split is first-`=` only, so values keep their own `=` (`--header=K:V=W` intact); `--flag=` degrades to the valueless form exactly like `--flag ""`; short flags (`-O=json`) and non-flag tokens are untouched (strict mode still rejects them as before, and strict mode now rejects unknown equals-form keys identically to space form). The two per-command local guards (archive's `#172` rejection, investigate's `--verify=`/`--synthesize=` scans) are deleted — one seam, no more silent garbage-key drops.

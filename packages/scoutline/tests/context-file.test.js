@@ -30,6 +30,7 @@ import { FileError, ValidationError } from "../dist/lib/errors.js";
 import {
   MAX_CONTEXT_BYTES,
   MAX_SUBQUERIES,
+  MAX_TERM_CHARS,
   MAX_TERMS,
   STOPWORDS,
   parseContextText,
@@ -193,6 +194,34 @@ describe("parseContextText terms", () => {
     assert.strictEqual(terms[0], "topic01");
     assert.strictEqual(terms[terms.length - 1], "topic11");
     assert.ok(!terms.includes("topic12"));
+  });
+
+  // Issue #271: Unicode word segmentation. CJK text yields word-like
+  // segments as terms; single CJK chars are meaningful, so the 4-char
+  // ASCII minimum does NOT apply to non-ASCII segments.
+  it("segments CJK headings into word-like terms (single-char minimum for non-ASCII)", () => {
+    assert.deepEqual(parseContextText("## 東京は速い").terms, ["東京", "は", "速い"]);
+  });
+
+  it("keeps accented/Latin-extended words as terms", () => {
+    assert.deepEqual(parseContextText("## Café überschreiben").terms, ["café", "überschreiben"]);
+  });
+
+  it("applies the 40-char upper bound to non-ASCII terms too", () => {
+    // A 41-char unspaced CJK run is dictionary-segmented into units
+    // (東 + 東東×20), each ≤ MAX_TERM_CHARS — the invariant is that NO
+    // emitted term exceeds the cap, not that the run drops entirely.
+    // Cyrillic (no en-dictionary entries) stays one whole run and
+    // DOES drop when over the cap.
+    const cjk = parseContextText(`## ${"東".repeat(41)}`).terms;
+    assert.ok(cjk.length > 0);
+    assert.ok(cjk.every((t) => t.length <= MAX_TERM_CHARS));
+    assert.deepEqual(parseContextText(`## ${"п".repeat(41)}`).terms, []);
+  });
+
+  it("is byte-stable across runs for non-ASCII input", () => {
+    const text = "## 東京は速い\nAIによる分析とは?";
+    assert.deepEqual(parseContextText(text).terms, parseContextText(text).terms);
   });
 });
 

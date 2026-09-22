@@ -66,6 +66,70 @@ export const MAX_TERM_CHARS = 40;
 /** D2.5: the appended bias segment fits within this many chars. */
 const MAX_BIAS_APPEND_CHARS = 240;
 
+// ---------------------------------------------------------------------------
+// Issue #271: Unicode word segmentation at the shared term seam.
+//
+// Pure-ASCII input keeps the legacy split verbatim (byte-identical A/B —
+// the segmenter would fuse ASCII punctuation into words like "3.14").
+// Input containing non-ASCII goes through `Intl.Segmenter` (fixed "en"
+// locale, granularity "word" — locale-independent for determinism; en/ja
+// agree on CJK corpus). Non-ASCII word-like segments are kept WHOLE: a
+// CJK word is a meaningful unit, so the 4-char ASCII minimum never
+// applies to them (single CJK chars pass); the 40-char cap still does.
+// Length bounds themselves are applied by the CALLERS, not here.
+//
+// OUT OF SCOPE (documented): negation cues stay English literals —
+// non-Latin contradiction detection is not attempted.
+// ---------------------------------------------------------------------------
+
+/** The legacy ASCII split class (kept verbatim for the A/B pin). */
+const ASCII_SPLIT = /[^a-z0-9]+/;
+/** Claims' apostrophe-keeping variant of the legacy split. */
+const ASCII_SPLIT_APOSTROPHE = /[^a-z0-9']+/;
+
+const SEGMENTER = new Intl.Segmenter("en", { granularity: "word" });
+
+function isAscii(text: string): boolean {
+  return /^[\x00-\x7f]*$/.test(text);
+}
+
+/**
+ * True for pure-ASCII tokens — callers use this to apply the
+ * MIN_TERM_CHARS floor to ASCII only (single non-ASCII chars are
+ * meaningful word units; issue #271).
+ */
+export function isAsciiToken(token: string): boolean {
+  return isAscii(token);
+}
+
+/**
+ * Tokenize lowercased text into term tokens: word-like units with
+ * ASCII punctuation never inside a non-ASCII token. `keepApostrophe`
+ * selects claims' grammar ("don't" stays one token) on the ASCII path.
+ * Segments longer than MAX_TERM_CHARS are dropped here (not by
+ * callers): the "en" segmenter splits long unspaced CJK runs into
+ * dictionary chunks (東東×…), so a caller-side length check could
+ * admit sub-cap chunks of an over-long word.
+ */
+export function tokenizeTerms(text: string, keepApostrophe = false): string[] {
+  const lower = text.toLowerCase();
+  if (isAscii(lower)) {
+    const split = keepApostrophe ? ASCII_SPLIT_APOSTROPHE : ASCII_SPLIT;
+    return lower.split(split).filter((t) => t.length > 0);
+  }
+  const tokens: string[] = [];
+  for (const { segment, isWordLike } of SEGMENTER.segment(lower)) {
+    if (!isWordLike) continue;
+    if (isAscii(segment)) {
+      const split = keepApostrophe ? ASCII_SPLIT_APOSTROPHE : ASCII_SPLIT;
+      tokens.push(...segment.split(split).filter((t) => t.length > 0));
+    } else if (segment.length <= MAX_TERM_CHARS) {
+      tokens.push(segment);
+    }
+  }
+  return tokens;
+}
+
 /** D3 (G3): NUL byte anywhere in this prefix marks the source binary. */
 const BINARY_SNIFF_BYTES = 8192;
 
@@ -134,13 +198,22 @@ export function parseContextText(text: string): ParsedContextText {
   };
 }
 
-/** D2.3: lowercase tokens from the stream, stopword/length filtered, capped. */
+/**
+ * D2.3: lowercase tokens from the stream, stopword/length filtered,
+ * capped. Issue #271: tokens come from the shared Unicode tokenizer —
+ * non-ASCII segments are meaningful single units, so the ASCII
+ * MIN_TERM_CHARS floor never applies to them (single CJK chars pass);
+ * the MAX_TERM_CHARS cap applies to every token.
+ */
 function deriveTerms(stream: readonly StreamItem[]): string[] {
   const terms: string[] = [];
   const seen = new Set<string>();
   for (const item of stream) {
-    for (const token of item.value.toLowerCase().split(/[^a-z0-9]+/)) {
-      if (token.length < MIN_TERM_CHARS || token.length > MAX_TERM_CHARS) {
+    for (const token of tokenizeTerms(item.value)) {
+      if (isAscii(token) && token.length < MIN_TERM_CHARS) {
+        continue;
+      }
+      if (token.length > MAX_TERM_CHARS) {
         continue;
       }
       if (STOPWORD_SET.has(token) || seen.has(token)) {

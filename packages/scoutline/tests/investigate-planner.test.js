@@ -96,6 +96,54 @@ describe("planSubQueries template tier", () => {
     const second = await planSubQueries({ query }, templateDeps());
     assert.deepEqual(first, second);
   });
+
+  // Issue #271: the template topic join is Unicode-segmented — a CJK
+  // question derives a non-empty topic instead of degrading.
+  it("CJK question derives a Unicode-segmented topic (single-char minimum)", async () => {
+    const result = await planSubQueries(
+      { query: "東京は速いとは?" },
+      templateDeps(),
+    );
+    // segmenter: 東京 / は / 速い / と / は (single CJK chars kept,
+    // order-preserved dedupe drops the repeated は; the bare-topic row
+    // follows the key-terms-join dedupe rule — kept, not collapsed).
+    assert.deepEqual(result.subQueries, [
+      "東京は速いとは?",
+      "東京 は 速い と",
+      "東京 は 速い と overview",
+      "東京 は 速い と evidence",
+      "東京 は 速い と criticism",
+    ]);
+  });
+
+  it("ASCII question topic is byte-identical to the legacy derivation (A/B pin)", async () => {
+    // Hand-computed legacy rows: the segmenter path must reproduce
+    // exactly what /[^a-z0-9]+/ produced (issue #271 AC).
+    const ascii = await planSubQueries(
+      { query: "How does the caching layer work in scoutline?" },
+      templateDeps(),
+    );
+    assert.deepEqual(ascii.subQueries, [
+      "How does the caching layer work in scoutline?",
+      "caching layer work scoutline",
+      "caching layer work scoutline overview",
+      "caching layer work scoutline evidence",
+      "caching layer work scoutline criticism",
+    ]);
+    // Legacy planner grammar is /[^a-z0-9]+/ (no apostrophe): "don't"
+    // → "don"+"t", both under MIN_TERM_CHARS → dropped.
+    const apos = await planSubQueries(
+      { query: "models don't overfit" },
+      templateDeps(),
+    );
+    assert.deepEqual(apos.subQueries, [
+      "models don't overfit",
+      "models overfit",
+      "models overfit overview",
+      "models overfit evidence",
+      "models overfit criticism",
+    ]);
+  });
 });
 
 describe("planSubQueries explicit pipe tier", () => {

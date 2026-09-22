@@ -87,9 +87,19 @@ function splitWindows(content: string): Window[] {
   return windows;
 }
 
+/**
+ * Whole-word containment. ASCII terms keep the boundary guard;
+ * non-ASCII terms match as substrings — unspaced scripts (CJK) have
+ * no word separators, so the boundary class can never fire between
+ * letters (issue #271).
+ */
 function containsWholeWord(content: string, term: string): boolean {
+  const asciiTerm = /^[\x00-\x7f]*$/.test(term);
+  const body = escapeRegExp(term);
   const re = new RegExp(
-    `(^|[^\\p{L}\\p{N}_])${escapeRegExp(term)}(?:[^\\p{L}\\p{N}_]|$)`,
+    asciiTerm
+      ? `(^|[^\\p{L}\\p{N}_])${body}(?:[^\\p{L}\\p{N}_]|$)`
+      : body,
     "iu",
   );
   return re.test(content);

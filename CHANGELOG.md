@@ -1,6 +1,8 @@
 # Changelog
 
 ## [Unreleased]
+
+## [0.24.0] - 2026-09-22
 ### Added
 
 - **`investigate` command (ADR-0013) — local investigation pipeline:** `scoutline investigate "<question>"` composes Scoutline's own capabilities into a transparent, cache-resumable pipeline: three-tier deterministic planning (explicit `|` sub-queries via the `--merge` grammar > `--context` derivation > template fallback, capped at 5), fan-out search per sub-query over search's activation tiers, Fusion ranking, bounded-concurrency reads of the top `--sources` (default 5) distinct cluster representatives, and deterministic term-based passage extraction. The deliverable is a schema-version-1 `EvidencePack` (question, sub-queries, sources with `contentSha256` over normalized reader content plus `passages {quote, charRange}`, and a coverage block recording arms, cache hits, and unread sources with reason codes — never silently dropped). Agent-synthesis is the contract: `--synthesize` (Z.AI chat) is the additive-only escape hatch whose `brief` attaches to the pack, never replaces it. `--max-chars` rides the ADR-0007 budget ladder with the mirrored compaction artifact; `--save` flows through the shared seam; `--isolated` is accepted (no async-job state — resumability is pure cache replay); cost is explicit N×M+K billable searches + K reads with consumption-linearity pins. `verify` mode is deferred to a follow-up.

@@ -157,6 +157,7 @@ import {
   CommandOptionUnsupportedError,
   getErrorExitCode,
 } from "./lib/errors.js";
+import { normalizeEqualsFormFlags } from "./lib/equals-form.js";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
@@ -445,6 +446,9 @@ export function rejectFlagPair(
     throw makeError();
   }
 }
+
+// #263: re-exported for the parser-level tests.
+export { normalizeEqualsFormFlags };
 
 /**
  * Collect every occurrence of a long `--<name>` flag in argv order,
@@ -4935,16 +4939,10 @@ async function handleInvestigate(
       "Drop --context, or run without --verify to plan from the notes file.",
     );
   }
-  // Valueless/malformed --verify guards (the --synthesize pattern):
-  // parseArgs would swallow a following token as the value.
-  for (const token of args) {
-    if (typeof token === "string" && token.startsWith("--verify=")) {
-      throw new ValidationError(
-        `Invalid flag "${token}": the --flag=value form is not supported; --verify takes no value.`,
-        "Pass the bare --verify to enable claim-corroboration mode, or omit it.",
-      );
-    }
-  }
+  // Valueless --verify guard: parseArgs would swallow a following
+  // token as the value. (The `--verify=` equals-form check is GONE:
+  // #263 normalizes `--verify=foo` to `--verify foo` upstream, and this
+  // existing boolean guard rejects it with the same error.)
   if (flags.verify !== undefined && flags.verify !== true) {
     throw new ValidationError(
       "--verify is a boolean flag and takes no value",
@@ -4987,18 +4985,9 @@ async function handleInvestigate(
   );
 
   // T7 (PRD AC-7): --synthesize is VALUELESS. parseArgs assigns the
-  // next non-dash token as a flag value, so `--synthesize foo` would
-  // swallow the value; the =-form parses as a garbage key and is
-  // silently dropped (#172 review F6). Both reject here, before the
+  // next non-dash token as a flag value, so `--synthesize foo` (and the
+  // #263-normalized `--synthesize=foo`) rejects here, before the
   // help-gate, like every other malformed-flag guard in this handler.
-  for (const token of args) {
-    if (typeof token === "string" && token.startsWith("--synthesize=")) {
-      throw new ValidationError(
-        `Invalid flag "${token}": the --flag=value form is not supported; --synthesize takes no value.`,
-        "Pass the bare --synthesize to enable it, or omit it.",
-      );
-    }
-  }
   if (flags.synthesize !== undefined && flags.synthesize !== true) {
     throw new ValidationError(
       "--synthesize is a boolean flag and takes no value",
@@ -6342,12 +6331,20 @@ export async function main(
   // envelope in the output mode the argv requested (re-derived from the
   // raw argv via `bestEffortOutputMode` because the partially parsed
   // result never escapes the throw) and the error's exit code.
+  // #263: central `--flag=value` ≡ `--flag value` normalization. Runs
+  // before EVERY argv consumer below (extractGlobalOptions, the
+  // strict-flag gate, help/version checks, command handlers' parseArgs)
+  // so all token walks observe space-form tokens only. Pure and
+  // total-length-preserving plus at most the split tokens; the only
+  // behavior change is where a `--flag=value` used to be a garbage
+  // boolean key.
+  const normalizedArgs = normalizeEqualsFormFlags(args);
   let extracted: ReturnType<typeof extractGlobalOptions>;
   try {
-    extracted = extractGlobalOptions([...args]);
+    extracted = extractGlobalOptions(normalizedArgs);
   } catch (error) {
     invocation.writeStderr(
-      formatErrorOutput(error, bestEffortOutputMode(args, invocation), envSecrets),
+      formatErrorOutput(error, bestEffortOutputMode(normalizedArgs, invocation), envSecrets),
     );
     return getErrorExitCode(error);
   }

@@ -838,40 +838,41 @@ describe("investigate: --verify CLI wiring", () => {
     assert.ok(JSON.parse(stdout[0]).verify, "pack prints as JSON with the verify block");
   });
 
-  it("--verify composes with --max-chars (budget over a verify pack)", async () => {
-    // Long content so the pack exceeds 900 chars (the crush idiom).
-    const LONG = Array.from(
-      { length: 8 },
-      (_, i) => `alpha evidence sentence ${i} ${"detail ".repeat(12)}`,
-    ).join(" ");
-    const arm = makeSearchDescriptor("tavily", {
-      "Alpha protocol works.": [{ title: "one", url: URLS.s1, summary: "s" }],
-      "Beta notes follow.": [{ title: "two", url: URLS.s2, summary: "s" }],
+  it("--verify composes with --max-chars (budget over a verify pack)", async (t) => {
+    await withTempDir(t, async (artifactsDir) => {
+      // Long content so the pack exceeds 900 chars (the crush idiom).
+      const LONG = Array.from(
+        { length: 8 },
+        (_, i) => `alpha evidence sentence ${i} ${"detail ".repeat(12)}`,
+      ).join(" ");
+      const arm = makeSearchDescriptor("tavily", {
+        "Alpha protocol works.": [{ title: "one", url: URLS.s1, summary: "s" }],
+        "Beta notes follow.": [{ title: "two", url: URLS.s2, summary: "s" }],
+      });
+      const reader = makeReaderDescriptor("zai", {
+        [URLS.s1]: { content: LONG },
+        [URLS.s2]: { content: LONG },
+      });
+      const { adapter, stdout, stderr } = makeAdapter();
+      const status = await main(
+        ["--provider", "tavily", "investigate", VSTATEMENT, "--verify", "--max-chars", "900"],
+        {
+          ...hermeticMainDeps({
+            invocation: adapter,
+            env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir },
+            providerDescriptors: [arm.descriptor, reader.descriptor],
+          }),
+        },
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      const data = JSON.parse(stdout[0]);
+      assert.ok(data.compaction, "budget fired");
+      // Claim text survives every level.
+      assert.deepEqual(
+        data.verify.claims.map((c) => c.text),
+        ["Alpha protocol works.", "Beta notes follow."],
+      );
     });
-    const reader = makeReaderDescriptor("zai", {
-      [URLS.s1]: { content: LONG },
-      [URLS.s2]: { content: LONG },
-    });
-    const { adapter, stdout, stderr } = makeAdapter();
-    const status = await main(
-      ["--provider", "tavily", "investigate", VSTATEMENT, "--verify", "--max-chars", "900"],
-      {
-        ...hermeticMainDeps({
-          invocation: adapter,
-          env: { SCOUTLINE_ARTIFACTS_DIR: await (await import("node:fs/promises")).mkdtemp(
-            (await import("node:os")).tmpdir() + "/verify-budget-") },
-          providerDescriptors: [arm.descriptor, reader.descriptor],
-        }),
-      },
-    );
-    assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
-    const data = JSON.parse(stdout[0]);
-    assert.ok(data.compaction, "budget fired");
-    // Claim text survives every level.
-    assert.deepEqual(
-      data.verify.claims.map((c) => c.text),
-      ["Alpha protocol works.", "Beta notes follow."],
-    );
   });
 
   it("--no-journal composes in verify mode (run succeeds, no journal entries)", async (t) => {

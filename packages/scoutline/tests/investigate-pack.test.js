@@ -436,15 +436,30 @@ describe("decodeInvestigationPack — verify block (additive, schemaVersion 1)",
     }
   });
 
-  it("PR #270 babysit: zero-source pack keeps shape-only pointer validation (no sources to cross-check)", () => {
-    // A pack whose reads ALL failed (sources: []) has no ranges to
-    // cross-check — an unresolved claim with pointers decodes; the
-    // shape guards remain the floor there.
+  it("PR #270 wave 2: zero-source pack FAILS CLOSED on non-empty pointers (the invariant has no carve-out)", () => {
+    // Mira review: a pointer into an empty sources array can never
+    // dereference — it is malformed regardless of how the pack got
+    // there. Assembly can never emit this shape (matchClaimsToEvidence
+    // yields evidence only from the sources loop), so only hand-built
+    // input reaches it — exactly the class the decoder rejects.
     const pack = { ...buildValidPack(), sources: [], verify: buildValidVerifyBlock() };
-    pack.verify.claims[0].verdict = "unresolved";
+    assert.equal(decodeInvestigationPack(pack), null);
+  });
+
+  it("PR #270 wave 2: zero-source pack with EMPTY evidence still decodes (the shipped no-reader shape)", () => {
+    // The real zero-source verify pack: every claim unresolved, every
+    // evidence list empty (what matchClaimsToEvidence produces when
+    // all reads failed). Valid — no pointers, nothing to dereference.
+    const pack = { ...buildValidPack(), sources: [], verify: buildValidVerifyBlock() };
+    for (const claim of pack.verify.claims) {
+      claim.verdict = "unresolved";
+      claim.negationCues = 0;
+      claim.evidence = [];
+    }
+    pack.coverage = { ...pack.coverage, sourcesRead: 0 };
     const decoded = decodeInvestigationPack(pack);
     assert.notEqual(decoded, null);
-    assert.deepEqual(decoded.verify.claims[0].evidence, [{ sourceIndex: 0, passageIndex: 0 }]);
+    assert.ok(decoded.verify.claims.every((c) => c.evidence.length === 0));
   });
 });
 

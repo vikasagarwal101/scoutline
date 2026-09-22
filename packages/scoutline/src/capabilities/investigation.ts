@@ -306,8 +306,9 @@ const CLAIM_VERDICTS: readonly string[] = ["corroborated", "contradicted", "unre
  * PR #270 babysit: pointer RANGE is cross-checked against the decoded
  * sources of the SAME pack (sourceIndex < sourceCount; passageIndex <
  * that source's passage count) — a shape-safe but out-of-range pointer
- * is malformed. A zero-source pack (every read failed) has no ranges
- * to check; the shape guards remain the floor there.
+ * is malformed, INCLUDING any pointer into a zero-source pack (it can
+ * never dereference; assembly emits empty evidence there by
+ * construction, so only hand-built input reaches that arm).
  */
 function decodeVerifyBlock(
   value: unknown,
@@ -339,13 +340,11 @@ function decodeVerifyBlock(
       if (!isSafeIndex(pointer.sourceIndex) || !isSafeIndex(pointer.passageIndex)) {
         return undefined;
       }
-      if (sourceCount > 0) {
-        if (
-          pointer.sourceIndex >= sourceCount ||
-          pointer.passageIndex >= passageCountAt(pointer.sourceIndex)
-        ) {
-          return undefined;
-        }
+      if (
+        pointer.sourceIndex >= sourceCount ||
+        pointer.passageIndex >= passageCountAt(pointer.sourceIndex)
+      ) {
+        return undefined;
       }
       evidence.push({ sourceIndex: pointer.sourceIndex, passageIndex: pointer.passageIndex });
     }

@@ -20,7 +20,14 @@
  */
 
 import { ValidationError } from "./errors.js";
-import { STOPWORDS, deriveSubQueries, parseContextText } from "./context-file.js";
+import {
+  MAX_TERM_CHARS,
+  MIN_TERM_CHARS,
+  STOPWORDS,
+  deriveSubQueries,
+  parseContextText,
+} from "./context-file.js";
+import { MERGE_SPLIT_PATTERN, splitMergeSubQueries } from "../commands/search.js";
 
 /**
  * PR #264 R1 (owner-approved): explicit pipe plans are capped at 8
@@ -29,25 +36,6 @@ import { STOPWORDS, deriveSubQueries, parseContextText } from "./context-file.js
  * a truncated plan would silently under-bill the user's intent).
  */
 export const MAX_EXPLICIT_SUBQUERIES = 8;
-
-/**
- * Pinned to `src/commands/search.ts` `splitMergeSubQueries` — the
- * same split grammar the `--merge` flag defines: split on unescaped
- * `|` (a literal pipe is escaped as `\|`), unescape, trim, drop
- * empty fragments. Deliberately duplicated as a local constant: the
- * original is module-private there and this lane's file allowlist
- * keeps `search.ts` read-only (orchestrator ruling, T2 pickup).
- */
-const MERGE_SPLIT_PATTERN = /(?<!\\)\|/;
-const MERGE_UNESCAPE = /\\\|/g;
-
-/**
- * Pinned to `src/lib/context-file.ts` `MIN_TERM_CHARS`/`MAX_TERM_CHARS`
- * (module-private there; allowlist keeps the file read-only — same
- * ruling as the splitter). Keep in sync with that module's D2.3 bounds.
- */
-const MIN_TERM_CHARS = 4;
-const MAX_TERM_CHARS = 40;
 
 const STOPWORD_SET: ReadonlySet<string> = new Set(STOPWORDS);
 
@@ -98,18 +86,13 @@ export function deriveTemplateTopic(query: string): string {
 }
 
 /**
- * Explicit tier split — see the grammar pin above. Same fail-loud
- * contract as `search --merge`: no non-empty fragments is an error.
- * R1: > 8 fragments is VALIDATION_ERROR (never silent truncation).
+ * Explicit tier split — the shared `--merge` grammar (imported from
+ * `search.ts`). Same fail-loud contract as `search --merge`: no
+ * non-empty fragments is an error. R1: > 8 fragments is
+ * VALIDATION_ERROR (never silent truncation).
  */
 function splitExplicit(query: string): string[] {
-  const subQueries = query
-    .split(MERGE_SPLIT_PATTERN)
-    .map((q) => q.replace(MERGE_UNESCAPE, "|").trim())
-    .filter((q) => q.length > 0);
-  if (subQueries.length === 0) {
-    throw new Error("--merge requires at least one non-empty query (split with '|')");
-  }
+  const subQueries = splitMergeSubQueries(query);
   if (subQueries.length > MAX_EXPLICIT_SUBQUERIES) {
     throw new ValidationError(
       `Explicit pipe plan exceeds the ${MAX_EXPLICIT_SUBQUERIES}-sub-query cap (${subQueries.length} fragments).`,

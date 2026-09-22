@@ -59,9 +59,9 @@ const MAX_QUESTION_CHARS = 200;
 /** D2.4: headings longer than this are dropped from sub-queries. */
 const MAX_SUBQUERY_HEADING_CHARS = 60;
 
-/** D2.3: term length bounds. */
-const MIN_TERM_CHARS = 4;
-const MAX_TERM_CHARS = 40;
+/** D2.3: term length bounds. Exported: `investigate-planner` shares them. */
+export const MIN_TERM_CHARS = 4;
+export const MAX_TERM_CHARS = 40;
 
 /** D2.5: the appended bias segment fits within this many chars. */
 const MAX_BIAS_APPEND_CHARS = 240;

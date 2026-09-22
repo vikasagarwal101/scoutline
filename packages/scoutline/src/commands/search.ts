@@ -612,15 +612,24 @@ function formatSources(sources: readonly SearchSource[], maxSummary?: number): F
 }
 
 /**
+ * The `--merge` split grammar: split on unescaped `|` (a literal pipe
+ * is escaped as `\|`). Exported so `investigate-planner` shares the
+ * exact pattern (explicit pipe tier) instead of pinning a duplicate.
+ */
+export const MERGE_SPLIT_PATTERN = /(?<!\\)\|/;
+
+/**
  * Split a `--merge` query into sub-queries: split on unescaped `|` (a
  * literal pipe is escaped as `\|`), trim, and drop empty fragments. A
  * merge query with no non-empty fragments is a usage error. Shared by
  * the single-provider path and the fan-out executor — DESIGN D3's merge
  * grid is (arm × sub-query), so every arm runs every sub-query.
+ * Exported so `investigate-planner` reuses the identical splitter (and
+ * its fail-loud message) instead of pinning a duplicate.
  */
-function splitMergeSubQueries(query: string): string[] {
+export function splitMergeSubQueries(query: string): string[] {
   const subQueries = query
-    .split(/(?<!\\)\|/)
+    .split(MERGE_SPLIT_PATTERN)
     .map((q) => q.replace(/\\\|/g, "|").trim())
     .filter((q) => q.length > 0);
   if (subQueries.length === 0) {

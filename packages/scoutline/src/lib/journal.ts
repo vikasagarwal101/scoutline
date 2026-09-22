@@ -734,13 +734,13 @@ export function buildNoteEntry(input: NoteInput): JournalLogEntry {
  * (context-file.ts tokenizeTerms, issue #277): the #271 Unicode
  * word segmentation — an unspaced CJK run segments into word units
  * instead of one giant token, so a CJK query recalls the CJK entries
- * it embeds. ASCII behavior is byte-identical to the legacy
- * run-split (underscore now splits with the seam's grammar — no
- * snake_case recall row exists to pin it). Deterministic — no
- * stopwords, no stemming.
+ * it embeds. keepUnderscore preserves the legacy ASCII tokenizer's
+ * snake_case behavior (identifiers stay one token — the pre-#277
+ * pin, restored per kody PR #279). Deterministic — no stopwords,
+ * no stemming.
  */
 function tokenize(text: string): string[] {
-  return tokenizeTerms(text);
+  return tokenizeTerms(text, false, true);
 }
 
 /** The recall corpus of one full journal entry: query + skeleton text tokens. */

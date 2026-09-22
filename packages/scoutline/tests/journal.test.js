@@ -2697,6 +2697,35 @@ describe("review r3: recall tokenize is Unicode-aware (coderabbit major)", () =>
       rmSync(artifactsDir, { recursive: true, force: true });
     }
   });
+
+  it("issue #277 review: snake_case identifiers recall exactly — underscore stays a word char on the ASCII path", async () => {
+    // Pre-#277 behavior pin: the legacy journal tokenizer kept `_` as
+    // a word char, so `foo_bar` was ONE atom. Routing through the
+    // shared seam's default grammar split it into foo+bar, matching
+    // unrelated entries (kody high, PR #279).
+    const artifactsDir = makeTempDir("scoutline-recall-snake-");
+    const { adapter, stdout, stderr } = makeAdapter();
+    try {
+      await r3Seed(artifactsDir, [
+        r3FullEntry({ requestId: "r-snake-1", query: "foo_bar experiment" }),
+        r3FullEntry({ requestId: "r-foo-only", query: "foo separate", cacheKey: "r3-key-5" }),
+        r3FullEntry({ requestId: "r-bar-only", query: "bar separate", cacheKey: "r3-key-6" }),
+      ]);
+      const status = await main(
+        ["history", "recall", "foo_bar"],
+        r3RecallDeps(adapter, { artifactsDir }),
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      const envelope = r3Envelope(stdout);
+      assert.deepStrictEqual(
+        envelope.results.map((r) => r.requestId),
+        ["r-snake-1"],
+        "foo_bar must recall the foo_bar entry, NOT the foo-only/bar-only entries",
+      );
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("review batch 1: fixes (PR #111)", () => {

@@ -86,6 +86,8 @@ const MAX_BIAS_APPEND_CHARS = 240;
 const ASCII_SPLIT = /[^a-z0-9]+/;
 /** Claims' apostrophe-keeping variant of the legacy split. */
 const ASCII_SPLIT_APOSTROPHE = /[^a-z0-9']+/;
+/** Journal recall's underscore-keeping variant (identifiers stay whole). */
+const ASCII_SPLIT_UNDERSCORE = /[^a-z0-9_]+/;
 
 const SEGMENTER = new Intl.Segmenter("en", { granularity: "word" });
 
@@ -105,23 +107,34 @@ export function isAsciiToken(token: string): boolean {
 /**
  * Tokenize lowercased text into term tokens: word-like units with
  * ASCII punctuation never inside a non-ASCII token. `keepApostrophe`
- * selects claims' grammar ("don't" stays one token) on the ASCII path.
+ * selects claims' grammar ("don't" stays one token) and
+ * `keepUnderscore` journal recall's (snake_case identifiers stay
+ * whole tokens) — both on the ASCII path only.
  * Segments longer than MAX_TERM_CHARS are dropped here (not by
  * callers): the "en" segmenter splits long unspaced CJK runs into
  * dictionary chunks (東東×…), so a caller-side length check could
  * admit sub-cap chunks of an over-long word.
  */
-export function tokenizeTerms(text: string, keepApostrophe = false): string[] {
+export function tokenizeTerms(
+  text: string,
+  keepApostrophe = false,
+  keepUnderscore = false,
+): string[] {
+  // ponytail: keepApostrophe (claims) and keepUnderscore (journal) are
+  // caller-exclusive today; a stacking caller adds the combined class.
+  const split = keepUnderscore
+    ? ASCII_SPLIT_UNDERSCORE
+    : keepApostrophe
+      ? ASCII_SPLIT_APOSTROPHE
+      : ASCII_SPLIT;
   const lower = text.toLowerCase();
   if (isAscii(lower)) {
-    const split = keepApostrophe ? ASCII_SPLIT_APOSTROPHE : ASCII_SPLIT;
     return lower.split(split).filter((t) => t.length > 0);
   }
   const tokens: string[] = [];
   for (const { segment, isWordLike } of SEGMENTER.segment(lower)) {
     if (!isWordLike) continue;
     if (isAscii(segment)) {
-      const split = keepApostrophe ? ASCII_SPLIT_APOSTROPHE : ASCII_SPLIT;
       tokens.push(...segment.split(split).filter((t) => t.length > 0));
     } else if (segment.length <= MAX_TERM_CHARS) {
       tokens.push(segment);

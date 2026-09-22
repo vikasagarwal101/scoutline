@@ -83,6 +83,7 @@ import {
 } from "./search.js";
 import { deriveTemplateTopic, planSubQueries } from "../lib/investigate-planner.js";
 import { extractPassages } from "../lib/investigate-extract.js";
+import { splitClaims, matchClaimsToEvidence, MAX_VERIFY_CLAIMS } from "../lib/investigate-claims.js";
 import { SHARED_PROVIDER_FLAG_IDS } from "../providers/catalog.js";
 
 // ---------------------------------------------------------------------------
@@ -158,6 +159,20 @@ Sub-query planning (precedence: pipes > --context > template):
   Template  Deterministic transforms of the bare question (original,
           key terms, overview/evidence/criticism), deduped, capped at 5.
 
+Verify mode (--verify, ADR-0013 follow-up):
+  The statement splits into sentence-claims (the extract grammar's
+  terminators; '|' is literal text); each claim is searched VERBATIM
+  (no per-claim controls); deterministic term matching links claims to
+  the extracted passages. Verdicts per claim:
+    corroborated   >= 1 matching passage, 0 negation cues
+    contradicted   >= 1 matching passage carrying a negation cue
+    unresolved     no matching passages
+  HINT-GRADE DISCLOSURE: 'contradicted' is a negation-cue heuristic
+  (fixed, versioned cue list) — NOT semantic contradiction. Semantic
+  judgment stays with the calling agent; the per-claim negationCues
+  count exists for exactly that re-judgment. Claim text and verdicts
+  are never cut by --max-chars (evidence pointers drop last, whole).
+
 Options:
   --provider <ids>    Comma-list, \`all\`, or a single id (fan-out tiers
                       above).
@@ -172,6 +187,12 @@ Options:
                       never cut; the full untrimmed pack is saved to the
                       artifacts store — recover with
                       "scoutline history show").
+  --verify            Claim-corroboration mode: the positional becomes a
+                      STATEMENT; sentence-claims (<= 8, fail-loud) are the
+                      sub-query grid verbatim; the pack gains a verify
+                      block (per claim: verdict + evidence pointers +
+                      negation-cue count). Cannot combine with --context
+                      (verify owns planning).
   --synthesize        Attach an ADDITIVE \`brief\` (Z.AI chat) to the pack.
                       Absent by default. Z.AI-only: it ignores --provider
                       (a stderr notice fires when another provider is
@@ -216,6 +237,7 @@ Examples:
   scoutline investigate "vector dbs" --context notes.md --sources 3
   scoutline investigate "k8s cost" --max-chars 4000        # budgeted pack
   scoutline investigate "wasm runtimes" --synthesize       # + Z.AI brief
+  scoutline investigate "X is fast. Y lags." --verify      # claim verdicts
 
 Default JSON shape (EvidencePack, schemaVersion 1):
   {
@@ -294,6 +316,15 @@ export interface InvestigateOptions {
    * wiring bug — the command throws rather than silently skipping.
    */
   readonly synthesize?: boolean;
+  /**
+   * investigate-verify lane (DESIGN D3, PRD AC-1): claim-corroboration
+   * mode. The positional becomes the statement; `splitClaims` owns the
+   * grid (one verbatim sub-query per sentence-claim, ≤ 8 — the R1
+   * fail-loud cap); the planner module is NOT invoked. `--context` +
+   * `--verify` is pair-rejected at the index.ts parse seam; `|` is
+   * literal text (claims split on sentences, never pipes).
+   */
+  readonly verify?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -336,23 +367,90 @@ const trimPassagesRule: LadderRule = {
   },
 };
 
-/** One late-source drop step: the LAST source drops whole (search's drop-lowest-rank analog). */
+/**
+ * One late-source drop step: the LAST source drops whole (search's
+ * drop-lowest-rank analog). Fix-round M1: when a verify block rides
+ * the pack, evidence pointers at the dropped index are scrubbed HERE
+ * (per claim, whole) — otherwise the pack ships dangling pointers
+ * (decode's index guard checks non-negative only) that only the later
+ * pointer-drop rule would remove, leaving a window of budgets with
+ * unrecoverable references. Question-mode packs (no verify block)
+ * take the byte-identical pre-fix path — the scrub is verify-only.
+ */
 const dropLastSourceRule: LadderRule = {
   name: "drop-late-source",
   apply: (envelope) => {
     const pack = envelope as EvidencePack;
     if (pack.sources.length <= 0) return pack;
-    return { ...pack, sources: pack.sources.slice(0, -1) };
+    const droppedIndex = pack.sources.length - 1;
+    const sources = pack.sources.slice(0, -1);
+    if (pack.verify === undefined) {
+      return { ...pack, sources };
+    }
+    return {
+      ...pack,
+      sources,
+      verify: {
+        ...pack.verify,
+        claims: pack.verify.claims.map((claim) =>
+          claim.evidence.some((p) => p.sourceIndex === droppedIndex)
+            ? {
+                ...claim,
+                evidence: claim.evidence.filter((p) => p.sourceIndex !== droppedIndex),
+              }
+            : claim,
+        ),
+      },
+    };
   },
 };
 
 /**
- * INVESTIGATE_LADDER (D7 budget order): passages trim FIRST (quote
- * truncate, charRange adjusts — the round-trip pin survives), then
- * LATE sources drop whole. question/subQueries/coverage are never
- * cut — expressed by omission (no rule touches them).
+ * investigate-verify lane (DESIGN D6, PRD AC-7): the LATE pointer
+ * drop — evidence pointers drop per claim, WHOLE (a claim keeps its
+ * full pointer set or none; never a truncated list). Claim text,
+ * verdicts, and cue counts are never cut (expressed by omission —
+ * this rule touches only `evidence`). Runs after the source drop so
+ * pointer elimination is the last loss before the floor.
+ *
+ * ponytail: near the floor this rule is COARSE — it clears every
+ * claim's pointers in one step rather than shedding one claim's at a
+ * time, so budgets just above the floor can overshoot down to a
+ * pointer-free pack. Fine-grained per-claim shedding (or per-pointer,
+ * cheapest-first) is the upgrade path if a consumer ever needs to
+ * keep SOME pointers at extreme budgets; nothing today reads pointers
+ * partially.
  */
-export const INVESTIGATE_LADDER = [trimPassagesRule, dropLastSourceRule] as const;
+const dropEvidencePointersRule: LadderRule = {
+  name: "drop-evidence-pointers",
+  apply: (envelope) => {
+    const pack = envelope as EvidencePack;
+    if (pack.verify === undefined) return pack;
+    if (pack.verify.claims.every((claim) => claim.evidence.length === 0)) return pack;
+    return {
+      ...pack,
+      verify: {
+        ...pack.verify,
+        claims: pack.verify.claims.map((claim) => ({ ...claim, evidence: [] })),
+      },
+    };
+  },
+};
+
+/**
+ * INVESTIGATE_LADDER (D7 budget order; verify lane D6 extension):
+ * passages trim FIRST (quote truncate, charRange adjusts — the
+ * round-trip pin survives), then LATE sources drop whole, then —
+ * verify packs only — evidence pointers drop per claim (whole).
+ * question/subQueries/coverage and verify claim text/verdicts/cue
+ * counts are never cut — expressed by omission (no rule touches
+ * them).
+ */
+export const INVESTIGATE_LADDER = [
+  trimPassagesRule,
+  dropLastSourceRule,
+  dropEvidencePointersRule,
+] as const;
 
 export interface InvestigateExecutionDependencies {
   /**
@@ -691,20 +789,44 @@ export async function investigate(
   const noCache = options.noCache === true;
 
   // 1. Plan (T2) — injected loadContextText; no filesystem here.
-  const plan = await planSubQueries(
-    {
-      query: question,
-      ...(options.contextFile !== undefined ? { contextFile: options.contextFile } : {}),
-    },
-    { loadContextText: deps.loadContextText },
-  );
-  const subQueries = [...plan.subQueries];
-  // The planner's explicit-tier notice ("--context ignored") only
-  // means something when a context file was actually in play; without
-  // --context it would be a misleading stderr line on every pipe
-  // question.
-  if (plan.notice !== undefined && options.contextFile !== undefined) {
-    context?.notice(plan.notice);
+  // investigate-verify lane (D3): in verify mode the planner is NOT
+  // invoked — the claims ARE the grid (one verbatim sub-query per
+  // sentence-claim; no contextFile can be present, the pair is
+  // rejected at the index.ts parse seam). Question mode is the
+  // untouched else-branch (byte-identity pin).
+  let subQueries: string[];
+  let verifyClaims: string[] | undefined;
+  if (options.verify === true) {
+    verifyClaims = splitClaims(question);
+    if (verifyClaims.length === 0) {
+      throw new ValidationError(
+        "investigate --verify requires at least one valid claim sentence.",
+        "Split the statement into sentences terminated by '.', '!' or '?'.",
+      );
+    }
+    if (verifyClaims.length > MAX_VERIFY_CLAIMS) {
+      throw new ValidationError(
+        `investigate --verify exceeds the ${MAX_VERIFY_CLAIMS}-claim cap (${verifyClaims.length} claims).`,
+        "Split fewer claims, or investigate the statement in parts.",
+      );
+    }
+    subQueries = verifyClaims;
+  } else {
+    const plan = await planSubQueries(
+      {
+        query: question,
+        ...(options.contextFile !== undefined ? { contextFile: options.contextFile } : {}),
+      },
+      { loadContextText: deps.loadContextText },
+    );
+    subQueries = [...plan.subQueries];
+    // The planner's explicit-tier notice ("--context ignored") only
+    // means something when a context file was actually in play; without
+    // --context it would be a misleading stderr line on every pipe
+    // question.
+    if (plan.notice !== undefined && options.contextFile !== undefined) {
+      context?.notice(plan.notice);
+    }
   }
   const N = subQueries.length;
 
@@ -724,8 +846,11 @@ export async function investigate(
   // counts SOURCES — the per-read supplier fallthrough can bill more
   // than one reader attempt per source, so the notice names sources
   // and discloses the attempt semantics instead of understating.
+  // Verify mode (PRD-3) names CLAIMS — the grid unit is the claim.
   context?.notice(
-    `investigate: ${N} sub-queries × ${M} arms = ${N * M} billable searches + up to ${sourcesCap} sources (per-source supplier attempts apply)`,
+    options.verify === true
+      ? `investigate: ${N} claims × ${M} arms = ${N * M} billable searches + up to ${sourcesCap} sources (per-source supplier attempts apply)`
+      : `investigate: ${N} sub-queries × ${M} arms = ${N * M} billable searches + up to ${sourcesCap} sources (per-source supplier attempts apply)`,
   );
   if (fanoutPlan.suppress) context?.notice(fanoutPlan.suppress);
 
@@ -858,6 +983,12 @@ export async function investigate(
       cacheHits: searchHits + readerHits.count,
       unread,
     },
+    // investigate-verify lane (D3 step 3): the ONLY assembly
+    // difference — matchClaimsToEvidence over the read sources.
+    // Absent on question-mode packs by construction (the fork above).
+    ...(verifyClaims !== undefined
+      ? { verify: matchClaimsToEvidence({ statement: question, claims: verifyClaims, sources }) }
+      : {}),
   };
   // 8. `--synthesize` (T7): the pack is COMPLETE above — every search,
   //    every read, every passage — so the brief is attached here by

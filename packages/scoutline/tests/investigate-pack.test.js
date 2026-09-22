@@ -62,6 +62,10 @@ function buildValidPack() {
             quote: "The fusion merge ranks candidates by reciprocal rank.",
             charRange: [0, 54],
           },
+          {
+            quote: "Clusters collapse near-duplicate stories into one representative.",
+            charRange: [55, 119],
+          },
         ],
       },
       {
@@ -252,6 +256,210 @@ describe("decodeInvestigationPack — fail closed", () => {
         `charRange ${JSON.stringify(bad)} must fail closed`,
       );
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// investigate-verify lane T2 — additive `verify` block decode branch
+// (DESIGN D4, PRD AC-6). Present → validated row-by-row, malformed rows
+// fail closed (null). Absent → the canonical subset unchanged (the
+// question-mode byte-identity precondition). schemaVersion stays 1.
+// ---------------------------------------------------------------------------
+
+function buildValidVerifyBlock() {
+  return {
+    statement: "Alpha reactors process data quietly. Beta turbines never finish work.",
+    claims: [
+      {
+        text: "Alpha reactors process data quietly.",
+        verdict: "corroborated",
+        negationCues: 0,
+        evidence: [{ sourceIndex: 0, passageIndex: 0 }],
+      },
+      {
+        text: "Beta turbines never finish work.",
+        verdict: "contradicted",
+        negationCues: 1,
+        evidence: [
+          { sourceIndex: 0, passageIndex: 1 },
+          { sourceIndex: 0, passageIndex: 0 },
+        ],
+      },
+    ],
+  };
+}
+
+describe("decodeInvestigationPack — verify block (additive, schemaVersion 1)", () => {
+  it("absent verify → decoded pack carries NO verify key (question-mode canonical subset)", () => {
+    const pack = buildValidPack();
+    const decoded = decodeInvestigationPack(pack);
+    assert.notEqual(decoded, null);
+    assert.ok(!("verify" in decoded), "no verify key on a question-mode pack");
+    // Deep-equal the pre-feature shape exactly (canonical subset).
+    assert.deepEqual(decoded, {
+      schemaVersion: 1,
+      question: pack.question,
+      subQueries: pack.subQueries,
+      sources: decoded.sources,
+      coverage: pack.coverage,
+    });
+  });
+
+  it("present + valid → round-trips verbatim", () => {
+    const pack = { ...buildValidPack(), verify: buildValidVerifyBlock() };
+    const decoded = decodeInvestigationPack(pack);
+    assert.notEqual(decoded, null);
+    assert.deepEqual(decoded.verify, buildValidVerifyBlock());
+  });
+
+  it("schemaVersion stays 1 — a verify-bearing pack is NOT a version bump", () => {
+    const pack = { ...buildValidPack(), verify: buildValidVerifyBlock() };
+    assert.strictEqual(decodeInvestigationPack(pack).schemaVersion, 1);
+  });
+
+  it("unresolved verdict with empty evidence decodes (a sad claim is valid)", () => {
+    const pack = { ...buildValidPack() };
+    pack.verify = buildValidVerifyBlock();
+    pack.verify.claims[0].verdict = "unresolved";
+    pack.verify.claims[0].evidence = [];
+    const decoded = decodeInvestigationPack(pack);
+    assert.notEqual(decoded, null);
+    assert.strictEqual(decoded.verify.claims[0].verdict, "unresolved");
+  });
+
+  it("bogus verdict enum → null (fail closed)", () => {
+    for (const bogus of ["BUSTED", "supported", "", "CORROBORATED", null, 1]) {
+      const pack = { ...buildValidPack(), verify: buildValidVerifyBlock() };
+      pack.verify.claims[0].verdict = bogus;
+      assert.equal(
+        decodeInvestigationPack(pack),
+        null,
+        `verdict=${JSON.stringify(bogus)} must fail closed`,
+      );
+    }
+  });
+
+  it("missing verdict / text / negationCues / evidence → null", () => {
+    for (const key of ["text", "verdict", "negationCues", "evidence"]) {
+      const pack = { ...buildValidPack(), verify: buildValidVerifyBlock() };
+      delete pack.verify.claims[0][key];
+      assert.equal(decodeInvestigationPack(pack), null, `missing ${key}`);
+    }
+  });
+
+  it("negationCues negative / fractional / non-number → null", () => {
+    for (const bad of [-1, 1.5, "1", null, true, Number.POSITIVE_INFINITY]) {
+      const pack = { ...buildValidPack(), verify: buildValidVerifyBlock() };
+      pack.verify.claims[0].negationCues = bad;
+      assert.equal(
+        decodeInvestigationPack(pack),
+        null,
+        `negationCues=${JSON.stringify(bad)} must fail closed`,
+      );
+    }
+  });
+
+  it("evidence pointer shape guards: negative / fractional / string / extra keys → null", () => {
+    for (const bad of [
+      { sourceIndex: -1, passageIndex: 0 },
+      { sourceIndex: 0, passageIndex: -1 },
+      { sourceIndex: 0.5, passageIndex: 0 },
+      { sourceIndex: 0, passageIndex: 1.5 },
+      { sourceIndex: "0", passageIndex: 0 },
+      { sourceIndex: 0 },
+      { passageIndex: 0 },
+      { sourceIndex: Number.NaN, passageIndex: 0 },
+      [0, 0],
+    ]) {
+      const pack = { ...buildValidPack(), verify: buildValidVerifyBlock() };
+      pack.verify.claims[0].evidence = [bad];
+      assert.equal(
+        decodeInvestigationPack(pack),
+        null,
+        `evidence=${JSON.stringify(bad)} must fail closed`,
+      );
+    }
+  });
+
+  it("empty claims array is valid (a statement that split to nothing)", () => {
+    const pack = { ...buildValidPack() };
+    pack.verify = { statement: "…", claims: [] };
+    const decoded = decodeInvestigationPack(pack);
+    assert.notEqual(decoded, null);
+    assert.deepEqual(decoded.verify.claims, []);
+  });
+
+  it("verify present but malformed at the BLOCK level → null", () => {
+    for (const bad of [null, 1, "block", [], { statement: "s" }, { claims: [] }]) {
+      const pack = { ...buildValidPack(), verify: bad };
+      assert.equal(
+        decodeInvestigationPack(pack),
+        null,
+        `verify=${JSON.stringify(bad)} must fail closed`,
+      );
+    }
+  });
+
+  it("claim text must be a non-empty string; claims must be an array", () => {
+    const emptyText = { ...buildValidPack(), verify: buildValidVerifyBlock() };
+    emptyText.verify.claims[0].text = "";
+    assert.equal(decodeInvestigationPack(emptyText), null);
+
+    const notArray = { ...buildValidPack(), verify: buildValidVerifyBlock() };
+    notArray.verify.claims = {};
+    assert.equal(decodeInvestigationPack(notArray), null);
+  });
+
+  it("deterministic: verify-bearing decode run twice deep-equal", () => {
+    const pack = { ...buildValidPack(), verify: buildValidVerifyBlock() };
+    assert.deepEqual(decodeInvestigationPack(pack), decodeInvestigationPack(pack));
+  });
+
+  it("PR #270 babysit: out-of-range pointers fail closed (cross-check against the pack's own sources)", () => {
+    // buildValidPack carries 2 sources: source 0 has 1 passage,
+    // source 1 has 0 passages. Any pointer past those bounds is
+    // malformed even though its SHAPE is safe — decode must null.
+    const cases = [
+      { sourceIndex: 2, passageIndex: 0 }, // past sources.length
+      { sourceIndex: 5, passageIndex: 0 }, // far past
+      { sourceIndex: 0, passageIndex: 2 }, // past source 0's passage count (2)
+      { sourceIndex: 1, passageIndex: 0 }, // source 1 has NO passages
+    ];
+    for (const pointer of cases) {
+      const pack = { ...buildValidPack(), verify: buildValidVerifyBlock() };
+      pack.verify.claims[0].evidence = [pointer];
+      assert.equal(
+        decodeInvestigationPack(pack),
+        null,
+        `out-of-range pointer ${JSON.stringify(pointer)} must fail closed`,
+      );
+    }
+  });
+
+  it("PR #270 wave 2: zero-source pack FAILS CLOSED on non-empty pointers (the invariant has no carve-out)", () => {
+    // Mira review: a pointer into an empty sources array can never
+    // dereference — it is malformed regardless of how the pack got
+    // there. Assembly can never emit this shape (matchClaimsToEvidence
+    // yields evidence only from the sources loop), so only hand-built
+    // input reaches it — exactly the class the decoder rejects.
+    const pack = { ...buildValidPack(), sources: [], verify: buildValidVerifyBlock() };
+    assert.equal(decodeInvestigationPack(pack), null);
+  });
+
+  it("PR #270 wave 2: zero-source pack with EMPTY evidence still decodes (the shipped no-reader shape)", () => {
+    // The real zero-source verify pack: every claim unresolved, every
+    // evidence list empty (what matchClaimsToEvidence produces when
+    // all reads failed). Valid — no pointers, nothing to dereference.
+    const pack = { ...buildValidPack(), sources: [], verify: buildValidVerifyBlock() };
+    for (const claim of pack.verify.claims) {
+      claim.verdict = "unresolved";
+      claim.negationCues = 0;
+      claim.evidence = [];
+    }
+    pack.coverage = { ...pack.coverage, sourcesRead: 0 };
+    const decoded = decodeInvestigationPack(pack);
+    assert.notEqual(decoded, null);
+    assert.ok(decoded.verify.claims.every((c) => c.evidence.length === 0));
   });
 });
 

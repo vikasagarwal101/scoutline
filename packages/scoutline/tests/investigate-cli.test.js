@@ -704,3 +704,249 @@ describe("investigate: --max-chars compaction artifact is redacted (review fix #
     });
   });
 });
+// ---------------------------------------------------------------------------
+// investigate-verify lane T4 — --verify CLI wiring (DESIGN D5, PRD
+// AC-1/AC-9). Flag parses; --context --verify pair-rejected (mode
+// conflict); | literal end-to-end through main(); output modes over a
+// verify pack; --no-journal/--isolated/--save compose in verify mode.
+// ---------------------------------------------------------------------------
+
+describe("investigate: --verify CLI wiring", () => {
+  function verifyGrid() {
+    // 2-claim statement over the fixture baseGrid vocabulary: disjoint
+    // claims so verdicts are stable (A corroborated on s1's content;
+    // B contradicted — the shared content carries "never"... no: the
+    // shipped CONTENTS embed no cues, so B is corroborated too; the
+    // wiring rows assert STRUCTURE, not the verdict table).
+    const grid = baseGrid();
+    const reader = baseReader();
+    return { grid, reader };
+  }
+  const VSTATEMENT = "Alpha protocol works. Beta notes follow.";
+
+  async function runVerifyMain(argv, extraDeps = {}) {
+    const { grid, reader } = verifyGrid();
+    const { adapter, stdout, stderr } = makeAdapter();
+    const status = await main(argv, {
+      ...hermeticMainDeps({
+        invocation: adapter,
+        providerDescriptors: [grid[0].descriptor, grid[1].descriptor, reader.descriptor],
+        ...extraDeps,
+      }),
+    });
+    return { status, stdout, stderr, adapter };
+  }
+
+  it("--verify parses: pack carries the verify block (data mode)", async () => {
+    const { status, stdout, stderr } = await runVerifyMain([
+      "--provider", "tavily,exa", "investigate", VSTATEMENT, "--verify",
+    ]);
+    assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+    const pack = JSON.parse(stdout[0]);
+    assert.strictEqual(pack.schemaVersion, 1);
+    assert.ok(pack.verify, "verify block present");
+    assert.strictEqual(pack.verify.statement, VSTATEMENT);
+    assert.deepEqual(
+      pack.verify.claims.map((c) => c.text),
+      ["Alpha protocol works.", "Beta notes follow."],
+    );
+    assert.ok(pack.verify.claims.every((c) =>
+      ["corroborated", "contradicted", "unresolved"].includes(c.verdict)));
+    // Claims ARE the grid: one sub-query per claim, verbatim.
+    assert.deepEqual(pack.subQueries, ["Alpha protocol works.", "Beta notes follow."]);
+  });
+
+  it("--context + --verify is pair-rejected (VALIDATION_ERROR naming the mode conflict)", async () => {
+    const descriptors = [
+      {
+        id: "tavily",
+        isConfigured: () => true,
+        capabilities: () => new Set(["search"]),
+        create() {
+          throw new Error("create() must not be reached on a rejected flag pair");
+        },
+      },
+    ];
+    const { adapter, stderr } = makeAdapter();
+    const status = await main(
+      ["investigate", "some statement", "--verify", "--context", "notes.md"],
+      { ...hermeticMainDeps({ invocation: adapter, providerDescriptors: descriptors }) },
+    );
+    assert.strictEqual(status, 1);
+    const envelope = stderrEnvelope(stderr);
+    assert.strictEqual(envelopeCode(envelope), "VALIDATION_ERROR");
+    const message = envelopeMessage(envelope);
+    assert.ok(
+      /--verify/.test(message) && /--context/.test(message),
+      `error names the mode conflict: ${message}`,
+    );
+  });
+
+  it("| is literal end-to-end: a piped statement is ONE claim, never split", async () => {
+    const { grid, reader } = verifyGrid();
+    // Pipe-arm the search so the literal-pipe claim resolves rows.
+    const arm = makeSearchDescriptor("tavily", {
+      "Pipe stays | literal here.": [
+        { title: "literal pipe page", url: URLS.s1, summary: "s" },
+      ],
+    });
+    const { adapter, stdout, stderr } = makeAdapter();
+    const status = await main(
+      ["--provider", "tavily", "investigate", "Pipe stays | literal here.", "--verify"],
+      {
+        ...hermeticMainDeps({
+          invocation: adapter,
+          providerDescriptors: [arm.descriptor, reader.descriptor],
+        }),
+      },
+    );
+    assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+    const pack = JSON.parse(stdout[0]);
+    assert.deepEqual(pack.subQueries, ["Pipe stays | literal here."]);
+    assert.deepEqual(pack.verify.claims.map((c) => c.text), ["Pipe stays | literal here."]);
+    void grid;
+  });
+
+  it("> 8 claims through main() is VALIDATION_ERROR naming the cap", async () => {
+    const nine = Array.from({ length: 9 }, (_, i) => `Claim ${i} states facts.`).join(" ");
+    const { status, stderr } = await runVerifyMain([
+      "--provider", "tavily", "investigate", nine, "--verify",
+    ]);
+    assert.strictEqual(status, 1);
+    const envelope = stderrEnvelope(stderr);
+    assert.strictEqual(envelopeCode(envelope), "VALIDATION_ERROR");
+    assert.ok(/8/.test(envelopeMessage(envelope)), "error names the cap");
+  });
+
+  it("json / pretty wrap a verify pack {success, data, timestamp}", async () => {
+    for (const mode of ["json", "pretty"]) {
+      const { status, stdout, stderr } = await runVerifyMain([
+        "--provider", "tavily", "investigate", VSTATEMENT, "--verify", "-O", mode,
+      ]);
+      assert.strictEqual(status, 0, `${mode}: stderr=${JSON.stringify(stderr)}`);
+      const envelope = JSON.parse(stdout[0]);
+      assert.strictEqual(envelope.success, true);
+      assert.ok(envelope.data.verify, "verify block inside the envelope");
+    }
+  });
+
+  it("text modes fall back to JSON for a verify pack too", async () => {
+    const { status, stdout, stderr } = await runVerifyMain([
+      "--provider", "tavily", "investigate", VSTATEMENT, "--verify", "-O", "compact",
+    ]);
+    assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+    assert.ok(JSON.parse(stdout[0]).verify, "pack prints as JSON with the verify block");
+  });
+
+  it("--verify composes with --max-chars (budget over a verify pack)", async (t) => {
+    await withTempDir(t, async (artifactsDir) => {
+      // Long content so the pack exceeds 900 chars (the crush idiom).
+      const LONG = Array.from(
+        { length: 8 },
+        (_, i) => `alpha evidence sentence ${i} ${"detail ".repeat(12)}`,
+      ).join(" ");
+      const arm = makeSearchDescriptor("tavily", {
+        "Alpha protocol works.": [{ title: "one", url: URLS.s1, summary: "s" }],
+        "Beta notes follow.": [{ title: "two", url: URLS.s2, summary: "s" }],
+      });
+      const reader = makeReaderDescriptor("zai", {
+        [URLS.s1]: { content: LONG },
+        [URLS.s2]: { content: LONG },
+      });
+      const { adapter, stdout, stderr } = makeAdapter();
+      const status = await main(
+        ["--provider", "tavily", "investigate", VSTATEMENT, "--verify", "--max-chars", "900"],
+        {
+          ...hermeticMainDeps({
+            invocation: adapter,
+            env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir },
+            providerDescriptors: [arm.descriptor, reader.descriptor],
+          }),
+        },
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      const data = JSON.parse(stdout[0]);
+      assert.ok(data.compaction, "budget fired");
+      // Claim text survives every level.
+      assert.deepEqual(
+        data.verify.claims.map((c) => c.text),
+        ["Alpha protocol works.", "Beta notes follow."],
+      );
+    });
+  });
+
+  it("--no-journal composes in verify mode (run succeeds, no journal entries)", async (t) => {
+    await withTempDir(t, async (artifactsDir) => {
+      const { grid, reader } = verifyGrid();
+      const { adapter, stdout } = makeAdapter();
+      const status = await main(
+        ["--provider", "tavily,exa", "investigate", VSTATEMENT, "--verify", "--no-journal"],
+        {
+          ...hermeticMainDeps({
+            invocation: adapter,
+            env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir },
+            providerDescriptors: [grid[0].descriptor, grid[1].descriptor, reader.descriptor],
+          }),
+        },
+      );
+      assert.strictEqual(status, 0);
+      assert.ok(JSON.parse(stdout[0]).verify);
+      if (fs.existsSync(path.join(artifactsDir, "index.json"))) {
+        const log = JSON.parse(fs.readFileSync(path.join(artifactsDir, "index.json"), "utf8"));
+        assert.deepStrictEqual(
+          log.entries.filter((e) => e.kind === "journal"),
+          [],
+          "no journal entries under --no-journal in verify mode",
+        );
+      }
+    });
+  });
+
+  it("--isolated composes in verify mode (cache under isolated/<pid>)", async (t) => {
+    await withTempDir(t, async (cacheRoot) => {
+      const { grid, reader } = verifyGrid();
+      const { adapter, stdout, stderr } = makeAdapter();
+      const deps = hermeticMainDeps({
+        invocation: adapter,
+        env: { SCOUTLINE_CACHE_DIR: cacheRoot },
+        providerDescriptors: [grid[0].descriptor, grid[1].descriptor, reader.descriptor],
+      });
+      delete deps.searchCache;
+      delete deps.readerCache;
+      delete deps.repositoryCache;
+      const status = await main(
+        ["--isolated", "--provider", "tavily,exa", "investigate", VSTATEMENT, "--verify"],
+        deps,
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      assert.ok(JSON.parse(stdout[0]).verify);
+      const isolatedDir = path.join(cacheRoot, "cache", "isolated", `${process.pid}`);
+      assert.ok(fs.existsSync(isolatedDir), "isolated cache dir exists");
+    });
+  });
+
+  it("--save writes a verify-pack artifact + log entry", async (t) => {
+    await withTempDir(t, async (artifactsDir) => {
+      const { grid, reader } = verifyGrid();
+      const { adapter, stdout, stderr } = makeAdapter();
+      const status = await main(
+        ["--provider", "tavily,exa", "investigate", VSTATEMENT, "--verify", "--save"],
+        {
+          ...hermeticMainDeps({
+            invocation: adapter,
+            env: { SCOUTLINE_ARTIFACTS_DIR: artifactsDir },
+            providerDescriptors: [grid[0].descriptor, grid[1].descriptor, reader.descriptor],
+          }),
+        },
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      const pack = JSON.parse(stdout[0]);
+      const log = JSON.parse(fs.readFileSync(path.join(artifactsDir, "index.json"), "utf8"));
+      const entry = log.entries.find((e) => e.kind === "save" && e.command === "investigate");
+      assert.ok(entry, "save log entry present");
+      const master = JSON.parse(fs.readFileSync(path.join(artifactsDir, entry.masterPath), "utf8"));
+      assert.deepStrictEqual(master.result, pack);
+      assert.ok(master.result.verify, "the saved artifact carries the verify block");
+    });
+  });
+});

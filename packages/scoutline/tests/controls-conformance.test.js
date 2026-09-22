@@ -3812,6 +3812,24 @@ const INVESTIGATE_CONTROLS = [
     effect: (run) => run.pack?.brief === "CONFORMANCE BRIEF",
   },
   {
+    // investigate-verify lane T4: claim-corroboration mode flag. The
+    // observable effect is the verify block on the pack — an
+    // accept-and-drop would leave the pack without it.
+    control: "verify",
+    note: "verify block carried (claim verdicts)",
+    argv: ["--provider", "tavily,exa", "investigate", "Alpha beta works. Gamma delta lags.", "--verify"],
+    expect: "consumed",
+    effect: (run) =>
+      Array.isArray(run.pack?.verify?.claims) &&
+      run.pack.verify.claims.length === 2 &&
+      run.pack.verify.claims.every(
+        (c) =>
+          ["corroborated", "contradicted", "unresolved"].includes(c.verdict) &&
+          typeof c.negationCues === "number" &&
+          Array.isArray(c.evidence),
+      ),
+  },
+  {
     control: "depth",
     argv: ["investigate", "q", "--depth", "2"],
     expect: "rejected",
@@ -3829,6 +3847,14 @@ const INVESTIGATE_CONTROLS = [
   {
     control: "context-stdin",
     argv: ["investigate", "q", "--context-stdin"],
+    expect: "rejected",
+  },
+  {
+    // investigate-verify lane T4: the mode-conflict pair guard
+    // (verify owns planning; --context cannot ride along).
+    control: "verify",
+    note: "pair-rejected with --context (mode conflict)",
+    argv: ["investigate", "some statement", "--verify", "--context", "notes.md"],
     expect: "rejected",
   },
 ];

@@ -688,6 +688,9 @@ export const STRICT_FLAG_ALLOWLIST: Readonly<Record<string, ReadonlySet<string>>
     "no-cache",
     "no-journal",
     "synthesize",
+    // investigate-verify lane (DESIGN D5): claim-corroboration mode
+    // flag. Pair-rejected with --context below (verify owns planning).
+    "verify",
   ]),
 };
 
@@ -4922,6 +4925,34 @@ async function handleInvestigate(
     );
   }
 
+  // investigate-verify lane (DESIGN D5, PRD AC-1): --verify owns
+  // planning — the claims ARE the grid — so a --context file is a
+  // mode conflict. Both spellings of --context carry; the valueless
+  // --context guard above already fired for the true case.
+  if (flags.verify !== undefined && flags.context !== undefined) {
+    throw new ValidationError(
+      "--verify and --context cannot be combined: --verify splits the statement into claims (verify owns planning).",
+      "Drop --context, or run without --verify to plan from the notes file.",
+    );
+  }
+  // Valueless/malformed --verify guards (the --synthesize pattern):
+  // parseArgs would swallow a following token as the value.
+  for (const token of args) {
+    if (typeof token === "string" && token.startsWith("--verify=")) {
+      throw new ValidationError(
+        `Invalid flag "${token}": the --flag=value form is not supported; --verify takes no value.`,
+        "Pass the bare --verify to enable claim-corroboration mode, or omit it.",
+      );
+    }
+  }
+  if (flags.verify !== undefined && flags.verify !== true) {
+    throw new ValidationError(
+      "--verify is a boolean flag and takes no value",
+      "Pass the bare --verify to enable claim-corroboration mode, or omit it.",
+    );
+  }
+  const verify = flags.verify === true;
+
   // PRD AC-1 / ADR-0013 rejected extensions: --depth, --arms, and
   // --budget-tokens DO NOT EXIST (the parser rejecting them IS the
   // feature — no accept-and-drop). rejectFlagPair guards BOTH
@@ -5065,6 +5096,7 @@ async function handleInvestigate(
     ...(sources !== undefined ? { sources } : {}),
     ...(flags["no-cache"] === true ? { "no-cache": true } : {}),
     ...(synthesize ? { synthesize: true } : {}),
+    ...(verify ? { verify: true } : {}),
   };
   const investigateProviderRouting: ProviderRouting =
     fanoutPlan.mode === "fanout"
@@ -5130,6 +5162,7 @@ async function handleInvestigate(
           noCache: flags["no-cache"] === true,
           noJournal: collectLongFlagValues(args, "no-journal").length > 0,
           ...(synthesize ? { synthesize: true } : {}),
+          ...(verify ? { verify: true } : {}),
         },
         {
           descriptors: deps.providerDescriptors,

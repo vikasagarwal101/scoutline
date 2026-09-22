@@ -394,10 +394,35 @@ Sources surfaced but unread land in `coverage.unread` with a reason code
 `--max-chars` is the output budget: passages trim first, late sources
 drop; the full untrimmed pack is saved and recoverable via
 `scoutline history show <ref>` (the `compaction {budget, ref}` stamp
-names it). `--verify` does not exist: claim corroboration is deferred
-per ADR-0013. `--depth`, `--arms`, and `--budget-tokens` are rejected
+names it). `--depth`, `--arms`, and `--budget-tokens` are rejected
 with `VALIDATION_ERROR` by design (no depth axis; the arm set IS the
 provider pin; `--max-chars` is the budget).
+
+### Claim verification (`investigate --verify`, ADR-0013 follow-up)
+
+`--verify` turns the positional into a STATEMENT: sentence-claims
+(the extract grammar's terminators; `|` is literal text) capped at 8
+— a 9th sentence fails loud with VALIDATION_ERROR naming the cap,
+never silent truncation. Each claim is searched verbatim (no
+per-claim controls; `--context` + `--verify` is a mode-conflict
+VALIDATION_ERROR — verify owns planning), then deterministically
+matched to the extracted passages. The pack gains an additive
+`verify` block: per claim, a verdict, evidence pointers
+`{sourceIndex, passageIndex}`, and a negation-cue count.
+
+```bash
+scoutline investigate "X is fast. Y lags." --verify
+scoutline investigate "claim one. claim two." --verify --max-chars 4000
+```
+
+Verdicts: `corroborated` (matching passages, zero cues) /
+`contradicted` (a term-matching passage carries a negation cue from
+a fixed, versioned cue list) / `unresolved` (no matching passages).
+**Hint-grade disclosure**: `contradicted` is a cue heuristic, NOT
+semantic contradiction — semantic judgment stays with you; the
+per-claim `negationCues` count exists for exactly that re-judgment.
+`--max-chars` never cuts claim text or verdicts (evidence pointers
+drop last, whole); cost notices state "N claims × M arms".
 
 ## Commands
 
@@ -414,7 +439,7 @@ provider pin; `--max-chars` is the budget).
 | crawl | Multi-page website traversal (Tavily, Firecrawl, or Spider.cloud) | `--help` for depth/breadth/filters |
 | map | URL-set discovery without fetching pages (Tavily, Firecrawl, or Spider.cloud) | `--help` for depth/breadth/filters |
 | research | Deep research with citations (seven providers; 4-250 credits) | `--help` for model/citation/timeout and local context |
-| investigate | Local investigation pipeline returning an EvidencePack (ADR-0013) | `--help` for planner tiers, controls, and cost |
+| investigate | Local investigation pipeline returning an EvidencePack (ADR-0013); `--verify` adds claim verdicts (cue-heuristic, hint-grade) | `--help` for planner tiers, controls, and cost |
 | repo | GitHub code search and reading (Z.AI) | `--help` for tree/search/read/brief |
 | quota | Provider-normalized plan usage dashboard | `--help` for `--all-providers` |
 | tools | List available MCP tools (Z.AI) | |

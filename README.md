@@ -23,7 +23,7 @@
 - **Crawl** — Multi-page website traversal with depth, breadth, and path filters
 - **Map** — Discover URL structure without fetching page content
 - **Research** — Asynchronous deep research with cited sources
-- **Investigation** — Local, transparent, cache-resumable pipeline (`investigate`): fan-out search, Fusion merge, top-K reads, and deterministic passage extraction into an EvidencePack; `--synthesize` attaches an additive Z.AI brief (ADR-0013)
+- **Investigation** — Local, transparent, cache-resumable pipeline (`investigate`): fan-out search, Fusion merge, top-K reads, and deterministic passage extraction into an EvidencePack; `--verify` adds per-claim verdicts (cue-heuristic, hint-grade); `--synthesize` attaches an additive Z.AI brief (ADR-0013)
 - **Vision** — Analyze images, screenshots, diagrams, charts, and videos
 - **Repo** — Search and read GitHub repository code
 - **Research journal** — Always-on local memory of every `search`/`read`/`research`/`science` call: thin skeletons (query, provider, url+title identity, content hash) recorded to `~/.scoutline/artifacts/` and re-found offline via `history recall`; opt out per call (`--no-journal`) or globally (`journal: false`)
@@ -271,6 +271,8 @@ scoutline investigate "topic" --context notes.md --synthesize
 ```
 
 Sub-query planning precedence: explicit pipes (the `--merge` grammar) > `--context <path>` (a local notes file — it never leaves the machine) > deterministic templates of the bare question (original, key terms, overview/evidence/criticism; deduped, capped at 5). Provider selection reuses search's fan-out activation tiers verbatim; the cost notice states the arithmetic before any billable work: **N sub-queries × M arms billable searches + up to K reads**. Warm re-runs replay the response cache (`coverage.cacheHits` reflects it).
+
+`--verify` turns the positional into a statement: sentence-claims (≤ 8, fail-loud) are searched verbatim and matched to the extracted passages; the pack gains an additive `verify` block — per claim, a verdict (`corroborated` / `contradicted` / `unresolved`), evidence pointers, and a negation-cue count. `contradicted` is a disclosed negation-cue heuristic (hint-grade), not semantic judgment; `--context` + `--verify` is a mode-conflict VALIDATION_ERROR.
 
 ## Saved Artifacts (`--save` + `history`)
 

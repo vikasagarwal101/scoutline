@@ -20,9 +20,10 @@
  *
  * SAVE_CAPABLE_COMMANDS is not exported from src/index.ts (it is a
  * private const at src/index.ts:800), so the nine-command set is a
- * test-local literal. Drift: removal-direction self-REDs (a dropped
- * command loses its row); addition-direction — update this literal
- * when src/index.ts:800 gains a command.
+ * test-local literal — but NOT a trusted one: the derivation row
+ * re-derives the set from production behavior (the FILE_ERROR export
+ * guard fires exactly on SAVE_CAPABLE_COMMANDS), so drift in EITHER
+ * direction REDs naming the drifted command.
  *
  * 100% hermetic: fake descriptors / globalThis.fetch stub, isolated
  * artifacts + cache dirs per row, fixed clock. No network.
@@ -33,9 +34,11 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { main } from "../dist/index.js";
+import { main, DISPATCHED_COMMANDS } from "../dist/index.js";
 import { createInMemoryConsumptionSink } from "../dist/lib/consumption.js";
 import { hermeticMainDeps } from "./helpers/hermetic-main.js";
+import { withTempDir } from "./helpers/temp-dir.js";
+import { useTempConfigDir } from "./helpers/config-dir-pin.js";
 import {
   createFakeCrawlDescriptor,
   createFakeMapDescriptor,
@@ -43,7 +46,18 @@ import {
   createFakeResearchDescriptor,
 } from "./helpers/fake-adapter.js";
 
-/** SAVE_CAPABLE_COMMANDS mirror (src/index.ts:800 — not exported). */
+// The derivation row sweeps every dispatched command; `init`'s eager
+// initDeps build reads the ambient config root (#119 guard) — the
+// file-level pin is the established idiom for that seam.
+useTempConfigDir();
+
+/**
+ * SAVE_CAPABLE_COMMANDS mirror (src/index.ts:800 — not exported; exporting
+ * it would be a production change outside the original commit's fence).
+ * NOT trusted blindly: the behavioral derivation row below proves this
+ * literal against production behavior — a production addition or removal
+ * that this list misses REDs there.
+ */
 const SAVE_CAPABLE = [
   "search",
   "science",
@@ -80,14 +94,15 @@ function makeInvocation() {
 }
 
 /**
- * Drive main() for one row: isolated artifacts + cache dirs, the
- * fixture secret in deps.env, and (unless the row supplies its own
- * descriptors) the row's fake descriptor list. Returns the run plus
- * the artifacts dir for the leak scan.
+ * Drive main() for one row: isolated artifacts + cache dirs (cleanup
+ * registered on the test context — the withTempDir idiom, so failure
+ * paths never leak), the fixture secret in deps.env, and (unless the
+ * row supplies its own descriptors) the row's fake descriptor list.
+ * Returns the run plus the artifacts dir for the leak scan.
  */
-async function runRow(argv, { descriptors, env = {}, consume } = {}) {
-  const artifactsDir = await fs.mkdtemp(path.join(os.tmpdir(), "secrets-conf-art-"));
-  const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), "secrets-conf-cache-"));
+async function runRow(t, argv, { descriptors, env = {}, consume } = {}) {
+  const artifactsDir = await withTempDir(t, (dir) => dir, { prefix: "secrets-conf-art-" });
+  const cacheDir = await withTempDir(t, (dir) => dir, { prefix: "secrets-conf-cache-" });
   const { adapter, stdout, stderr } = makeInvocation();
   const deps = hermeticMainDeps({
     invocation: adapter,
@@ -270,25 +285,131 @@ function makeInvestigateReader() {
 // ---------------------------------------------------------------------------
 
 describe("#269 — secrets-redaction conformance over SAVE_CAPABLE_COMMANDS", () => {
-  it(`enumerates all ${SAVE_CAPABLE.length} save-capable commands below (mirror of src/index.ts:800)`, () => {
-    // Structural pin: the rows below cover exactly this list. A new
-    // SAVE_CAPABLE entry in src/index.ts needs a row here; a removal
-    // drops its row with it.
-    assert.deepStrictEqual(SAVE_CAPABLE, [
-      "search",
-      "science",
-      "read",
-      "crawl",
-      "map",
-      "research",
-      "repo",
-      "vision",
-      "investigate",
-    ]);
+  it("derives SAVE_CAPABLE from production behavior: FILE_ERROR export guard fires exactly on the mirrored set", async (t) => {
+    // Behavioral teeth for the mirror above (a literal-vs-literal pin is
+    // vacuous — it cannot see production drift). Mechanism: both
+    // pre-dispatch --save export guards gate on
+    // SAVE_CAPABLE_COMMANDS.has(command) (src/index.ts:7019 science arm,
+    // :7075 shared arm), so a --save pointed at an EXISTING file is
+    // refused with exit 1 + FILE_ERROR + empty stdout EXACTLY on the
+    // save-capable commands; everything else accepts-and-drops --save
+    // and never runs the guard. A production command joining or leaving
+    // SAVE_CAPABLE_COMMANDS changes the observed set -> this row REDs
+    // naming the drifted command (add a conformance row / drop the row
+    // with it). Tooth scope (mutation-verified with "quota"): commands
+    // whose dispatch runs the shared guard. Commands with an EARLIER
+    // credential-free short-circuit (cache/usage/history/init and the
+    // science arm) return before the shared guard — for those the pin
+    // sees the pre-short-circuit behavior, which is exactly what a
+    // --save consumer experiences.
+    const searchLike = {
+      validate() {},
+      cacheIdentity(r) {
+        return {
+          provider: "zai",
+          capability: "search",
+          credentialFingerprint: "fp",
+          request: r,
+          legacyCandidates: [],
+        };
+      },
+      async invoke() {
+        return [{ title: "t", url: "https://e/1", summary: "s" }];
+      },
+    };
+    // One descriptor advertising every capability the minimal argvs
+    // touch; commands whose behavior errors still never reach the save
+    // hook — the guard fires BEFORE dispatch, so error exits are inert.
+    const descriptor = {
+      id: "zai",
+      isConfigured: () => true,
+      capabilities: () =>
+        new Set([
+          "search",
+          "reader",
+          "crawl",
+          "map",
+          "research",
+          "repository-exploration",
+          "vision.extract-text",
+        ]),
+      create: () => ({
+        id: "zai",
+        search: searchLike,
+        reader: { fetch: searchLike },
+        crawl: { fetch: searchLike },
+        map: { fetch: searchLike },
+        research: { run: searchLike },
+        repository: { search: searchLike },
+        vision: { validate() {}, supports: () => true, async invoke() { return "t"; } },
+      }),
+    };
+    // Minimal hermetic argv per dispatched command (subcommands chosen
+    // so parse succeeds; behavior never runs past the guard).
+    const ARGV = {
+      vision: ["vision", "extract-text", "x.png"],
+      search: ["search", "q"],
+      read: ["read", "https://e/1"],
+      crawl: ["crawl", "https://e/"],
+      map: ["map", "https://e/"],
+      research: ["research", "q"],
+      repo: ["repo", "search", "o/r", "q"],
+      batch: ["batch", "--help"],
+      tools: ["tools", "list"],
+      tool: ["tool"],
+      call: ["call"],
+      doctor: ["doctor", "--json"],
+      quota: ["quota"],
+      code: ["code"],
+      cache: ["cache", "stats"],
+      usage: ["usage"],
+      history: ["history", "list"],
+      init: ["init"],
+      config: ["config", "list"],
+      fetch: ["fetch", "https://e/1"],
+      archive: ["archive"],
+      watch: ["watch", "https://e/1"],
+      science: ["science", "search", "q"],
+      investigate: ["investigate", "q"],
+    };
+    const guarded = await withTempDir(t, async (guardDir) => {
+      const target = path.join(guardDir, "exists.json");
+      await fs.writeFile(target, "keep");
+      const observed = [];
+      for (const command of DISPATCHED_COMMANDS) {
+        await withTempDir(t, async (artifactsDir) => {
+          const { adapter, stdout, stderr } = makeInvocation();
+          const code = await main([...ARGV[command], "--save", target], hermeticMainDeps({
+            invocation: adapter,
+            env: {
+              Z_AI_API_KEY: "k",
+              SCOUTLINE_ARTIFACTS_DIR: artifactsDir,
+            },
+            providerDescriptors: [descriptor],
+          }));
+          const last = stderr.filter((l) => l.trim().startsWith("{")).at(-1);
+          let errCode = "";
+          try {
+            errCode = last !== undefined ? (JSON.parse(last).code ?? "") : "";
+          } catch {
+            errCode = "";
+          }
+          if (code === 1 && errCode === "FILE_ERROR" && stdout.length === 0) {
+            observed.push(command);
+          }
+        }, { prefix: "secrets-conf-derive-" });
+      }
+      return observed;
+    }, { prefix: "secrets-conf-guard-" });
+    assert.deepStrictEqual(
+      [...guarded].sort(),
+      [...SAVE_CAPABLE].sort(),
+      "observed save-capable set (FILE_ERROR export guard) must equal the mirrored list — update SAVE_CAPABLE and add/drop the conformance row for the drifted command",
+    );
   });
 
-  it("search: budgeted run keeps the secret out of stdout and the compaction master", async () => {
-    const run = await runRow(["search", "probe query", "--max-chars", "200"], {
+  it("search: budgeted run keeps the secret out of stdout and the compaction master", async (t) => {
+    const run = await runRow(t, ["search", "probe query", "--max-chars", "200"], {
       descriptors: [
         makeSearchDescriptor("zai", {
           "*": [1, 2, 3].map((i) => ({
@@ -302,7 +423,7 @@ describe("#269 — secrets-redaction conformance over SAVE_CAPABLE_COMMANDS", ()
     await assertSecretContained("search", run);
   });
 
-  it("read: budgeted run keeps the secret out of stdout and the compaction master", async () => {
+  it("read: budgeted run keeps the secret out of stdout and the compaction master", async (t) => {
     const reader = createFakeReaderDescriptor({
       id: "zai",
       capabilityOptions: {
@@ -318,13 +439,13 @@ describe("#269 — secrets-redaction conformance over SAVE_CAPABLE_COMMANDS", ()
         },
       },
     });
-    const run = await runRow(["read", "https://example.com/doc", "--max-chars", "200"], {
+    const run = await runRow(t, ["read", "https://example.com/doc", "--max-chars", "200"], {
       descriptors: [reader.descriptor],
     });
     await assertSecretContained("read", run);
   });
 
-  it("crawl: budgeted run keeps the secret out of stdout and the compaction master", async () => {
+  it("crawl: budgeted run keeps the secret out of stdout and the compaction master", async (t) => {
     const crawl = createFakeCrawlDescriptor({
       id: "zai",
       capabilityOptions: {
@@ -344,13 +465,13 @@ describe("#269 — secrets-redaction conformance over SAVE_CAPABLE_COMMANDS", ()
         },
       },
     });
-    const run = await runRow(["crawl", "https://example.com/", "--max-chars", "200"], {
+    const run = await runRow(t, ["crawl", "https://example.com/", "--max-chars", "200"], {
       descriptors: [crawl.descriptor],
     });
     await assertSecretContained("crawl", run);
   });
 
-  it("research: budgeted run keeps the secret out of stdout and the compaction master", async () => {
+  it("research: budgeted run keeps the secret out of stdout and the compaction master", async (t) => {
     const research = createFakeResearchDescriptor({
       id: "zai",
       capabilityOptions: {
@@ -365,14 +486,14 @@ describe("#269 — secrets-redaction conformance over SAVE_CAPABLE_COMMANDS", ()
         },
       },
     });
-    const run = await runRow(["research", "probe query", "--max-chars", "200"], {
+    const run = await runRow(t, ["research", "probe query", "--max-chars", "200"], {
       descriptors: [research.descriptor],
     });
     await assertSecretContained("research", run);
   });
 
-  it("repo: budgeted run keeps the secret out of stdout and the compaction master", async () => {
-    const run = await runRow(
+  it("repo: budgeted run keeps the secret out of stdout and the compaction master", async (t) => {
+    const run = await runRow(t,
       ["repo", "search", "owner/repo", "query", "--max-chars", "5"],
       {
         descriptors: [
@@ -393,7 +514,7 @@ describe("#269 — secrets-redaction conformance over SAVE_CAPABLE_COMMANDS", ()
     await assertSecretContained("repo", run);
   });
 
-  it("science: budgeted run keeps the secret out of stdout and the compaction master", async () => {
+  it("science: budgeted run keeps the secret out of stdout and the compaction master", async (t) => {
     const works = [1, 2, 3].map((i) => ({
       title: `work-${i}-title`,
       url: `https://example.org/work-${i}`,
@@ -404,20 +525,20 @@ describe("#269 — secrets-redaction conformance over SAVE_CAPABLE_COMMANDS", ()
     const descriptors = ["openalex", "arxiv", "crossref", "pubmed", "europepmc"].map((id, i) =>
       makeScienceDescriptor(id, i === 0 ? works : []),
     );
-    const run = await runRow(["science", "search", "probe", "--max-chars", "400"], {
+    const run = await runRow(t, ["science", "search", "probe", "--max-chars", "400"], {
       descriptors,
     });
     await assertSecretContained("science", run);
   });
 
-  it("investigate: budgeted run keeps the secret out of stdout and the compaction master", async () => {
+  it("investigate: budgeted run keeps the secret out of stdout and the compaction master", async (t) => {
     const byQuery = (query) =>
       PACK_URLS.slice(0, 2).map((url, i) => ({
         title: `source ${i} for ${query}`,
         url,
         summary: "s",
       }));
-    const run = await runRow(
+    const run = await runRow(t,
       // Budget 900 (verified): small enough that compaction fires,
       // large enough that the ladder's whole-source drops floor at TWO
       // sources — a tiny budget floors to an empty sources array (an
@@ -435,7 +556,7 @@ describe("#269 — secrets-redaction conformance over SAVE_CAPABLE_COMMANDS", ()
     await assertSecretContained("investigate", run);
   });
 
-  it("vision: saved run keeps the secret out of stdout and the master (no ladder — master-only --save)", async () => {
+  it("vision: saved run keeps the secret out of stdout and the master (no ladder — master-only --save)", async (t) => {
     // Production registry path (no injected descriptors): the extract
     // text rides the globalThis.fetch stub, so the OCR double embeds
     // the secret in the extracted text.
@@ -450,24 +571,21 @@ describe("#269 — secrets-redaction conformance over SAVE_CAPABLE_COMMANDS", ()
       };
     };
     try {
-      const src = await fs.mkdtemp(path.join(os.tmpdir(), "secrets-conf-vision-"));
-      const file = path.join(src, "doc.png");
-      await fs.writeFile(file, Buffer.from("vision-probe"));
-      try {
-        const run = await runRow(["vision", "extract-text", file, "--save"], {
+      await withTempDir(t, async (src) => {
+        const file = path.join(src, "doc.png");
+        await fs.writeFile(file, Buffer.from("vision-probe"));
+        const run = await runRow(t, ["vision", "extract-text", file, "--save"], {
           env: { Z_AI_API_KEY: "zai-key-ok" },
           consume: createInMemoryConsumptionSink(),
         });
         await assertSecretContained("vision", run);
-      } finally {
-        await fs.rm(src, { recursive: true, force: true });
-      }
+      }, { prefix: "secrets-conf-vision-" });
     } finally {
       globalThis.fetch = savedGlobalFetch;
     }
   });
 
-  it("map: saved run keeps the secret out of stdout and the master (no ladder — master-only --save)", async () => {
+  it("map: saved run keeps the secret out of stdout and the master (no ladder — master-only --save)", async (t) => {
     const map = createFakeMapDescriptor({
       id: "zai",
       capabilityOptions: {
@@ -481,7 +599,7 @@ describe("#269 — secrets-redaction conformance over SAVE_CAPABLE_COMMANDS", ()
         },
       },
     });
-    const run = await runRow(["map", "https://example.com/", "--save"], {
+    const run = await runRow(t, ["map", "https://example.com/", "--save"], {
       descriptors: [map.descriptor],
     });
     await assertSecretContained("map", run);

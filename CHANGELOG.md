@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **OCR URL prefetch is incrementally bounded (#266):** the glm-ocr fallback's URL prefetch no longer accumulates the response via unbounded `arrayBuffer()` — it streams through the shared `readBoundedResponseBody` reader with an active byte counter and immediate cancel at the OCR media ceilings (10MB image / 50MB PDF; content-type selects the cap; declared `Content-Length` is ignored in favor of the counter — chunked servers understate it). An oversize prefetch is a media-rule violation (`VALIDATION_ERROR`), not a transport failure — it pierces the prefetch catch's terminal-422 remap exactly like its sibling `fetchUrlToTempPath` seam. Hostile or merely large URL sources can no longer OOM the process through the prefetch path.
+
 ## [0.24.0] - 2026-09-22
 ### Added
 

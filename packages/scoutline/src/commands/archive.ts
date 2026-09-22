@@ -1137,7 +1137,11 @@ function parseArchiveTimeout(raw: string | boolean | undefined): number | undefi
 }
 
 /**
- * Dispatcher handler for `archive` in `src/index.ts`.
+ * Dispatcher handler for `archive` in `src/index.ts`. INPUT CONTRACT:
+ * `args` are main()-normalized dispatch tokens (the equals-form seam has
+ * run). Raw-argv callers use {@link parseArchiveArgs} — the normalizing
+ * boundary; re-normalizing here would re-split produced values that
+ * start with `--` (the double-application defect, PR-278 review).
  */
 export async function handleArchive(
   args: string[],

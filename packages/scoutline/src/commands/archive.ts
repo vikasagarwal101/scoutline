@@ -131,17 +131,25 @@ export async function fetchWithArchiveBackoff<T = Response>(
     timeout?: number;
     headers?: Record<string, string>;
     sleep?: (ms: number) => Promise<void>;
+    /**
+     * Abort-timer seam (the flake class: rows exercising non-timeout
+     * paths must not arm raceable real timers against local mocks —
+     * inject a recording never-fires stub; the default is the real
+     * setTimeout). The returned handle flows to clearTimeout verbatim.
+     */
+    armTimer?: (ms: number, abort: () => void) => ReturnType<typeof setTimeout>;
   } = {},
   consumer?: (res: Response) => Promise<T>,
 ): Promise<T> {
   const timeoutMs = options.timeout ?? DEFAULT_ARCHIVE_TIMEOUT_MS;
   const sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const armTimer = options.armTimer ?? ((ms, abort) => setTimeout(abort, ms));
   const maxRetries = 3;
   let delay = 1000;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const timer = armTimer(timeoutMs, () => controller.abort());
 
     try {
       const res = await fetch(url, {
@@ -171,7 +179,11 @@ export async function fetchWithArchiveBackoff<T = Response>(
       }
       return res as unknown as T;
     } catch (err: unknown) {
-      if (err instanceof NetworkError || err instanceof TimeoutError || err instanceof ValidationError) {
+      if (
+        err instanceof NetworkError ||
+        err instanceof TimeoutError ||
+        err instanceof ValidationError
+      ) {
         throw err;
       }
       if (controller.signal.aborted) {
@@ -280,7 +292,11 @@ export async function executeArchiveCdx(
 export async function resolveAvailableSnapshot(
   url: string,
   timestampHint?: string,
-  dependencies: { sleep?: (ms: number) => Promise<void>; timeout?: number; availabilityEndpoint?: string } = {},
+  dependencies: {
+    sleep?: (ms: number) => Promise<void>;
+    timeout?: number;
+    availabilityEndpoint?: string;
+  } = {},
 ): Promise<{ timestamp: string; archiveUrl: string }> {
   const queryParams = new URLSearchParams({ url });
   if (timestampHint && timestampHint !== "best") {
@@ -313,7 +329,6 @@ export async function resolveAvailableSnapshot(
       };
     },
   );
-
 
   const closest = data.archived_snapshots?.closest;
   if (!closest || !closest.available || !closest.timestamp) {
@@ -404,12 +419,12 @@ export async function executeArchiveGet(
   let content: string | undefined;
   const isExplicitBinary = Boolean(
     contentType &&
-      /application\/(pdf|zip|gzip|octet-stream)|image\/|audio\/|video\//i.test(contentType),
+    /application\/(pdf|zip|gzip|octet-stream)|image\/|audio\/|video\//i.test(contentType),
   );
   const isTextualMime = Boolean(
     contentType &&
-      (contentType.startsWith("text/") ||
-        /application\/(json|xml|javascript|atom\+xml|rss\+xml)/i.test(contentType)),
+    (contentType.startsWith("text/") ||
+      /application\/(json|xml|javascript|atom\+xml|rss\+xml)/i.test(contentType)),
   );
 
   if (!isExplicitBinary) {
@@ -571,7 +586,10 @@ export function resolveSinceInstant(
     const ms = Number(durationMatch[1]) * unit * 1000;
     // A gigantic digit string overflows Date range and would surface as
     // a RangeError from toISOString — a ValidationError, not UNKNOWN_ERROR.
-    if (!Number.isFinite(ms) || Number.isNaN(Date.now() === 0 ? NaN : new Date(now() - ms).getTime())) {
+    if (
+      !Number.isFinite(ms) ||
+      Number.isNaN(Date.now() === 0 ? NaN : new Date(now() - ms).getTime())
+    ) {
       throw new ValidationError(
         `Invalid --since value: "${since}".`,
         "Duration is out of the representable date range.",
@@ -592,7 +610,8 @@ export function resolveSinceInstant(
   // identical --since values would select different Wayback cutoffs on
   // different machines. Accepted: date, date+Ttime (Z appended below
   // when offset-less), or explicit Z/±HH:MM/±HHMM offsets.
-  const ISO_SINCE = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/;
+  const ISO_SINCE =
+    /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/;
   if (!ISO_SINCE.test(trimmed)) {
     throw new ValidationError(
       `Invalid --since value: "${since}".`,
@@ -603,9 +622,7 @@ export function resolveSinceInstant(
   // as LOCAL time per ECMAScript — machine-dependent. Normalize: no
   // offset means Z (review fix), so the same CLI input means the same
   // instant everywhere. Plain dates already parse as UTC.
-  const normalized = /^(\d{4}-\d{2}-\d{2})T([0-9:.]+)$/.test(trimmed)
-    ? `${trimmed}Z`
-    : trimmed;
+  const normalized = /^(\d{4}-\d{2}-\d{2})T([0-9:.]+)$/.test(trimmed) ? `${trimmed}Z` : trimmed;
   const asDate = new Date(normalized);
   // Reject unparseable input AND calendar overflows (isCalendarOverflow
   // validates the calendar fields of the INPUT digits directly — no
@@ -645,10 +662,7 @@ function cdxTimestampMs(timestamp: string): number {
     (timestamp.slice(10, 12) || "00") +
     (timestamp.slice(12, 14) || "00");
   return Date.parse(
-    full.replace(
-      /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$/,
-      "$1-$2-$3T$4:$5:$6Z",
-    ),
+    full.replace(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$/, "$1-$2-$3T$4:$5:$6Z"),
   );
 }
 /** Pull the charset parameter out of a Content-Type header, if present. */
@@ -704,7 +718,10 @@ async function selectSnapshotAtOrBefore(
   const endpoint = dependencies.cdxEndpoint ?? WAYBACK_CDX_ENDPOINT;
   const raw = await fetchWithArchiveBackoff(
     `${endpoint}?${queryParams.toString()}`,
-    { sleep: dependencies.sleep, ...(dependencies.timeout !== undefined ? { timeout: dependencies.timeout } : {}) },
+    {
+      sleep: dependencies.sleep,
+      ...(dependencies.timeout !== undefined ? { timeout: dependencies.timeout } : {}),
+    },
     async (res) => {
       if (!res.ok) {
         // Drain-cancel the body (review): an unread streaming error body
@@ -797,7 +814,13 @@ async function fetchSnapshotRaw(
 export async function fetchLiveDocument(
   url: string,
   timeoutMs: number,
-): Promise<{ raw: Buffer; finalUrl: string; moved: boolean; contentType?: string; statusCode: number }> {
+): Promise<{
+  raw: Buffer;
+  finalUrl: string;
+  moved: boolean;
+  contentType?: string;
+  statusCode: number;
+}> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   let sawPermanent = false;
@@ -871,9 +894,7 @@ export async function fetchLiveDocument(
     // typed-wrap vs raw-rethrow is equivalent (same change-log error entry,
     // gen:null, exit 2) and the wrap only improves the reason text.
     const causeMessage =
-      err instanceof Error && err.cause instanceof Error
-        ? err.cause.message
-        : undefined;
+      err instanceof Error && err.cause instanceof Error ? err.cause.message : undefined;
     const message = causeMessage ?? (err instanceof Error ? err.message : String(err));
     throw new NetworkError(`Live fetch failed: ${message}`);
   } finally {
@@ -936,10 +957,7 @@ export async function executeArchiveDiff(
 
   // Content-Type gate (review): a non-HTML media type forces hash-only;
   // unknown/absent types fall back to extractSections' HTML-shaped sniff.
-  const extractByMediaType = (
-    raw: Uint8Array,
-    contentType: string | undefined,
-  ) =>
+  const extractByMediaType = (raw: Uint8Array, contentType: string | undefined) =>
     isHtmlContentType(contentType) === false
       ? extractSectionsHashOnly(raw)
       : extractSections(raw, charsetFromContentType(contentType));
@@ -1152,9 +1170,7 @@ export async function handleArchive(
       }
       const parsedLimit = Number(flags.limit);
       if (parsedLimit <= 0 || parsedLimit > 10000) {
-        throw new ValidationError(
-          `--limit must be between 1 and 10000, got ${parsedLimit}.`,
-        );
+        throw new ValidationError(`--limit must be between 1 and 10000, got ${parsedLimit}.`);
       }
       limit = parsedLimit;
     }

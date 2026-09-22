@@ -26,6 +26,8 @@ import {
   STOPWORDS,
   deriveSubQueries,
   parseContextText,
+  isAsciiToken,
+  tokenizeTerms,
 } from "./context-file.js";
 import { MERGE_SPLIT_PATTERN, splitMergeSubQueries } from "../commands/search.js";
 
@@ -65,15 +67,20 @@ export interface SubQueryPlan {
 
 /**
  * Key-terms join for the template tier: lowercase the question,
- * tokenize on non-alphanumerics, drop stopwords and tokens outside the
- * context-file term bounds, preserve order, dedupe, join with spaces.
- * Only `toLowerCase` is applied (byte-stable, no locale).
+ * tokenize via the shared Unicode tokenizer (issue #271 — ASCII input
+ * keeps the legacy split byte-identically; non-ASCII segments are kept
+ * whole with no ASCII length floor), drop stopwords and tokens outside
+ * the context-file term bounds, preserve order, dedupe, join with
+ * spaces. Only `toLowerCase` is applied (byte-stable, no locale).
  */
 export function deriveTemplateTopic(query: string): string {
   const terms: string[] = [];
   const seen = new Set<string>();
-  for (const token of query.toLowerCase().split(/[^a-z0-9]+/)) {
-    if (token.length < MIN_TERM_CHARS || token.length > MAX_TERM_CHARS) {
+  for (const token of tokenizeTerms(query)) {
+    if (isAsciiToken(token) && token.length < MIN_TERM_CHARS) {
+      continue;
+    }
+    if (token.length > MAX_TERM_CHARS) {
       continue;
     }
     if (STOPWORD_SET.has(token) || seen.has(token)) {

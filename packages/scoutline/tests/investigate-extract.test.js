@@ -185,3 +185,31 @@ describe("extractPassages", () => {
     assert.deepEqual(a, b);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Issue #271 — CJK terms match inside unspaced CJK content. The ASCII
+// whole-word boundary ([^\p{L}\p{N}_]) can never fire between CJK
+// chars, so non-ASCII terms match as substrings; ASCII terms keep the
+// boundary guard even inside CJK content.
+// ---------------------------------------------------------------------------
+describe("extractPassages (Unicode/CJK, issue #271)", () => {
+  it("a CJK term matches inside unspaced CJK content", () => {
+    // Window terminators stay ASCII (.`!?`/newline) — ideographic 。
+    // is not a terminator, so segments here use ". " separators.
+    const passages = extractPassages({ content: "東京は人口が多い. 東京は速い.", terms: ["東京"] });
+    assert.deepEqual(passages.map((p) => p.quote), ["東京は人口が多い.", "東京は速い."]);
+  });
+
+  it("an ASCII term inside CJK text still needs word boundaries (no mid-run match)", () => {
+    // "ai" is not a standalone word here — 境界 chars are CJK letters.
+    const passages = extractPassages({ content: "aiによる分析.", terms: ["ai"] });
+    assert.deepEqual(passages, []);
+  });
+
+  it("round-trip pin holds for CJK passages (slice === quote)", () => {
+    const content = "東京は速い. 関連記事.";
+    for (const p of extractPassages({ content, terms: ["速い"] })) {
+      assert.strictEqual(content.slice(p.charRange[0], p.charRange[1]), p.quote);
+    }
+  });
+});

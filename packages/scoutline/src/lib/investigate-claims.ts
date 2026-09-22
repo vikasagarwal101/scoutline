@@ -24,7 +24,7 @@
  * beyond toLowerCase.
  */
 
-import { STOPWORDS } from "./context-file.js";
+import { STOPWORDS, tokenizeTerms } from "./context-file.js";
 import { normalizeTerms } from "./investigate-extract.js";
 import type { EvidenceSource } from "../capabilities/investigation.js";
 
@@ -197,20 +197,32 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/**
+ * Whole-word containment. ASCII terms keep the boundary guard
+ * (`[^\p{L}\p{N}_]` on both sides). Non-ASCII terms match as
+ * substrings: unspaced scripts (CJK) have no word separators, so the
+ * boundary class can never fire between letters (issue #271).
+ */
 function containsWholeWord(content: string, term: string): boolean {
+  const asciiTerm = /^[\x00-\x7f]*$/.test(term);
+  const body = escapeRegExp(term);
   const re = new RegExp(
-    `(^|[^\\p{L}\\p{N}_])${escapeRegExp(term)}(?:[^\\p{L}\\p{N}_]|$)`,
+    asciiTerm
+      ? `(^|[^\\p{L}\\p{N}_])${body}(?:[^\\p{L}\\p{N}_]|$)`
+      : body,
     "iu",
   );
   return re.test(content);
 }
 
-/** Claim terms: lowercase tokens, stopword-filtered, normalizeTerms-dedupe. */
-function claimTerms(claim: string): string[] {
-  const tokens = claim
-    .toLowerCase()
-    .split(/[^a-z0-9']+/)
-    .filter((t) => t.length > 0 && !STOPWORD_SET.has(t));
+/**
+ * Claim terms: lowercase tokens via the shared Unicode tokenizer
+ * (issue #271, apostrophe grammar — ASCII behavior byte-identical),
+ * stopword-filtered, normalizeTerms-dedupe.
+ */
+/** Exported for the #271 term-derivation pin (pure; test-observable). */
+export function claimTerms(claim: string): string[] {
+  const tokens = tokenizeTerms(claim, true).filter((t) => !STOPWORD_SET.has(t));
   return normalizeTerms(tokens);
 }
 

@@ -280,7 +280,8 @@ describe("glm-ocr T2 — non-1113 propagation", () => {
         return jsonResponse({ md_results: "recovered via base64" });
       },
     );
-    // Prefetch fetch: serves the image bytes.
+    // Prefetch fetch: serves the image bytes as a stream (wave-2 seam
+    // contract — doubles supply body streams like production).
     const bytes = Buffer.from("fake-png-bytes");
     const restWithPrefetch = {
       calls: rest.calls,
@@ -289,10 +290,13 @@ describe("glm-ocr T2 — non-1113 propagation", () => {
           return {
             ok: true,
             status: 200,
-            text: async () => "",
-            json: async () => ({}),
             headers: { get: () => "image/png" },
-            arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.length),
+            body: new ReadableStream({
+              start(controller) {
+                controller.enqueue(new Uint8Array(bytes));
+                controller.close();
+              },
+            }),
           };
         }
         return rest.fetch(url, init);
@@ -387,19 +391,17 @@ describe("glm-ocr T2 — non-1113 propagation", () => {
     assert.strictEqual(mcp.created.length, 0);
   });
 
-  it("arrayBuffer-only double (no body stream) uses the bounded fallback and still caps (oversize → ValidationError)", async () => {
+  it("arrayBuffer-only double (no body stream) is refused outright — wave-2: no materialization path in any branch", async () => {
     const rest = makeLayoutRest();
     rest.set(() => jsonResponse({ error: { code: "1210" } }, 422));
-    // Legacy double shape: satisfies the ORIGINAL arrayBuffer() seam
-    // contract, supplies no body stream. Content-length declared OVER
-    // the 10MB image cap → rejected on the precheck; the post-read cap
-    // catches underdeclared/undeclared servers.
-    const bigPayload = new Uint8Array(10 * 1024 * 1024 + 1);
+    // Legacy arrayBuffer-only shape: even under the cap, refusal is
+    // unconditional — the seam contract now REQUIRES a body stream.
+    const payload = new Uint8Array([1, 2, 3, 4]);
     const arrayBufferOnlyFetch = async () => ({
       ok: true,
       status: 200,
-      headers: { get: (name) => (name === "content-length" ? String(bigPayload.byteLength) : null) },
-      arrayBuffer: async () => bigPayload.buffer,
+      headers: { get: (name) => (name === "content-length" ? String(payload.byteLength) : null) },
+      arrayBuffer: async () => payload.buffer,
     });
     arrayBufferOnlyFetch.calls = rest.calls;
     const mcp = makeMcpFactory();
@@ -414,66 +416,7 @@ describe("glm-ocr T2 — non-1113 propagation", () => {
         source: "https://example.test/shot.png",
         instruction: "x",
       }),
-      (error) => error instanceof ValidationError,
-    );
-    assert.strictEqual(mcp.created.length, 0);
-  });
-
-  it("arrayBuffer-only double under the cap still prefetches (fallback preserves the seam contract)", async () => {
-    const payload = new Uint8Array([1, 2, 3, 4]);
-    // Call 1: layout_parsing 422 (fallback-eligible). Call 2: the
-    // prefetch response — arrayBuffer-only legacy shape, under the
-    // 10MB cap. Call 3: the retried layout_parsing, JSON md_results.
-    let call = 0;
-    const arrayBufferOnlyFetch = async () => {
-      call += 1;
-      if (call === 1) return jsonResponse({ error: { code: "1210" } }, 422);
-      if (call === 2) {
-        return {
-          ok: true,
-          status: 200,
-          headers: { get: (name) => (name === "content-length" ? String(payload.byteLength) : null) },
-          arrayBuffer: async () => payload.buffer,
-        };
-      }
-      return jsonResponse({ md_results: "recovered via base64" });
-    };
-    const mcp = makeMcpFactory();
-    const adapter = makeAdapter({
-      rest: { calls: [], fetch: arrayBufferOnlyFetch },
-      mcp,
-      notices: makeNotices().notice,
-    });
-    const result = await adapter.vision.invoke({
-      operation: "extract-text",
-      source: "https://example.test/shot.png",
-      instruction: "x",
-    });
-    assert.strictEqual(result, "recovered via base64");
-  });
-
-  it("response with NEITHER body NOR arrayBuffer is a loud transport error, never silent-empty", async () => {
-    const rest = makeLayoutRest();
-    rest.set(() => jsonResponse({ error: { code: "1210" } }, 422));
-    const hollowFetch = async () => ({
-      ok: true,
-      status: 200,
-      headers: { get: () => null },
-    });
-    hollowFetch.calls = rest.calls;
-    const mcp = makeMcpFactory();
-    const adapter = makeAdapter({
-      rest: { calls: rest.calls, fetch: hollowFetch },
-      mcp,
-      notices: makeNotices().notice,
-    });
-    await assert.rejects(
-      adapter.vision.invoke({
-        operation: "extract-text",
-        source: "https://example.test/shot.png",
-        instruction: "x",
-      }),
-      (error) => error instanceof NetworkError && /no (readable )?body/.test(error.message),
+      (error) => error instanceof NetworkError && /no bounded-readable body/.test(error.message),
     );
     assert.strictEqual(mcp.created.length, 0);
   });

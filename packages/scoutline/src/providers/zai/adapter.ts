@@ -521,13 +521,12 @@ async function readOcrSourceAsBase64(resolvedPath: string): Promise<string> {
  * the recorded MCP URL-unreliability pattern applied to the REST arm).
  * Returns the data-URI form the REST `file` value accepts.
  */
-/** Response shape the prefetch reads (JSON + headers + arrayBuffer). */
+/** Response shape the prefetch reads (bounded-readable body stream). */
 interface OcrPrefetchResponse {
   readonly ok: boolean;
   readonly status: number;
   readonly headers?: { get(name: string): string | null };
   readonly body?: ReadableStream<Uint8Array> | null;
-  arrayBuffer(): Promise<ArrayBuffer>;
 }
 
 async function prefetchOcrUrlAsDataUri(
@@ -557,39 +556,20 @@ async function prefetchOcrUrlAsDataUri(
   }
   // Incremental Stream Bounding: cap the download at the OCR media
   // rules' own ceilings (images ≤10MB, everything else — i.e. PDF —
-  // ≤50MB) instead of an unbounded arrayBuffer(). Primary path is the
-  // shared incremental reader (declared content-length is untrusted —
-  // chunked servers omit/understate it; the counter cancels the
-  // connection the moment the cap is crossed). Responses without a
-  // body stream (injected doubles, wrapped fetches satisfying the
-  // original arrayBuffer() seam contract) take the bounded fallback:
-  // content-length precheck where declared, post-read cap always.
-  // Neither read path → loud transport error, never silent-empty.
+  // ≤50MB) via the shared incremental reader (declared content-length
+  // is untrusted — chunked servers omit/understate it; the counter
+  // cancels the connection the moment the cap is crossed). A response
+  // without a body stream is refused outright: an arrayBuffer() read
+  // materializes before any check, which is exactly the unbounded
+  // class this path exists to kill, so no materialization path exists
+  // in any branch. Production fetch always supplies a body; injected
+  // doubles must too (wave-2 ruling).
+  if (!res.body) {
+    throw new NetworkError("Z.AI layout-parsing URL prefetch response provides no bounded-readable body");
+  }
   const isPdf = (res.headers?.get?.("content-type") ?? "").includes("pdf");
   const maxBytes = isPdf ? ZAI_OCR_MAX_PDF_BYTES : ZAI_OCR_MAX_IMAGE_BYTES;
-  let buffer: Buffer;
-  if (res.body) {
-    buffer = await readBoundedResponseBody(res.body, maxBytes, "URL prefetch size");
-  } else if (typeof res.arrayBuffer === "function") {
-    const declared = res.headers?.get?.("content-length");
-    const n = declared === null || declared === undefined ? NaN : Number.parseInt(declared, 10);
-    if (Number.isFinite(n) && n > maxBytes) {
-      throw new ValidationError(
-        `URL prefetch size (${n} bytes) exceeds the in-memory ceiling (${Math.round(maxBytes / (1024 * 1024))}MB).`,
-      );
-    }
-    const bytes = await res.arrayBuffer();
-    if (bytes.byteLength > maxBytes) {
-      throw new ValidationError(
-        `URL prefetch size (${bytes.byteLength} bytes) exceeds the in-memory ceiling (${Math.round(maxBytes / (1024 * 1024))}MB).`,
-      );
-    }
-    buffer = Buffer.from(bytes);
-  } else {
-    throw new NetworkError(
-      "Z.AI layout-parsing URL prefetch response has no readable body (neither stream nor arrayBuffer)",
-    );
-  }
+  const buffer = await readBoundedResponseBody(res.body, maxBytes, "URL prefetch size");
   const mime = res.headers?.get?.("content-type")?.split(";")[0] || "application/octet-stream";
   return `data:${mime};base64,${buffer.toString("base64")}`;
 }

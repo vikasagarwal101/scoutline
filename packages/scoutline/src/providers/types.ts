@@ -369,6 +369,24 @@ export type ProviderQuotaFetch = (
 ) => Promise<ProviderQuotaFetchResponse>;
 
 /**
+ * Injectable fetch response for the GLM-OCR layout-parsing REST arm
+ * (duck-typed). Extends the JSON shape with `body`: the prefetch path
+ * reads responses ONLY through the bounded incremental stream reader —
+ * an arrayBuffer() read cannot be incrementally bounded (wave-2/3
+ * ruling on #266), so the type REQUIRES a body stream. Injected
+ * doubles must supply one, exactly like production `fetch` does.
+ */
+export interface ProviderLayoutParsingFetchResponse extends ProviderQuotaFetchResponse {
+  readonly headers: { get(name: string): string | null };
+  readonly body: ReadableStream<Uint8Array>;
+}
+
+export type ProviderLayoutParsingFetch = (
+  input: string | URL,
+  init: Record<string, unknown>,
+) => Promise<ProviderLayoutParsingFetchResponse>;
+
+/**
  * Injectable fetch response for image transports (duck-typed). Extends
  * {@link ProviderQuotaFetchResponse} with the two fields an image
  * transport reads beyond JSON body parsing: `headers` (for MIME
@@ -441,7 +459,7 @@ export interface ZaiAdapterDependencies {
    * keeps the adapter silent — index.ts forwards to stderr in
    * production wiring.
    */
-  readonly layoutParsingFetch?: ProviderQuotaFetch;
+  readonly layoutParsingFetch?: ProviderLayoutParsingFetch;
   readonly notice?: (line: string) => void;
   /**
    * Optional cache-dir env override for the OCR cache (T3 seam —

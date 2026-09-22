@@ -34,6 +34,7 @@ import type {
   ProviderContext,
   ProviderDescriptor,
   ProviderQuotaFetch,
+  ProviderLayoutParsingFetch,
   ZaiAdapterClientPort,
   ZaiAdapterDependencies,
   ZaiMcpClientOptions,
@@ -474,7 +475,7 @@ interface ZaiVisionCapabilityOptions {
   readonly env: NodeJS.ProcessEnv;
   readonly clientFactory: NonNullable<ZaiAdapterDependencies["clientFactory"]>;
   /** GLM-OCR layout-parsing seam (glm-ocr lane T2, ADR-0014 D2/D5). */
-  readonly layoutParsingFetch?: ProviderQuotaFetch;
+  readonly layoutParsingFetch?: ProviderLayoutParsingFetch;
   /** Notice channel (D5): default silent; index.ts wires stderr. */
   readonly notice?: (line: string) => void;
   /**
@@ -521,29 +522,17 @@ async function readOcrSourceAsBase64(resolvedPath: string): Promise<string> {
  * the recorded MCP URL-unreliability pattern applied to the REST arm).
  * Returns the data-URI form the REST `file` value accepts.
  */
-/** Response shape the prefetch reads (bounded-readable body stream). */
-interface OcrPrefetchResponse {
-  readonly ok: boolean;
-  readonly status: number;
-  readonly headers?: { get(name: string): string | null };
-  readonly body?: ReadableStream<Uint8Array> | null;
-}
-
 async function prefetchOcrUrlAsDataUri(
   url: string,
-  fetchImpl: ProviderQuotaFetch | undefined,
+  fetchImpl: ProviderLayoutParsingFetch | undefined,
 ): Promise<string> {
   // Same duck-typed double shape other Z.AI transports use: the
-  // injected seam is the quota fetch (JSON-only); the ambient global
-  // fetch satisfies the wider headers/arrayBuffer view.
-  const f = ((input: string | URL, init: Record<string, unknown>) =>
-    fetchImpl
-      ? (fetchImpl(input, init) as unknown as Promise<OcrPrefetchResponse>)
-      : (globalThis.fetch(input as unknown as URL, init as unknown as RequestInit) as unknown as Promise<OcrPrefetchResponse>)) as (
-    input: string | URL,
-    init: Record<string, unknown>,
-  ) => Promise<OcrPrefetchResponse>;
-  let res: OcrPrefetchResponse;
+  // injected seam type REQUIRES a body stream (wave-3: refusal is
+  // seam policy, the type states it); the ambient global fetch
+  // satisfies it structurally.
+  const f = (fetchImpl ??
+    (globalThis.fetch as unknown as ProviderLayoutParsingFetch)) as ProviderLayoutParsingFetch;
+  let res: Awaited<ReturnType<typeof f>>;
   try {
     res = await f(url, { method: "GET" });
   } catch {
@@ -587,7 +576,7 @@ async function invokeZaiExtractTextOcrArm(
   request: ExtractTextRequest,
   apiKey: string,
   notice: (line: string) => void,
-  layoutParsingFetch: ProviderQuotaFetch | undefined,
+  layoutParsingFetch: ProviderLayoutParsingFetch | undefined,
   cacheEnv: NodeJS.ProcessEnv | undefined,
   ocrLedger: (attempt: number) => Promise<void>,
   adapterEnv: NodeJS.ProcessEnv,

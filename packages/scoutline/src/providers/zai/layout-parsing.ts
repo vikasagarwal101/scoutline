@@ -42,7 +42,7 @@ import {
   TimeoutError,
 } from "../../lib/errors.js";
 import { clampTimeoutMs } from "../../lib/timeout.js";
-import type { ProviderQuotaFetch } from "../types.js";
+import type { ProviderLayoutParsingFetch } from "../types.js";
 import { getGlobalFetch } from "../types.js";
 
 /** Plain (non-coding) base: PAYG billing is account-level (D2). */
@@ -57,7 +57,7 @@ const LAYOUT_PARSING_MODEL = "glm-ocr";
 
 /** Injectable transport dependencies (tests pass fakes for both). */
 export interface LayoutParsingDeps {
-  readonly fetch?: ProviderQuotaFetch;
+  readonly fetch?: ProviderLayoutParsingFetch;
   readonly env?: NodeJS.ProcessEnv;
 }
 
@@ -116,7 +116,7 @@ export async function parseLayout(
       ? { fetch: (request as LayoutParsingCall).fetch }
       : {}),
   };
-  const f = effectiveDeps.fetch ?? getGlobalFetch<ProviderQuotaFetch>();
+  const f = effectiveDeps.fetch ?? getGlobalFetch<ProviderLayoutParsingFetch>();
   const env = effectiveDeps.env ?? process.env;
   const base = request.baseUrl ?? DEFAULT_LAYOUT_PARSING_BASE;
   const url = `${base}${LAYOUT_PARSING_PATH}`;

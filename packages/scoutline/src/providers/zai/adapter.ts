@@ -66,6 +66,8 @@ import {
 } from "../../lib/mcp-client.js";
 import { buildLegacyRepositoryCacheKey, buildProviderCacheKey, readCacheInDir, writeCacheInDir, responseCacheDir } from "../../lib/cache.js";
 import { resolveTimeoutMs } from "./monitor-client.js";
+import { readBoundedResponseBody } from "../../lib/bounded-body.js";
+import { ZAI_OCR_MAX_IMAGE_BYTES, ZAI_OCR_MAX_PDF_BYTES } from "./media.js";
 import { applySearchTopic } from "../../lib/search-topic.js";
 import { isZaiConfigured, requireZaiApiKey } from "./credentials.js";
 import {
@@ -524,6 +526,7 @@ interface OcrPrefetchResponse {
   readonly ok: boolean;
   readonly status: number;
   readonly headers?: { get(name: string): string | null };
+  readonly body?: ReadableStream<Uint8Array> | null;
   arrayBuffer(): Promise<ArrayBuffer>;
 }
 
@@ -552,9 +555,21 @@ async function prefetchOcrUrlAsDataUri(
   if (!res.ok) {
     throw new ApiError("Z.AI layout-parsing URL prefetch failed", 422);
   }
-  const buffer = await res.arrayBuffer();
+  // Incremental Stream Bounding: cap the download at the OCR media
+  // rules' own ceilings (images ≤10MB, everything else — i.e. PDF —
+  // ≤50MB) instead of an unbounded arrayBuffer(). Declared
+  // content-length is ignored (chunked servers omit/understate it);
+  // the shared reader counts incrementally and cancels the connection
+  // the moment the cap is crossed. Oversize throws ValidationError
+  // (media-rule violation, same taxonomy as fetchUrlToTempPath).
+  const isPdf = (res.headers?.get?.("content-type") ?? "").includes("pdf");
+  const buffer = await readBoundedResponseBody(
+    res.body ?? null,
+    isPdf ? ZAI_OCR_MAX_PDF_BYTES : ZAI_OCR_MAX_IMAGE_BYTES,
+    "URL prefetch size",
+  );
   const mime = res.headers?.get?.("content-type")?.split(";")[0] || "application/octet-stream";
-  return `data:${mime};base64,${Buffer.from(buffer).toString("base64")}`;
+  return `data:${mime};base64,${buffer.toString("base64")}`;
 }
 
 /**
@@ -610,8 +625,12 @@ async function invokeZaiExtractTextOcrArm(
     if (isUrl && isFallbackEligibleError(error)) {
       // m1 (review): the catch guards the PREFETCH step only — a
       // failed retried parseLayout propagates its own taxonomy error
-      // (AC-2); only a failed prefetch is the terminal 422.
-      const dataUri = await prefetchOcrUrlAsDataUri(resolved, layoutParsingFetch).catch(() => {
+      // (AC-2); only a failed prefetch is the terminal 422. An oversize
+      // prefetch (media-rule ValidationError) propagates its own
+      // taxonomy too — it is a source property, not a transport
+      // failure, so it is not masked as 422.
+      const dataUri = await prefetchOcrUrlAsDataUri(resolved, layoutParsingFetch).catch((err) => {
+        if (err instanceof ValidationError) throw err;
         throw new ApiError("Z.AI layout-parsing URL prefetch failed", 422);
       });
       await ocrLedger(2);

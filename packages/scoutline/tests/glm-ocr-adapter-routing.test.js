@@ -26,7 +26,7 @@ import * as path from "node:path";
 
 import { createZaiDescriptor } from "../dist/providers/zai/adapter.js";
 import { getMcpToolName } from "../dist/lib/mcp-config.js";
-import { ApiError } from "../dist/lib/errors.js";
+import { ApiError, ValidationError } from "../dist/lib/errors.js";
 
 const ENV = { Z_AI_API_KEY: "test-zai-api-key-DO-NOT-LEAK" };
 const EXTRACT_TOOL = getMcpToolName("vision", "extract_text_from_screenshot");
@@ -331,6 +331,59 @@ describe("glm-ocr T2 — non-1113 propagation", () => {
       }),
       (error) => error instanceof ApiError && error.statusCode === 422,
     );
+    assert.strictEqual(mcp.created.length, 0);
+  });
+
+  it("oversize chunked prefetch (no content-length) streams past the 10MB image cap, then cancels the connection (ValidationError, not 422)", async () => {
+    const rest = makeLayoutRest();
+    rest.set(() => jsonResponse({ error: { code: "1210" } }, 422));
+    // Chunked double: declares NO content-length, emits 1MB chunks until
+    // cancelled. A correct bounded read cancels ~11 chunks in; an
+    // unbounded arrayBuffer() drains all of them.
+    const CHUNK = 1024 * 1024;
+    let served = 0;
+    let cancelled = false;
+    const oversizeFetch = async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      get body() {
+        const self = this;
+        return new ReadableStream({
+          pull(controller) {
+            if (cancelled) {
+              controller.close();
+              return;
+            }
+            served += CHUNK;
+            controller.enqueue(new Uint8Array(CHUNK));
+          },
+          cancel() {
+            cancelled = true;
+          },
+        });
+      },
+      arrayBuffer: async () => {
+        throw new Error("unbounded arrayBuffer reached — bounded read required");
+      },
+    });
+    oversizeFetch.calls = rest.calls;
+    const mcp = makeMcpFactory();
+    const adapter = makeAdapter({
+      rest: { calls: rest.calls, fetch: oversizeFetch },
+      mcp,
+      notices: makeNotices().notice,
+    });
+    await assert.rejects(
+      adapter.vision.invoke({
+        operation: "extract-text",
+        source: "https://example.test/shot.png",
+        instruction: "x",
+      }),
+      (error) => error instanceof ValidationError,
+    );
+    assert.strictEqual(cancelled, true, "stream cancelled at cap");
+    assert.ok(served <= 12 * 1024 * 1024, `read stopped at cap, served ${served}`);
     assert.strictEqual(mcp.created.length, 0);
   });
 });

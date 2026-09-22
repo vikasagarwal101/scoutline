@@ -34,6 +34,7 @@ import type {
   ProviderContext,
   ProviderDescriptor,
   ProviderQuotaFetch,
+  ProviderLayoutParsingFetch,
   ZaiAdapterClientPort,
   ZaiAdapterDependencies,
   ZaiMcpClientOptions,
@@ -66,6 +67,8 @@ import {
 } from "../../lib/mcp-client.js";
 import { buildLegacyRepositoryCacheKey, buildProviderCacheKey, readCacheInDir, writeCacheInDir, responseCacheDir } from "../../lib/cache.js";
 import { resolveTimeoutMs } from "./monitor-client.js";
+import { readBoundedResponseBody } from "../../lib/bounded-body.js";
+import { ZAI_OCR_MAX_IMAGE_BYTES, ZAI_OCR_MAX_PDF_BYTES } from "./media.js";
 import { applySearchTopic } from "../../lib/search-topic.js";
 import { isZaiConfigured, requireZaiApiKey } from "./credentials.js";
 import {
@@ -472,7 +475,7 @@ interface ZaiVisionCapabilityOptions {
   readonly env: NodeJS.ProcessEnv;
   readonly clientFactory: NonNullable<ZaiAdapterDependencies["clientFactory"]>;
   /** GLM-OCR layout-parsing seam (glm-ocr lane T2, ADR-0014 D2/D5). */
-  readonly layoutParsingFetch?: ProviderQuotaFetch;
+  readonly layoutParsingFetch?: ProviderLayoutParsingFetch;
   /** Notice channel (D5): default silent; index.ts wires stderr. */
   readonly notice?: (line: string) => void;
   /**
@@ -519,29 +522,17 @@ async function readOcrSourceAsBase64(resolvedPath: string): Promise<string> {
  * the recorded MCP URL-unreliability pattern applied to the REST arm).
  * Returns the data-URI form the REST `file` value accepts.
  */
-/** Response shape the prefetch reads (JSON + headers + arrayBuffer). */
-interface OcrPrefetchResponse {
-  readonly ok: boolean;
-  readonly status: number;
-  readonly headers?: { get(name: string): string | null };
-  arrayBuffer(): Promise<ArrayBuffer>;
-}
-
 async function prefetchOcrUrlAsDataUri(
   url: string,
-  fetchImpl: ProviderQuotaFetch | undefined,
+  fetchImpl: ProviderLayoutParsingFetch | undefined,
 ): Promise<string> {
   // Same duck-typed double shape other Z.AI transports use: the
-  // injected seam is the quota fetch (JSON-only); the ambient global
-  // fetch satisfies the wider headers/arrayBuffer view.
-  const f = ((input: string | URL, init: Record<string, unknown>) =>
-    fetchImpl
-      ? (fetchImpl(input, init) as unknown as Promise<OcrPrefetchResponse>)
-      : (globalThis.fetch(input as unknown as URL, init as unknown as RequestInit) as unknown as Promise<OcrPrefetchResponse>)) as (
-    input: string | URL,
-    init: Record<string, unknown>,
-  ) => Promise<OcrPrefetchResponse>;
-  let res: OcrPrefetchResponse;
+  // injected seam type REQUIRES a body stream (wave-3: refusal is
+  // seam policy, the type states it); the ambient global fetch
+  // satisfies it structurally.
+  const f = (fetchImpl ??
+    (globalThis.fetch as unknown as ProviderLayoutParsingFetch)) as ProviderLayoutParsingFetch;
+  let res: Awaited<ReturnType<typeof f>>;
   try {
     res = await f(url, { method: "GET" });
   } catch {
@@ -552,9 +543,24 @@ async function prefetchOcrUrlAsDataUri(
   if (!res.ok) {
     throw new ApiError("Z.AI layout-parsing URL prefetch failed", 422);
   }
-  const buffer = await res.arrayBuffer();
+  // Incremental Stream Bounding: cap the download at the OCR media
+  // rules' own ceilings (images ≤10MB, everything else — i.e. PDF —
+  // ≤50MB) via the shared incremental reader (declared content-length
+  // is untrusted — chunked servers omit/understate it; the counter
+  // cancels the connection the moment the cap is crossed). A response
+  // without a body stream is refused outright: an arrayBuffer() read
+  // materializes before any check, which is exactly the unbounded
+  // class this path exists to kill, so no materialization path exists
+  // in any branch. Production fetch always supplies a body; injected
+  // doubles must too (wave-2 ruling).
+  if (!res.body) {
+    throw new NetworkError("Z.AI layout-parsing URL prefetch response provides no bounded-readable body");
+  }
+  const isPdf = (res.headers?.get?.("content-type") ?? "").includes("pdf");
+  const maxBytes = isPdf ? ZAI_OCR_MAX_PDF_BYTES : ZAI_OCR_MAX_IMAGE_BYTES;
+  const buffer = await readBoundedResponseBody(res.body, maxBytes, "URL prefetch size");
   const mime = res.headers?.get?.("content-type")?.split(";")[0] || "application/octet-stream";
-  return `data:${mime};base64,${Buffer.from(buffer).toString("base64")}`;
+  return `data:${mime};base64,${buffer.toString("base64")}`;
 }
 
 /**
@@ -570,7 +576,7 @@ async function invokeZaiExtractTextOcrArm(
   request: ExtractTextRequest,
   apiKey: string,
   notice: (line: string) => void,
-  layoutParsingFetch: ProviderQuotaFetch | undefined,
+  layoutParsingFetch: ProviderLayoutParsingFetch | undefined,
   cacheEnv: NodeJS.ProcessEnv | undefined,
   ocrLedger: (attempt: number) => Promise<void>,
   adapterEnv: NodeJS.ProcessEnv,
@@ -610,9 +616,15 @@ async function invokeZaiExtractTextOcrArm(
     if (isUrl && isFallbackEligibleError(error)) {
       // m1 (review): the catch guards the PREFETCH step only — a
       // failed retried parseLayout propagates its own taxonomy error
-      // (AC-2); only a failed prefetch is the terminal 422.
-      const dataUri = await prefetchOcrUrlAsDataUri(resolved, layoutParsingFetch).catch(() => {
-        throw new ApiError("Z.AI layout-parsing URL prefetch failed", 422);
+      // (AC-2). Only EXPECTED transport failures (ApiError) remap to
+      // terminal 422. An oversize ValidationError pierces (media-rule
+      // source property, #266 AC) and an unexpected reader bug keeps
+      // its own identity — neither is masked as 422.
+      const dataUri = await prefetchOcrUrlAsDataUri(resolved, layoutParsingFetch).catch((err) => {
+        if (err instanceof ApiError) {
+          throw new ApiError("Z.AI layout-parsing URL prefetch failed", 422);
+        }
+        throw err;
       });
       await ocrLedger(2);
       const retried = await parseLayout({ apiKey, file: dataUri }, LAYOUT_PARSING_TIMERS, deps);

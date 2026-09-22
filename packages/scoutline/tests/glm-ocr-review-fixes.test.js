@@ -325,11 +325,13 @@ describe("glm-ocr review m1 — retried-parse failure keeps its taxonomy", () =>
         return {
           ok: true,
           status: 200,
-          text: async () => "",
-          json: async () => ({}),
           headers: { get: () => "image/png" },
-          arrayBuffer: async () =>
-            bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.length),
+          body: new ReadableStream({
+            start(controller) {
+              controller.enqueue(new Uint8Array(bytes));
+              controller.close();
+            },
+          }),
         };
       }
       return rest.fetch(url, init);

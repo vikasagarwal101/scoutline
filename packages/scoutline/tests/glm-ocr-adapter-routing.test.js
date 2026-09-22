@@ -26,7 +26,7 @@ import * as path from "node:path";
 
 import { createZaiDescriptor } from "../dist/providers/zai/adapter.js";
 import { getMcpToolName } from "../dist/lib/mcp-config.js";
-import { ApiError } from "../dist/lib/errors.js";
+import { ApiError, NetworkError, ValidationError } from "../dist/lib/errors.js";
 
 const ENV = { Z_AI_API_KEY: "test-zai-api-key-DO-NOT-LEAK" };
 const EXTRACT_TOOL = getMcpToolName("vision", "extract_text_from_screenshot");
@@ -280,7 +280,8 @@ describe("glm-ocr T2 — non-1113 propagation", () => {
         return jsonResponse({ md_results: "recovered via base64" });
       },
     );
-    // Prefetch fetch: serves the image bytes.
+    // Prefetch fetch: serves the image bytes as a stream (wave-2 seam
+    // contract — doubles supply body streams like production).
     const bytes = Buffer.from("fake-png-bytes");
     const restWithPrefetch = {
       calls: rest.calls,
@@ -289,10 +290,13 @@ describe("glm-ocr T2 — non-1113 propagation", () => {
           return {
             ok: true,
             status: 200,
-            text: async () => "",
-            json: async () => ({}),
             headers: { get: () => "image/png" },
-            arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.length),
+            body: new ReadableStream({
+              start(controller) {
+                controller.enqueue(new Uint8Array(bytes));
+                controller.close();
+              },
+            }),
           };
         }
         return rest.fetch(url, init);
@@ -330,6 +334,123 @@ describe("glm-ocr T2 — non-1113 propagation", () => {
         instruction: "x",
       }),
       (error) => error instanceof ApiError && error.statusCode === 422,
+    );
+    assert.strictEqual(mcp.created.length, 0);
+  });
+
+  it("oversize chunked prefetch (no content-length) streams past the 10MB image cap, then cancels the connection (ValidationError, not 422)", async () => {
+    const rest = makeLayoutRest();
+    rest.set(() => jsonResponse({ error: { code: "1210" } }, 422));
+    // Chunked double: declares NO content-length, emits 1MB chunks until
+    // cancelled. A correct bounded read cancels ~11 chunks in; an
+    // unbounded arrayBuffer() drains all of them.
+    const CHUNK = 1024 * 1024;
+    let served = 0;
+    let cancelled = false;
+    const oversizeFetch = async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      get body() {
+        const self = this;
+        return new ReadableStream({
+          pull(controller) {
+            if (cancelled) {
+              controller.close();
+              return;
+            }
+            served += CHUNK;
+            controller.enqueue(new Uint8Array(CHUNK));
+          },
+          cancel() {
+            cancelled = true;
+          },
+        });
+      },
+      arrayBuffer: async () => {
+        throw new Error("unbounded arrayBuffer reached — bounded read required");
+      },
+    });
+    oversizeFetch.calls = rest.calls;
+    const mcp = makeMcpFactory();
+    const adapter = makeAdapter({
+      rest: { calls: rest.calls, fetch: oversizeFetch },
+      mcp,
+      notices: makeNotices().notice,
+    });
+    await assert.rejects(
+      adapter.vision.invoke({
+        operation: "extract-text",
+        source: "https://example.test/shot.png",
+        instruction: "x",
+      }),
+      (error) => error instanceof ValidationError,
+    );
+    assert.strictEqual(cancelled, true, "stream cancelled at cap");
+    assert.ok(served <= 12 * 1024 * 1024, `read stopped at cap, served ${served}`);
+    assert.strictEqual(mcp.created.length, 0);
+  });
+
+  it("arrayBuffer-only double (no body stream) is refused outright — wave-2: no materialization path in any branch", async () => {
+    const rest = makeLayoutRest();
+    rest.set(() => jsonResponse({ error: { code: "1210" } }, 422));
+    // Legacy arrayBuffer-only shape: even under the cap, refusal is
+    // unconditional — the seam contract now REQUIRES a body stream.
+    const payload = new Uint8Array([1, 2, 3, 4]);
+    const arrayBufferOnlyFetch = async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: (name) => (name === "content-length" ? String(payload.byteLength) : null) },
+      arrayBuffer: async () => payload.buffer,
+    });
+    arrayBufferOnlyFetch.calls = rest.calls;
+    const mcp = makeMcpFactory();
+    const adapter = makeAdapter({
+      rest: { calls: rest.calls, fetch: arrayBufferOnlyFetch },
+      mcp,
+      notices: makeNotices().notice,
+    });
+    await assert.rejects(
+      adapter.vision.invoke({
+        operation: "extract-text",
+        source: "https://example.test/shot.png",
+        instruction: "x",
+      }),
+      (error) => error instanceof NetworkError && /no bounded-readable body/.test(error.message),
+    );
+    assert.strictEqual(mcp.created.length, 0);
+  });
+
+  it("an unexpected reader failure keeps its own identity (not remapped to 422)", async () => {
+    const rest = makeLayoutRest();
+    rest.set(() => jsonResponse({ error: { code: "1210" } }, 422));
+    const readerBugFetch = async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      body: new ReadableStream({
+        pull(controller) {
+          controller.error(new TypeError("reader implementation bug"));
+        },
+      }),
+      arrayBuffer: async () => {
+        throw new Error("arrayBuffer must not be reached when body exists");
+      },
+    });
+    readerBugFetch.calls = rest.calls;
+    const mcp = makeMcpFactory();
+    const adapter = makeAdapter({
+      rest: { calls: rest.calls, fetch: readerBugFetch },
+      mcp,
+      notices: makeNotices().notice,
+    });
+    await assert.rejects(
+      adapter.vision.invoke({
+        operation: "extract-text",
+        source: "https://example.test/shot.png",
+        instruction: "x",
+      }),
+      (error) => error instanceof TypeError && /reader implementation bug/.test(error.message),
     );
     assert.strictEqual(mcp.created.length, 0);
   });

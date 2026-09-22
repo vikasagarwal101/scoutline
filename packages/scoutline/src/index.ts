@@ -88,7 +88,7 @@ import {
   HISTORY_EXPORT_HELP,
 } from "./commands/history.js";
 import { handleFetch, FETCH_HELP } from "./commands/fetch.js";
-import { handleArchive, parseArchiveArgs, ARCHIVE_HELP } from "./commands/archive.js";
+import { handleArchive, parseArchiveTokens, ARCHIVE_HELP } from "./commands/archive.js";
 import { handleWatch } from "./commands/watch.js";
 import { handleScience } from "./commands/science.js";
 import {
@@ -6898,7 +6898,7 @@ export async function main(
       // the human table was never the flag's contract.
       // Determine the subcommand through the parser (not positional
       // assumption): options may precede `get`/`cdx`.
-      const archiveSubcommand = parseArchiveArgs(commandArgs).subcommand;
+      const archiveSubcommand = parseArchiveTokens(commandArgs).subcommand;
       const archiveOutputMode =
         forceRaw && outputFormat === undefined && archiveSubcommand === "get"
           ? ("compact" as OutputMode)

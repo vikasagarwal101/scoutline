@@ -1043,14 +1043,24 @@ export function parseArchiveArgs(args: readonly string[]): {
   readonly flags: Record<string, string | boolean>;
   readonly showHelp: boolean;
 } {
+  // #263: `--flag=value` ≡ `--flag value` (central seam). The EXPORTED
+  // entry normalizes for direct raw-argv callers (tests); main()'s
+  // dispatch path calls parseArchiveTokens with already-normalized
+  // tokens — the seam is single-application by construction (a second
+  // pass would re-split a produced VALUE that starts with `--` and
+  // contains `=`, breaking value preservation: `--foo=--bar=baz`).
+  return parseArchiveTokens(normalizeEqualsFormFlags(args));
+}
+
+export function parseArchiveTokens(tokens: readonly string[]): {
+  readonly subcommand?: string;
+  readonly positional: readonly string[];
+  readonly flags: Record<string, string | boolean>;
+  readonly showHelp: boolean;
+} {
   let showHelp = false;
   const flags: Record<string, string | boolean> = {};
   const positional: string[] = [];
-
-  // #263: `--flag=value` ≡ `--flag value` (central seam). Applied here
-  // because parseArchiveArgs is exported and callable with raw argv;
-  // through main() the tokens are already normalized.
-  const tokens = normalizeEqualsFormFlags(args);
 
   let i = 0;
   while (i < tokens.length) {
@@ -1135,7 +1145,9 @@ export async function handleArchive(
   deps: HandlerDependencies,
   forceRaw = false,
 ): Promise<number> {
-  const { subcommand, positional, flags, showHelp } = parseArchiveArgs(args);
+  // Single-application: main() normalized argv before dispatch; raw
+  // argv callers use parseArchiveArgs (the normalizing wrapper).
+  const { subcommand, positional, flags, showHelp } = parseArchiveTokens(args);
 
   if (showHelp || subcommand === undefined) {
     deps.invocation.writeStdout(ARCHIVE_HELP);

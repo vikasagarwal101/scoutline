@@ -29,7 +29,7 @@ import * as pathMod from "node:path";
 import assert from "node:assert/strict";
 
 import { main, normalizeEqualsFormFlags, STRICT_FLAG_ALLOWLIST } from "../dist/index.js";
-import { parseArchiveArgs } from "../dist/commands/archive.js";
+import { parseArchiveArgs, parseArchiveTokens } from "../dist/commands/archive.js";
 import { ValidationError } from "../dist/lib/errors.js";
 import { useTempConfigDir } from "./helpers/config-dir-pin.js";
 import { hermeticMainDeps } from "./helpers/hermetic-main.js";
@@ -262,4 +262,24 @@ describe("local equals-form guards removed (#263)", () => {
     assert.strictEqual(run.code, 1);
     assert.strictEqual(envelopeCode(run.stderr), "VALIDATION_ERROR");
   });
+
+  it("single application: a produced value starting with -- keeps its '=' (kody PR-278)", () => {
+    // `--foo=--bar=baz` must reach parsers as --foo + VALUE "--bar=baz".
+    // The regression shape (fixed): a second seam pass re-splits the
+    // value into --bar + baz, changing parsed state. The seam is
+    // single-application BY ARCHITECTURE: the exported wrapper
+    // (parseArchiveArgs) normalizes at the raw-argv boundary; internal
+    // dispatch paths (main → handleArchive → parseArchiveTokens) receive
+    // pre-normalized tokens and never re-apply. Mutation: making
+    // handleArchive re-normalize REDs this row via the flags assertion.
+    const once = normalizeEqualsFormFlags(["--foo=--bar=baz"]);
+    assert.deepEqual(once, ["--foo", "--bar=baz"]);
+    // Teeth: the internal single-application parser must never re-split
+    // a produced value. Mutation — adding normalize inside
+    // parseArchiveTokens (the double-application regression) — turns
+    // flags["bar=baz"] into flags.bar:"baz" and REDs here.
+    const tokens = parseArchiveTokens(["--foo", "--bar=baz"]);
+    assert.deepEqual(tokens.flags, { "bar=baz": true, foo: true });
+  });
+
 });

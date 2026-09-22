@@ -194,7 +194,7 @@ describe("extractPassages", () => {
 // ---------------------------------------------------------------------------
 describe("extractPassages (Unicode/CJK, issue #271)", () => {
   it("a CJK term matches inside unspaced CJK content", () => {
-    // Window terminators stay ASCII (.`!?`/newline) — ideographic 。
+    // ASCII-window rows here use ASCII separators; ideographic 。 IS a terminator since #276.
     // is not a terminator, so segments here use ". " separators.
     const passages = extractPassages({ content: "東京は人口が多い. 東京は速い.", terms: ["東京"] });
     assert.deepEqual(passages.map((p) => p.quote), ["東京は人口が多い.", "東京は速い."]);

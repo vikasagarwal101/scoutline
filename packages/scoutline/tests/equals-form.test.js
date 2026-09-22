@@ -134,6 +134,20 @@ const EQUIVALENCE_ROWS = [
 
 async function runHermeticMain(argv, extraEnv = {}) {
   const dir = await fsMod.mkdtemp(pathMod.join(osMod.tmpdir(), "scoutline-eq-"));
+  // Hermeticity (Mira PR-278): the archive row proceeds past parsing to
+  // the real CDX transport — without a fetch double this suite contacts
+  // the network twice per pass and the equivalence assertion can pass by
+  // accident of identical network failures. The refusing double makes
+  // every run deterministically network-free; the spy count proves the
+  // row reached the transport (past parse) without leaving the process.
+  const realFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls++;
+    // 404: non-retryable for the archive backoff (only 429/503 back off),
+    // so both runs fail fast and identically — no real sleeps, no network.
+    return new Response("hermetic 404 double (#263 suite)", { status: 404 });
+  };
   try {
     const { invocation, stderr } = makeInvocation();
     const deps = hermeticMainDeps({
@@ -141,8 +155,9 @@ async function runHermeticMain(argv, extraEnv = {}) {
       env: { SCOUTLINE_CONFIG_DIR: dir, ...extraEnv },
     });
     const code = await main(argv, deps);
-    return { code, stderr: stderr() };
+    return { code, stderr: stderr(), fetchCalls };
   } finally {
+    globalThis.fetch = realFetch;
     await fsMod.rm(dir, { recursive: true, force: true });
   }
 }
@@ -160,6 +175,10 @@ describe("#263 equals-form ≡ space-form through main()", () => {
       // drop would look like the flag was never passed (exit 0 / a
       // different envelope than the properly-parsed space form).
       assert.notStrictEqual(envelopeCode(equalsRun.stderr), "PARSE_ERROR");
+      // Determinism teeth: both forms traversed the SAME number of
+      // transport attempts through the refusing double (the archive row
+      // proves past-parse reachability hermetically — zero real network).
+      assert.strictEqual(equalsRun.fetchCalls, spaceRun.fetchCalls);
     });
   }
 

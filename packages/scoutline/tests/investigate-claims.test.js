@@ -134,6 +134,18 @@ describe("splitClaims (extract-grammar terminators; pure, no cap)", () => {
     assert.equal(splitClaims(nine).length, 9);
   });
 
+  it("ideographic terminators 。！？ split claims; clause commas ，、 do not (issue #276 shared grammar)", () => {
+    assert.deepEqual(splitClaims("東京は大きい。京都は静かです。"), [
+      "東京は大きい。",
+      "京都は静かです。",
+    ]);
+    assert.deepEqual(splitClaims("勝った！本当に？"), ["勝った！", "本当に？"]);
+    // ，、 are clause separators inside a sentence — one claim.
+    assert.deepEqual(splitClaims("東京、京都、大阪は日本の都市です。"), [
+      "東京、京都、大阪は日本の都市です。",
+    ]);
+  });
+
   it("deterministic: same statement → identical claim array (byte-stable)", () => {
     const a = splitClaims(STATEMENT);
     const b = splitClaims(STATEMENT);

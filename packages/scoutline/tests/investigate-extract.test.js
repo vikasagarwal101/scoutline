@@ -194,7 +194,7 @@ describe("extractPassages", () => {
 // ---------------------------------------------------------------------------
 describe("extractPassages (Unicode/CJK, issue #271)", () => {
   it("a CJK term matches inside unspaced CJK content", () => {
-    // Window terminators stay ASCII (.`!?`/newline) — ideographic 。
+    // ASCII-window rows here use ASCII separators; ideographic 。 IS a terminator since #276.
     // is not a terminator, so segments here use ". " separators.
     const passages = extractPassages({ content: "東京は人口が多い. 東京は速い.", terms: ["東京"] });
     assert.deepEqual(passages.map((p) => p.quote), ["東京は人口が多い.", "東京は速い."]);
@@ -211,5 +211,83 @@ describe("extractPassages (Unicode/CJK, issue #271)", () => {
     for (const p of extractPassages({ content, terms: ["速い"] })) {
       assert.strictEqual(content.slice(p.charRange[0], p.charRange[1]), p.quote);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #276 — ideographic window terminators. CJK prose has no spaces,
+// so sentences separate on 。 (U+3002) and the fullwidth ！？ forms. The
+// ASCII lookahead rule (terminator needs a following space) cannot apply
+// to them: unspaced scripts never satisfy it. Ownership mirrors the
+// ASCII pin — the ideographic terminator char belongs to its window;
+// any space/tab run after it (mixed-script text) is separator, owned by
+// neither. Clause commas （，、) are deliberately NOT terminators: they
+// separate clauses inside a sentence, not sentences.
+// ---------------------------------------------------------------------------
+describe("extractPassages (ideographic terminators, issue #276)", () => {
+  it("。 separates windows: CJK content yields one passage per sentence", () => {
+    // Three 。-terminated sentences, each containing 東京 (substr match,
+    // the #271 rule); the middle one without the term stays a window
+    // in the grammar but not a passage.
+    const passages = extractPassages({
+      content: "東京は人口が多い。京都は静かです。東京は速い。",
+      terms: ["東京"],
+    });
+    assert.deepEqual(passages.map((p) => p.quote), [
+      "東京は人口が多い。",
+      "東京は速い。",
+    ]);
+  });
+
+  it("fullwidth ！？ terminate too (the ideographic set is complete)", () => {
+    const passages = extractPassages({
+      content: "東京が勝った！大阪は負けた？東京は祝う。",
+      terms: ["東京"],
+    });
+    assert.deepEqual(passages.map((p) => p.quote), [
+      "東京が勝った！",
+      "東京は祝う。",
+    ]);
+  });
+
+  it("no lookahead required: 。 terminates at end-of-content and mid-run", () => {
+    // The ASCII space-lookahead cannot apply to unspaced scripts — 。！？
+    // terminate wherever they appear.
+    const passages = extractPassages({ content: "理由は不明。それでも東京。", terms: ["東京"] });
+    assert.deepEqual(passages.map((p) => p.quote), ["それでも東京。"]);
+  });
+
+  it("ownership pin: the ideographic terminator is owned by its window; space runs after it own nothing", () => {
+    const content = "最初の文。  次の文。";
+    const passages = extractPassages({ content, terms: ["文"] });
+    assert.deepEqual(passages.map((p) => p.quote), ["最初の文。", "次の文。"]);
+    assert.deepEqual(passages[0].charRange, [0, 5]);
+    // Second window starts after the two-space separator run.
+    assert.deepEqual(passages[1].charRange, [7, 11]);
+  });
+
+  it("clause commas ，、 are NOT terminators — one sentence stays one window", () => {
+    const passages = extractPassages({
+      content: "東京、京都、大阪は日本の都市です。",
+      terms: ["東京"],
+    });
+    assert.deepEqual(passages.map((p) => p.quote), ["東京、京都、大阪は日本の都市です。"]);
+  });
+
+  it("round-trip pin holds for ideographic-terminated passages", () => {
+    const content = "東京は人口が多い。京都は静かです。東京は速い。";
+    for (const p of extractPassages({ content, terms: ["東京"] })) {
+      assert.strictEqual(content.slice(p.charRange[0], p.charRange[1]), p.quote);
+    }
+  });
+
+  it("ASCII determinism: the ASCII grammar is unchanged (decimal guard, adjacency)", () => {
+    // 3.14 keeps its no-space decimal guard; ASCII terminators still
+    // need the space/EOF lookahead.
+    const passages = extractPassages({
+      content: "Pi is 3.14159 rounded. Alpha rust here. Beta rust there.",
+      terms: ["rust"],
+    });
+    assert.deepEqual(passages.map((p) => p.quote), ["Alpha rust here.", "Beta rust there."]);
   });
 });

@@ -2638,6 +2638,94 @@ describe("review r3: recall tokenize is Unicode-aware (coderabbit major)", () =>
       rmSync(artifactsDir, { recursive: true, force: true });
     }
   });
+
+  it("issue #277: an UNSPACED CJK query recalls its CJK entry through the shared tokenizeTerms seam", async () => {
+    // The pre-#277 private tokenizer was run-split: an unspaced CJK run
+    // became ONE giant token, so query/entry overlap scored ~zero. The
+    // shared seam (context-file.ts, #271) segments the run into word
+    // units — 「日本語」 recalls an entry whose query embeds 日本語.
+    const artifactsDir = makeTempDir("scoutline-recall-cjk-run-");
+    const { adapter, stdout, stderr } = makeAdapter();
+    try {
+      await r3Seed(artifactsDir, [
+        r3FullEntry({ requestId: "r-cjk-run-1", query: "日本語検索の履歴" }),
+        r3FullEntry({ requestId: "r-latin-2", query: "rust vs go", cacheKey: "r3-key-3" }),
+      ]);
+      const status = await main(
+        ["history", "recall", "日本語"],
+        r3RecallDeps(adapter, { artifactsDir }),
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      const envelope = r3Envelope(stdout);
+      assert.deepStrictEqual(
+        envelope.results.map((r) => r.requestId),
+        ["r-cjk-run-1"],
+        "unspaced CJK query must recall the embedding CJK entry (score > 0)",
+      );
+      assert.ok(envelope.results[0].score >= 1);
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("issue #277: ASCII recall stays byte-identical through the shared seam", async () => {
+    const artifactsDir = makeTempDir("scoutline-recall-ascii-pin-");
+    const { adapter, stdout, stderr } = makeAdapter();
+    try {
+      await r3Seed(artifactsDir, [
+        r3FullEntry({
+          requestId: "r-ascii-1",
+          query: "rust vs go benchmark",
+          skeleton: { results: [{ url: "https://example.com/rust", title: "rust benchmark" }] },
+        }),
+        r3FullEntry({ requestId: "r-ascii-2", query: "unrelated topic", cacheKey: "r3-key-4" }),
+      ]);
+      const status = await main(
+        ["history", "recall", "rust benchmark"],
+        r3RecallDeps(adapter, { artifactsDir }),
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      const envelope = r3Envelope(stdout);
+      assert.deepStrictEqual(
+        envelope.results.map((r) => r.requestId),
+        ["r-ascii-1"],
+      );
+      // Whole-word atomization survives: "rust" hits query(1) + url(1)
+      // + title(1) + "benchmark" query(1) + title(1) = 5.
+      assert.strictEqual(envelope.results[0].score, 5);
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("issue #277 review: snake_case identifiers recall exactly — underscore stays a word char on the ASCII path", async () => {
+    // Pre-#277 behavior pin: the legacy journal tokenizer kept `_` as
+    // a word char, so `foo_bar` was ONE atom. Routing through the
+    // shared seam's default grammar split it into foo+bar, matching
+    // unrelated entries (kody high, PR #279).
+    const artifactsDir = makeTempDir("scoutline-recall-snake-");
+    const { adapter, stdout, stderr } = makeAdapter();
+    try {
+      await r3Seed(artifactsDir, [
+        r3FullEntry({ requestId: "r-snake-1", query: "foo_bar experiment" }),
+        r3FullEntry({ requestId: "r-foo-only", query: "foo separate", cacheKey: "r3-key-5" }),
+        r3FullEntry({ requestId: "r-bar-only", query: "bar separate", cacheKey: "r3-key-6" }),
+      ]);
+      const status = await main(
+        ["history", "recall", "foo_bar"],
+        r3RecallDeps(adapter, { artifactsDir }),
+      );
+      assert.strictEqual(status, 0, `stderr=${JSON.stringify(stderr)}`);
+      const envelope = r3Envelope(stdout);
+      assert.deepStrictEqual(
+        envelope.results.map((r) => r.requestId),
+        ["r-snake-1"],
+        "foo_bar must recall the foo_bar entry, NOT the foo-only/bar-only entries",
+      );
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("review batch 1: fixes (PR #111)", () => {

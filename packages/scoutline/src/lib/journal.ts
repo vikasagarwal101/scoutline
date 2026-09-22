@@ -35,6 +35,7 @@ import {
 } from "./artifacts.js";
 import { FileError } from "./errors.js";
 import { redactSecrets } from "./redact.js";
+import { tokenizeTerms } from "./context-file.js";
 
 /** Capabilities that journal (PRD AC3); the seam is capability-driven so T3 extends, not rewrites. Science verticals (T7): the science NOUN is one capability — the search/get distinction lives in the skeleton shape (result list vs single row), matching the search-vs-read precedent. */
 export type JournalableCapability = "search" | "read" | "research" | "science";
@@ -729,17 +730,17 @@ export function buildNoteEntry(input: NoteInput): JournalLogEntry {
 // ---------------------------------------------------------------------------
 
 /**
- * Tokenize text for recall scoring: lowercase, split on non-word runs
- * (Unicode-aware: `\p{L}`/`\p{N}` keep accented Latin, Cyrillic, CJK
- * atoms intact so recall works over non-ASCII research; underscore
- * stays a word char so snake_case identifiers keep theirs), drop
- * empties. Deterministic — no stopwords, no stemming.
+ * Tokenize text for recall scoring via the SHARED term seam
+ * (context-file.ts tokenizeTerms, issue #277): the #271 Unicode
+ * word segmentation — an unspaced CJK run segments into word units
+ * instead of one giant token, so a CJK query recalls the CJK entries
+ * it embeds. keepUnderscore preserves the legacy ASCII tokenizer's
+ * snake_case behavior (identifiers stay one token — the pre-#277
+ * pin, restored per kody PR #279). Deterministic — no stopwords,
+ * no stemming.
  */
 function tokenize(text: string): string[] {
-  return text
-    .toLowerCase()
-    .split(/[^\p{L}\p{N}_]+/u)
-    .filter((token) => token.length > 0);
+  return tokenizeTerms(text, false, true);
 }
 
 /** The recall corpus of one full journal entry: query + skeleton text tokens. */

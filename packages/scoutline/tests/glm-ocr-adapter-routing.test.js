@@ -26,7 +26,7 @@ import * as path from "node:path";
 
 import { createZaiDescriptor } from "../dist/providers/zai/adapter.js";
 import { getMcpToolName } from "../dist/lib/mcp-config.js";
-import { ApiError, ValidationError } from "../dist/lib/errors.js";
+import { ApiError, NetworkError, ValidationError } from "../dist/lib/errors.js";
 
 const ENV = { Z_AI_API_KEY: "test-zai-api-key-DO-NOT-LEAK" };
 const EXTRACT_TOOL = getMcpToolName("vision", "extract_text_from_screenshot");
@@ -384,6 +384,131 @@ describe("glm-ocr T2 — non-1113 propagation", () => {
     );
     assert.strictEqual(cancelled, true, "stream cancelled at cap");
     assert.ok(served <= 12 * 1024 * 1024, `read stopped at cap, served ${served}`);
+    assert.strictEqual(mcp.created.length, 0);
+  });
+
+  it("arrayBuffer-only double (no body stream) uses the bounded fallback and still caps (oversize → ValidationError)", async () => {
+    const rest = makeLayoutRest();
+    rest.set(() => jsonResponse({ error: { code: "1210" } }, 422));
+    // Legacy double shape: satisfies the ORIGINAL arrayBuffer() seam
+    // contract, supplies no body stream. Content-length declared OVER
+    // the 10MB image cap → rejected on the precheck; the post-read cap
+    // catches underdeclared/undeclared servers.
+    const bigPayload = new Uint8Array(10 * 1024 * 1024 + 1);
+    const arrayBufferOnlyFetch = async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: (name) => (name === "content-length" ? String(bigPayload.byteLength) : null) },
+      arrayBuffer: async () => bigPayload.buffer,
+    });
+    arrayBufferOnlyFetch.calls = rest.calls;
+    const mcp = makeMcpFactory();
+    const adapter = makeAdapter({
+      rest: { calls: rest.calls, fetch: arrayBufferOnlyFetch },
+      mcp,
+      notices: makeNotices().notice,
+    });
+    await assert.rejects(
+      adapter.vision.invoke({
+        operation: "extract-text",
+        source: "https://example.test/shot.png",
+        instruction: "x",
+      }),
+      (error) => error instanceof ValidationError,
+    );
+    assert.strictEqual(mcp.created.length, 0);
+  });
+
+  it("arrayBuffer-only double under the cap still prefetches (fallback preserves the seam contract)", async () => {
+    const payload = new Uint8Array([1, 2, 3, 4]);
+    // Call 1: layout_parsing 422 (fallback-eligible). Call 2: the
+    // prefetch response — arrayBuffer-only legacy shape, under the
+    // 10MB cap. Call 3: the retried layout_parsing, JSON md_results.
+    let call = 0;
+    const arrayBufferOnlyFetch = async () => {
+      call += 1;
+      if (call === 1) return jsonResponse({ error: { code: "1210" } }, 422);
+      if (call === 2) {
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: (name) => (name === "content-length" ? String(payload.byteLength) : null) },
+          arrayBuffer: async () => payload.buffer,
+        };
+      }
+      return jsonResponse({ md_results: "recovered via base64" });
+    };
+    const mcp = makeMcpFactory();
+    const adapter = makeAdapter({
+      rest: { calls: [], fetch: arrayBufferOnlyFetch },
+      mcp,
+      notices: makeNotices().notice,
+    });
+    const result = await adapter.vision.invoke({
+      operation: "extract-text",
+      source: "https://example.test/shot.png",
+      instruction: "x",
+    });
+    assert.strictEqual(result, "recovered via base64");
+  });
+
+  it("response with NEITHER body NOR arrayBuffer is a loud transport error, never silent-empty", async () => {
+    const rest = makeLayoutRest();
+    rest.set(() => jsonResponse({ error: { code: "1210" } }, 422));
+    const hollowFetch = async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+    });
+    hollowFetch.calls = rest.calls;
+    const mcp = makeMcpFactory();
+    const adapter = makeAdapter({
+      rest: { calls: rest.calls, fetch: hollowFetch },
+      mcp,
+      notices: makeNotices().notice,
+    });
+    await assert.rejects(
+      adapter.vision.invoke({
+        operation: "extract-text",
+        source: "https://example.test/shot.png",
+        instruction: "x",
+      }),
+      (error) => error instanceof NetworkError && /no (readable )?body/.test(error.message),
+    );
+    assert.strictEqual(mcp.created.length, 0);
+  });
+
+  it("an unexpected reader failure keeps its own identity (not remapped to 422)", async () => {
+    const rest = makeLayoutRest();
+    rest.set(() => jsonResponse({ error: { code: "1210" } }, 422));
+    const readerBugFetch = async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      body: new ReadableStream({
+        pull(controller) {
+          controller.error(new TypeError("reader implementation bug"));
+        },
+      }),
+      arrayBuffer: async () => {
+        throw new Error("arrayBuffer must not be reached when body exists");
+      },
+    });
+    readerBugFetch.calls = rest.calls;
+    const mcp = makeMcpFactory();
+    const adapter = makeAdapter({
+      rest: { calls: rest.calls, fetch: readerBugFetch },
+      mcp,
+      notices: makeNotices().notice,
+    });
+    await assert.rejects(
+      adapter.vision.invoke({
+        operation: "extract-text",
+        source: "https://example.test/shot.png",
+        instruction: "x",
+      }),
+      (error) => error instanceof TypeError && /reader implementation bug/.test(error.message),
+    );
     assert.strictEqual(mcp.created.length, 0);
   });
 });

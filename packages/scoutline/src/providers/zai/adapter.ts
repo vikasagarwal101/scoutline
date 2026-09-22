@@ -557,17 +557,39 @@ async function prefetchOcrUrlAsDataUri(
   }
   // Incremental Stream Bounding: cap the download at the OCR media
   // rules' own ceilings (images ≤10MB, everything else — i.e. PDF —
-  // ≤50MB) instead of an unbounded arrayBuffer(). Declared
-  // content-length is ignored (chunked servers omit/understate it);
-  // the shared reader counts incrementally and cancels the connection
-  // the moment the cap is crossed. Oversize throws ValidationError
-  // (media-rule violation, same taxonomy as fetchUrlToTempPath).
+  // ≤50MB) instead of an unbounded arrayBuffer(). Primary path is the
+  // shared incremental reader (declared content-length is untrusted —
+  // chunked servers omit/understate it; the counter cancels the
+  // connection the moment the cap is crossed). Responses without a
+  // body stream (injected doubles, wrapped fetches satisfying the
+  // original arrayBuffer() seam contract) take the bounded fallback:
+  // content-length precheck where declared, post-read cap always.
+  // Neither read path → loud transport error, never silent-empty.
   const isPdf = (res.headers?.get?.("content-type") ?? "").includes("pdf");
-  const buffer = await readBoundedResponseBody(
-    res.body ?? null,
-    isPdf ? ZAI_OCR_MAX_PDF_BYTES : ZAI_OCR_MAX_IMAGE_BYTES,
-    "URL prefetch size",
-  );
+  const maxBytes = isPdf ? ZAI_OCR_MAX_PDF_BYTES : ZAI_OCR_MAX_IMAGE_BYTES;
+  let buffer: Buffer;
+  if (res.body) {
+    buffer = await readBoundedResponseBody(res.body, maxBytes, "URL prefetch size");
+  } else if (typeof res.arrayBuffer === "function") {
+    const declared = res.headers?.get?.("content-length");
+    const n = declared === null || declared === undefined ? NaN : Number.parseInt(declared, 10);
+    if (Number.isFinite(n) && n > maxBytes) {
+      throw new ValidationError(
+        `URL prefetch size (${n} bytes) exceeds the in-memory ceiling (${Math.round(maxBytes / (1024 * 1024))}MB).`,
+      );
+    }
+    const bytes = await res.arrayBuffer();
+    if (bytes.byteLength > maxBytes) {
+      throw new ValidationError(
+        `URL prefetch size (${bytes.byteLength} bytes) exceeds the in-memory ceiling (${Math.round(maxBytes / (1024 * 1024))}MB).`,
+      );
+    }
+    buffer = Buffer.from(bytes);
+  } else {
+    throw new NetworkError(
+      "Z.AI layout-parsing URL prefetch response has no readable body (neither stream nor arrayBuffer)",
+    );
+  }
   const mime = res.headers?.get?.("content-type")?.split(";")[0] || "application/octet-stream";
   return `data:${mime};base64,${buffer.toString("base64")}`;
 }
@@ -625,13 +647,15 @@ async function invokeZaiExtractTextOcrArm(
     if (isUrl && isFallbackEligibleError(error)) {
       // m1 (review): the catch guards the PREFETCH step only — a
       // failed retried parseLayout propagates its own taxonomy error
-      // (AC-2); only a failed prefetch is the terminal 422. An oversize
-      // prefetch (media-rule ValidationError) propagates its own
-      // taxonomy too — it is a source property, not a transport
-      // failure, so it is not masked as 422.
+      // (AC-2). Only EXPECTED transport failures (ApiError) remap to
+      // terminal 422. An oversize ValidationError pierces (media-rule
+      // source property, #266 AC) and an unexpected reader bug keeps
+      // its own identity — neither is masked as 422.
       const dataUri = await prefetchOcrUrlAsDataUri(resolved, layoutParsingFetch).catch((err) => {
-        if (err instanceof ValidationError) throw err;
-        throw new ApiError("Z.AI layout-parsing URL prefetch failed", 422);
+        if (err instanceof ApiError) {
+          throw new ApiError("Z.AI layout-parsing URL prefetch failed", 422);
+        }
+        throw err;
       });
       await ocrLedger(2);
       const retried = await parseLayout({ apiKey, file: dataUri }, LAYOUT_PARSING_TIMERS, deps);

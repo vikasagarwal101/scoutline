@@ -4,6 +4,10 @@
 
 ### Fixed
 
+- **Unicode/CJK term matching across the investigate pipeline (#271):** the shared term seam now segments non-ASCII input with `Intl.Segmenter` (fixed locale, word granularity — deterministic, byte-stable) instead of the ASCII-only tokenizer, so `investigate --verify` on a CJK statement corroborates against CJK content and CJK passages match in extraction. Pure-ASCII input keeps the legacy split verbatim (byte-identical by construction — the segmenter fuses ASCII punctuation like `3.14` into words, so the swap is scoped to non-ASCII text). Non-ASCII terms match as substrings inside passages (unspaced CJK has no word separators — a boundary-guarded matcher was structurally impossible); the 4-char ASCII term floor never applies to CJK segments (single characters are meaningful units); the 40-char cap is enforced inside the tokenizer (the segmenter dictionary-chunks long unspaced runs). Negation cues remain English literals — non-Latin contradiction detection stays out of scope.
+
+### Fixed
+
 - **OCR URL prefetch is incrementally bounded (#266):** the glm-ocr fallback's URL prefetch no longer accumulates the response via unbounded `arrayBuffer()` — it streams through the shared `readBoundedResponseBody` reader with an active byte counter and immediate cancel at the OCR media ceilings (10MB image / 50MB PDF; content-type selects the cap; declared `Content-Length` is ignored in favor of the counter — chunked servers understate it). An oversize prefetch is a media-rule violation (`VALIDATION_ERROR`), not a transport failure — it pierces the prefetch catch's terminal-422 remap exactly like its sibling `fetchUrlToTempPath` seam. Hostile or merely large URL sources can no longer OOM the process through the prefetch path.
 
 ## [0.24.0] - 2026-09-22

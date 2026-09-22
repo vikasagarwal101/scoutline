@@ -40,6 +40,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   NEGATION_CUES,
+  claimTerms,
   matchClaimsToEvidence,
   splitClaims,
 } from "../dist/lib/investigate-claims.js";
@@ -411,8 +412,10 @@ describe("matchClaimsToEvidence (Unicode/CJK, issue #271)", () => {
 
   it("CJK claim terms are Unicode-segmented (particles kept; no 4-char ASCII minimum)", () => {
     // Segments of "東京は速い。": 東京 / は / 速い (。 is not word-like).
-    // Verified through behavior: the corroborated row above proves the
-    // terms matched whole-word in CJK text (no space boundaries).
+    // Under the legacy ASCII tokenizer this claim yields ZERO terms
+    // (every segment is non-ASCII) — the corroborated row above is
+    // unreachable without the seam.
+    assert.deepEqual(claimTerms("東京は速い。"), ["東京", "は", "速い"]);
   });
 
   it("determinism: same CJK input twice → identical rows", () => {

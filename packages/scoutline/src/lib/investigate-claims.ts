@@ -220,7 +220,8 @@ function containsWholeWord(content: string, term: string): boolean {
  * (issue #271, apostrophe grammar — ASCII behavior byte-identical),
  * stopword-filtered, normalizeTerms-dedupe.
  */
-function claimTerms(claim: string): string[] {
+/** Exported for the #271 term-derivation pin (pure; test-observable). */
+export function claimTerms(claim: string): string[] {
   const tokens = tokenizeTerms(claim, true).filter((t) => !STOPWORD_SET.has(t));
   return normalizeTerms(tokens);
 }

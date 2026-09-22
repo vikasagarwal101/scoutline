@@ -21,6 +21,7 @@ import { invokeCommand } from "../command-invocation.js";
 import type { OutputMode } from "../lib/output.js";
 import { ValidationError, TimeoutError, NetworkError } from "../lib/errors.js";
 import { rejectSmuggledMaxChars } from "../lib/output-budget.js";
+import { normalizeEqualsFormFlags } from "../lib/equals-form.js";
 import { MAX_BUFFERED_RESPONSE_BYTES, readBoundedResponseBody } from "../lib/bounded-body.js";
 import type { HandlerDependencies } from "../index.js";
 import { DEFAULT_USER_AGENT, DEFAULT_FETCH_TIMEOUT_MS } from "./fetch.js";
@@ -1042,29 +1043,36 @@ export function parseArchiveArgs(args: readonly string[]): {
   readonly flags: Record<string, string | boolean>;
   readonly showHelp: boolean;
 } {
+  // #263: `--flag=value` ≡ `--flag value` (central seam). The EXPORTED
+  // entry normalizes for direct raw-argv callers (tests); main()'s
+  // dispatch path calls parseArchiveTokens with already-normalized
+  // tokens — the seam is single-application by construction (a second
+  // pass would re-split a produced VALUE that starts with `--` and
+  // contains `=`, breaking value preservation: `--foo=--bar=baz`).
+  return parseArchiveTokens(normalizeEqualsFormFlags(args));
+}
+
+export function parseArchiveTokens(tokens: readonly string[]): {
+  readonly subcommand?: string;
+  readonly positional: readonly string[];
+  readonly flags: Record<string, string | boolean>;
+  readonly showHelp: boolean;
+} {
   let showHelp = false;
   const flags: Record<string, string | boolean> = {};
   const positional: string[] = [];
 
   let i = 0;
-  while (i < args.length) {
-    const arg = args[i];
+  while (i < tokens.length) {
+    const arg = tokens[i];
     if (arg === undefined) break;
 
     if (arg === "--help" || arg === "-h") {
       showHelp = true;
       i++;
     } else if (arg.startsWith("--")) {
-      if (arg.includes("=")) {
-        // The `--flag=value` form is not supported: without this gate the
-        // token parses as a boolean flag under a garbage key
-        // ("timeout=300") and is silently dropped (#172 review F6).
-        throw new ValidationError(
-          `Invalid flag "${arg}": the --flag=value form is not supported; pass the value as the next argument.`,
-        );
-      }
       const key = arg.slice(2);
-      const next = args[i + 1];
+      const next = tokens[i + 1];
       if (next && !next.startsWith("-")) {
         flags[key] = next;
         i += 2;
@@ -1129,7 +1137,11 @@ function parseArchiveTimeout(raw: string | boolean | undefined): number | undefi
 }
 
 /**
- * Dispatcher handler for `archive` in `src/index.ts`.
+ * Dispatcher handler for `archive` in `src/index.ts`. INPUT CONTRACT:
+ * `args` are main()-normalized dispatch tokens (the equals-form seam has
+ * run). Raw-argv callers use {@link parseArchiveArgs} — the normalizing
+ * boundary; re-normalizing here would re-split produced values that
+ * start with `--` (the double-application defect, PR-278 review).
  */
 export async function handleArchive(
   args: string[],
@@ -1137,7 +1149,9 @@ export async function handleArchive(
   deps: HandlerDependencies,
   forceRaw = false,
 ): Promise<number> {
-  const { subcommand, positional, flags, showHelp } = parseArchiveArgs(args);
+  // Single-application: main() normalized argv before dispatch; raw
+  // argv callers use parseArchiveArgs (the normalizing wrapper).
+  const { subcommand, positional, flags, showHelp } = parseArchiveTokens(args);
 
   if (showHelp || subcommand === undefined) {
     deps.invocation.writeStdout(ARCHIVE_HELP);

@@ -1475,7 +1475,7 @@ describe("archive diff live-leg transport failures (#173)", () => {
 // and was silently dropped on every subcommand.
 // ---------------------------------------------------------------------------
 
-describe("archive --flag=value form rejection (#172 review F6)", () => {
+describe("archive --flag=value form (#172 review F6 → #263 central seam)", () => {
   function refusingFetch() {
     return async () => {
       throw new Error("network reached — flag should have been handled before any request");
@@ -1500,31 +1500,41 @@ describe("archive --flag=value form rejection (#172 review F6)", () => {
     }
   }
 
-  it("rejects the =-form for archive flags in parseArchiveArgs", () => {
-    assert.throws(() => parseArchiveArgs(["--timeout=300"]), ValidationError);
-    assert.throws(() => parseArchiveArgs(["--limit=50"]), ValidationError);
+  // #263: the #172 local rejection is GONE — `--flag=value` now parses
+  // as `--flag value` through the central seam (tests/equals-form.test.js
+  // owns the full contract). These rows pin the archive-local side of
+  // the old guard's removal.
+
+  it("parses the =-form for archive flags in parseArchiveArgs", () => {
+    const parsed = parseArchiveArgs(["--timeout=300"]);
+    assert.equal(parsed.flags.timeout, "300");
+    const parsedLimit = parseArchiveArgs(["--limit=50"]);
+    assert.equal(parsedLimit.flags.limit, "50");
   });
 
-  it("rejects --timeout=300 on cdx at parse level", { timeout: 5000 }, async () => {
+  it("runs --timeout=300 on cdx as the space form (no equals rejection)", { timeout: 10000 }, async () => {
+    // The refusing fetch proves the run reached the REQUEST with the
+    // flag accepted — under the #172 garbage-key parse the outcome was
+    // identical except the timeout was silently the default. The
+    // parse-level value pin lives in the parseArchiveArgs row above;
+    // here the contract is: exit 1, no equals-form rejection text.
     const { code, stderr } = await runMain(
       ["cdx", "https://example.com/*", "--timeout=300"],
       refusingFetch(),
     );
     assert.equal(code, 1);
-    assert.match(stderr, /VALIDATION_ERROR/);
-    assert.match(stderr, /--timeout=300/);
-    assert.match(stderr, /not supported/);
+    assert.match(stderr, /(NETWORK_ERROR|TIMEOUT_ERROR|VALIDATION_ERROR)/);
+    assert.ok(!/not supported/.test(stderr), "the #172 equals-form rejection is gone");
   });
 
-  it("rejects --timeout=300 on get at parse level", { timeout: 5000 }, async () => {
+  it("runs --timeout=300 on get as the space form (no equals rejection)", { timeout: 10000 }, async () => {
     const { code, stderr } = await runMain(
       ["get", "https://example.com/", "--timeout=300"],
       refusingFetch(),
     );
     assert.equal(code, 1);
-    assert.match(stderr, /VALIDATION_ERROR/);
-    assert.match(stderr, /--timeout=300/);
-    assert.match(stderr, /not supported/);
+    assert.match(stderr, /(NETWORK_ERROR|TIMEOUT_ERROR|VALIDATION_ERROR)/);
+    assert.ok(!/not supported/.test(stderr), "the #172 equals-form rejection is gone");
   });
 
   it("rejects --timeout above the Node setTimeout ceiling on cdx (coverage mirror of the diff pin)", { timeout: 5000 }, async () => {

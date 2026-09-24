@@ -275,6 +275,18 @@ describe("science noun dispatch + help", () => {
   });
 });
 
+// #280 L2: raw-argv equals-form parity — the exported parser applies
+// the #263 seam at its boundary, like parseArchiveArgs/parseWatchArgs.
+describe("science — raw-argv equals-form parity (#280 L2)", () => {
+  it("parseScienceArgs: --year=2020:2024 ≡ --year 2020:2024", async () => {
+    const { parseScienceArgs } = await import("../dist/commands/science.js");
+    const parsed = parseScienceArgs(["search", "attention", "--year=2020:2024"]);
+    assert.equal(parsed.subcommand, "search");
+    assert.equal(parsed.positional[0], "attention");
+    assert.equal(parsed.flags.year, "2020:2024");
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Parse-level rejections (TASKS T6 "parse-level rejections"; DESIGN D6;
 // PRD AC-7/AC-7b, AC-4b)

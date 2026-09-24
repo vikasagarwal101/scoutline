@@ -29,6 +29,7 @@ import type {
 } from "../command-invocation.js";
 import { invokeCommand } from "../command-invocation.js";
 import type { OutputMode } from "../lib/output.js";
+import { normalizeEqualsFormFlags } from "../lib/equals-form.js";
 import { ValidationError } from "../lib/errors.js";
 import { rejectSmuggledMaxChars } from "../lib/output-budget.js";
 import type { HandlerDependencies } from "../index.js";
@@ -167,8 +168,24 @@ export interface WatchListReport {
 /**
  * Parse CLI args for the watch command (the `parseArchiveArgs` shape:
  * `--help`-aware, leading `--flags` never displace the subcommand).
+ *
+ * #280 L2: the EXPORTED entry applies the #263 equals-form seam for
+ * direct raw-argv callers (tests) — `--keep=5` ≡ `--keep 5`. main()'s
+ * dispatch path calls parseWatchTokens with already-normalized tokens,
+ * keeping the seam single-application (a second pass would re-split a
+ * produced VALUE starting with `--` containing `=`, breaking value
+ * preservation: `--name=--foo=bar`).
  */
 export function parseWatchArgs(args: readonly string[]): {
+  readonly subcommand?: string;
+  readonly positional: readonly string[];
+  readonly flags: Record<string, string | boolean>;
+  readonly showHelp: boolean;
+} {
+  return parseWatchTokens(normalizeEqualsFormFlags(args));
+}
+
+export function parseWatchTokens(tokens: readonly string[]): {
   readonly subcommand?: string;
   readonly positional: readonly string[];
   readonly flags: Record<string, string | boolean>;
@@ -179,8 +196,8 @@ export function parseWatchArgs(args: readonly string[]): {
   const positional: string[] = [];
 
   let i = 0;
-  while (i < args.length) {
-    const arg = args[i];
+  while (i < tokens.length) {
+    const arg = tokens[i];
     if (arg === undefined) break;
 
     if (arg === "--help" || arg === "-h") {
@@ -188,7 +205,7 @@ export function parseWatchArgs(args: readonly string[]): {
       i++;
     } else if (arg.startsWith("--")) {
       const key = arg.slice(2);
-      const next = args[i + 1];
+      const next = tokens[i + 1];
       if (next && !next.startsWith("-")) {
         flags[key] = next;
         i += 2;
@@ -1010,7 +1027,9 @@ export async function handleWatch(
   deps: HandlerDependencies,
   isolated = false,
 ): Promise<number> {
-  const { subcommand, positional, flags, showHelp } = parseWatchArgs(args);
+  // args are main()-normalized dispatch tokens (the #263 seam has
+  // already applied) — parseWatchTokens, never the wrapper (#280 L2).
+  const { subcommand, positional, flags, showHelp } = parseWatchTokens(args);
 
   // Issue #105: watch flags arrive as raw kebab keys; `--max-chars` is
   // rejected at CLI parse time (UNSUPPORTED_OPTION — explicit --help

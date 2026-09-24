@@ -107,6 +107,19 @@ describe("scoutline watch command (T4)", () => {
       assert.equal(remove.flags.purge, true);
     });
 
+    it("#280 L2: raw-argv equals-form parity — --keep=5 ≡ --keep 5", () => {
+      const parsed = parseWatchArgs([
+        "add",
+        "https://example.com/docs",
+        "--name=docs",
+        "--keep=5",
+      ]);
+      assert.equal(parsed.subcommand, "add");
+      assert.equal(parsed.positional[0], "https://example.com/docs");
+      assert.equal(parsed.flags.name, "docs");
+      assert.equal(parsed.flags.keep, "5");
+    });
+
     it("rejects --keep outside 1..100, non-numeric, or valueless", async () => {
       for (const keep of ["0", "101", "abc", "1.5"]) {
         const r = await run(["watch", "add", "https://a.example/", "--keep", keep]);

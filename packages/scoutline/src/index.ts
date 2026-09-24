@@ -6519,15 +6519,18 @@ export async function main(
   // ADR-0007 D5 — rejection matrix, fired at parse time before any
   // dispatch: a command without an Output Budget ladder that carries
   // `--max-chars` rejects UNSUPPORTED_OPTION instead of accepting and
-  // dropping it. Uses the raw argv (any `--max-chars` token, valued or
-  // not — collectLongFlagValues only matches the exact flag form);
-  // subcommand-level ladder surfaces (repo search/read/brief) and repo
-  // tree's own rejection are decided downstream in `repo` handling. Help
-  // invocations stay exempt: `--help` is documentation, not a run.
-  // Grammar note (review T6): `--max-chars=500` and `--no-max-chars`
-  // forms are NOT matched — uniform CLI grammar, not a gate hole: the
-  // ladder surfaces are equally blind to those forms (no `=`-form flag
-  // support CLI-wide), so no accept-and-drop asymmetry exists.
+  // dropping it. Uses the #263-normalized argv (any `--max-chars`
+  // token, valued or not — collectLongFlagValues only matches the
+  // exact flag form); subcommand-level ladder surfaces (repo
+  // search/read/brief) and repo tree's own rejection are decided
+  // downstream in `repo` handling. Help invocations stay exempt:
+  // `--help` is documentation, not a run.
+  // Grammar note (#280, superseding review T6): since #263 the
+  // equals form IS matched — `--max-chars=500` normalizes to the
+  // space form before this gate and rejects identically
+  // (UNSUPPORTED_OPTION). `--no-max-chars` remains unmatched, but
+  // that is generic unknown-flag behavior (strict mode rejects it),
+  // not a gate asymmetry.
   if (
     !isHelpInvocation &&
     REJECT_MAX_CHARS_COMMANDS.has(command) &&
@@ -6546,7 +6549,8 @@ export async function main(
   // History-journal merge T2a — `--no-journal` is command-local (the
   // --max-chars pattern above): rejected at parse time on every command
   // outside the three journalable surfaces, so no accept-and-drop hole
-  // exists for a privacy flag. Uses raw argv like the max-chars gate;
+  // exists for a privacy flag. Uses the #263-normalized argv like the
+  // max-chars gate above (`--no-journal=1` rejects identically);
   // help invocations stay exempt (documentation, not a run).
   if (
     !isHelpInvocation &&

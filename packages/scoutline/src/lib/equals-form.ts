@@ -12,8 +12,11 @@
  * strict-flag gate, and every handler's parse, so all downstream token
  * walks (parseArgs, findUnknownStrictFlag, isCommandHelpInvocation,
  * collectLongFlagValues, isDryRunBatchInvocation) observe space-form
- * tokens only. parseArchiveArgs applies it directly because it is
- * exported and callable with raw argv (the tests do).
+ * tokens only. The exported raw-argv parsers (archive's
+ * parseArchiveArgs, watch's parseWatchArgs, science's parseScienceArgs)
+ * apply it directly because they are callable with raw argv (the tests
+ * do); their handlers consume already-normalized tokens via the
+ * parse<Tokens> inners, keeping the seam single-application.
  *
  * Semantics (deliberate rulings):
  *   - Splits on the FIRST '=' only, and only in `--`-prefixed tokens

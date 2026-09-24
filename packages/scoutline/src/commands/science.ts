@@ -37,6 +37,7 @@
 
 import type { CommandResult, SaveHook, TextOutputMode } from "../command-invocation.js";
 import { invokeCommand } from "../command-invocation.js";
+import { normalizeEqualsFormFlags } from "../lib/equals-form.js";
 import type {
   ScienceControls,
   ScienceGetRequest,
@@ -334,7 +335,21 @@ async function applyScienceOutputBudget(
 // never displace the subcommand)
 // ---------------------------------------------------------------------------
 
+// #280 L2: the EXPORTED entry applies the #263 equals-form seam for
+// direct raw-argv callers — `--year=2020` ≡ `--year 2020`. main()'s
+// dispatch path calls parseScienceTokens with already-normalized
+// tokens — single-application by construction (see parseArchiveArgs
+// for the full rationale).
 export function parseScienceArgs(args: readonly string[]): {
+  readonly subcommand?: string;
+  readonly positional: readonly string[];
+  readonly flags: Record<string, string | boolean>;
+  readonly showHelp: boolean;
+} {
+  return parseScienceTokens(normalizeEqualsFormFlags(args));
+}
+
+export function parseScienceTokens(tokens: readonly string[]): {
   readonly subcommand?: string;
   readonly positional: readonly string[];
   readonly flags: Record<string, string | boolean>;
@@ -344,15 +359,15 @@ export function parseScienceArgs(args: readonly string[]): {
   const flags: Record<string, string | boolean> = {};
   const positional: string[] = [];
   let i = 0;
-  while (i < args.length) {
-    const arg = args[i];
+  while (i < tokens.length) {
+    const arg = tokens[i];
     if (arg === undefined) break;
     if (arg === "--help" || arg === "-h") {
       showHelp = true;
       i++;
     } else if (arg.startsWith("--")) {
       const key = arg.slice(2);
-      const next = args[i + 1];
+      const next = tokens[i + 1];
       if (next && !next.startsWith("-")) {
         flags[key] = next;
         i += 2;
@@ -1063,7 +1078,9 @@ export async function handleScience(
   deps: HandlerDependencies,
   options: HandleScienceOptions = {},
 ): Promise<number> {
-  const { subcommand, positional, flags, showHelp } = parseScienceArgs(args);
+  // args are main()-normalized dispatch tokens (the #263 seam has
+  // already applied) — parseScienceTokens, never the wrapper (#280 L2).
+  const { subcommand, positional, flags, showHelp } = parseScienceTokens(args);
   // #140: `--no-cache` skips BOTH the response-cache read and write for
   // this invocation (house idiom: the valueless boolean flag form).
   const noCache = flags["no-cache"] === true;

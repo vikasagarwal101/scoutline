@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.24.2] - 2026-09-27
+
+### Fixed
+
+- **Equals-form parity at the exported raw-argv parsers + grammar-comment truth (#280):** `parseWatchArgs` and `parseScienceArgs` (exported from `dist/commands/watch.js` / `dist/commands/science.js`) now apply the #263 `--flag=value` ≡ `--flag value` seam at their raw-argv boundary, matching `parseArchiveArgs` — deep importers passing raw argv get identical grammar to the CLI. No production dispatch change: handlers consume already-normalized tokens through the new `parseWatchTokens`/`parseScienceTokens` inners (the seam stays single-application, so a produced value like `--name=--foo=bar` is never re-split). The stale pre-#263 grammar notes on the `--max-chars` and `--no-journal` pre-dispatch gates are corrected — both gates run on main()-normalized argv, so `--max-chars=500` and `--no-journal=1` reject identically to their space forms (the old "review T6" note claimed otherwise).
+
 ## [0.24.1] - 2026-09-22
 
 ### Added

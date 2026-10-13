@@ -424,6 +424,59 @@ per-claim `negationCues` count exists for exactly that re-judgment.
 `--max-chars` never cuts claim text or verdicts (evidence pointers
 drop last, whole); cost notices state "N claims × M arms".
 
+### Requirements mode (`investigate --requirements`, EXPERIMENTAL)
+
+`investigate --requirements <path|->` or `--requirements-json '<json>'`
+runs the requirements-driven engine instead of the EvidencePack
+pipeline: the document declares the authoritative question, scope
+tokens, and named fields (enum classifications or source-bound string
+values); unknown declarations reject BEFORE any acquisition. The result
+is a distinct envelope (`kind: "requirements-investigation"`):
+accepted-only `data`, per-field outcome rows, evidence with
+original/display digests, physical HTTP accounting, `resultSha256`.
+Exit 0 complete / 1 partial. Mutually exclusive with the positional
+question and `--verify/--synthesize/--context/--sources/--max-chars`.
+Semantic judge: `TYPESAFE_API_KEY` + `SCOUTLINE_JUDGE_TRANSMIT=1`
+(both or neither; absent judge = honest deterministic-only partial;
+a selected failing judge never silently downgrades). Executable bounded-transport
+suppliers only (tavily, exa, firecrawl, linkup, spider — search AND
+reader over an injected transport); provider precedence preserved
+(--provider > SCOUTLINE_PROVIDER > configured routing > quota-ranked
+pick > the existing zai default — snapshot-sensitive exactly as
+everywhere else: undefined snapshot keeps Z.AI, a real snapshot with
+only Tavily configured legitimately ranks Tavily; a supplier outside
+the subset fails closed, never a silent reroute). One finite physical
+ceiling is shared by acquisition, judge and an observing producer
+(`SCOUTLINE_REQUIREMENTS_MAX_PHYSICAL` may lower it to 1..48, never
+raise); an opaque injected producer reports an unknown count.
+
+### Caller-assisted Investigation (`investigate --caller-request`, EXPERIMENTAL)
+
+`investigate --caller-request <file|->` or `--caller-request-json '<json>'`
+executes one of five closed operations (`schemaVersion: 1`):
+`start` and `continue` are explicit bounded rounds over the retained
+requirements engine; `inspect`, `readEvidence` and `delete` are offline
+and credential-free. Requirements, proposal and supplied
+representation payloads are validated before HTTP; public/synthetic
+scope must be explicit. The caller gets a versioned handoff with
+revision/round identity, accepted values, every outcome row, evidence
+with original/display digests and cursors for the seven collection
+pages. `start/continue` use the same executable suppliers, provider
+precedence, judge consent pair, and shared physical ceiling as
+requirements mode. A created investigation retains complete verified
+results locally; `continue` validates `expectedRevision`; proposals
+bind only to current accessible redacted evidence and map to the
+original retained quote. Output paging is bounded with
+`maxChars` (1024..65536; mutating headers require at least 4096);
+whole metadata/body redaction runs before paging, and changed
+secret bases invalidate old cursors rather than mixing pages.
+`--provider`/`--no-cache` carry over.
+
+```bash
+scoutline investigate --requirements reqs.json
+cat reqs.json | scoutline investigate --requirements -
+```
+
 ## Commands
 
 | Command | Purpose | Help |

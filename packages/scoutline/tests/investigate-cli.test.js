@@ -27,6 +27,8 @@ import * as path from "node:path";
 
 import { main } from "../dist/index.js";
 import { INVESTIGATE_HELP } from "../dist/commands/investigate.js";
+import { INVESTIGATE_REQUIREMENTS_HELP } from "../dist/commands/investigate-requirements.js";
+import { INVESTIGATE_CALLER_HELP } from "../dist/commands/investigate-caller.js";
 import { hermeticMainDeps } from "./helpers/hermetic-main.js";
 import { withTempDir } from "./helpers/temp-dir.js";
 
@@ -267,7 +269,13 @@ describe("investigate: main() hermetic dispatch + output modes", () => {
     });
     assert.strictEqual(status, 0);
     assert.deepStrictEqual(stderr, []);
-    assert.strictEqual(stdout.join(""), INVESTIGATE_HELP);
+    // Requirements mode (unified-investigation) appends its own section
+    // to the same stdout surface; the plain-mode text above it is
+    // byte-identical.
+    assert.strictEqual(
+      stdout.join(""),
+      INVESTIGATE_HELP + INVESTIGATE_REQUIREMENTS_HELP + INVESTIGATE_CALLER_HELP,
+    );
   });
 });
 

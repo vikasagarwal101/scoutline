@@ -45,7 +45,7 @@
 
 import { createHash } from "node:crypto";
 import { ValidationError } from "./errors.js";
-import { COMPOSED_STOP_ROOTS } from "./lean-candidate-transport.js";
+import { COMPOSED_STOP_ROOTS } from "./lean-composed-stop.js";
 import {
   validateCandidates,
   acceptCandidate,

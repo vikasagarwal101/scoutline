@@ -17,7 +17,7 @@ import {
   buildLeanJevRequest,
   createLeanJevJudge,
   LEAN_JEV_THRESHOLD_REVISION,
-} from "../dist/lib/lean-jev-adapter.js";
+} from "../dev-dist/lean-jev-adapter.js";
 
 const CONFIG = {
   endpoint: "https://jev-dev.invalid/v1/systemone",

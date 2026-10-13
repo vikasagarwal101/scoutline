@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 const root =
   new URL("..", import.meta.url).pathname;
 const { buildCandidateJudgeRequest } = await import(`${root}/dist/lib/lean-candidates.js`);
-const { buildLunaRequestBody } = await import(`${root}/dist/lib/lean-candidate-transport.js`);
+const { buildLunaRequestBody } = await import(`${root}/dev-dist/lean-candidate-transport.js`);
 const digest = createHash("sha256").update("accepted version evidence").digest("hex");
 const depBindings = {
   version: { value: "2.4", evidenceId: "version-evidence", sourceDigest: digest },

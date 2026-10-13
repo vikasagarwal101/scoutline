@@ -5,7 +5,7 @@ import { offlineDeps } from "./unified-review-offline-deps.mjs";
 const root =
   new URL("..", import.meta.url).pathname;
 const { runLeanInvestigation } = await import(`${root}/dist/lib/lean-investigation.js`);
-const { buildLeanJevRequest } = await import(`${root}/dist/lib/lean-jev-adapter.js`);
+const { buildLeanJevRequest } = await import(`${root}/dev-dist/lean-jev-adapter.js`);
 test("dependent classification receives accepted dependency value and evidence revision", async () => {
   const c = structuredClone(inputs.find((x) => x.id === "grove-transitive-chain"));
   const { deps, calls } = offlineDeps(c);

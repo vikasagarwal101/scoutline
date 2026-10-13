@@ -38,7 +38,7 @@
 
 import { createHash } from "node:crypto";
 import { ValidationError } from "./errors.js";
-import { composedStopRootOf } from "./lean-candidate-transport.js";
+import { composedStopRootOf } from "./lean-composed-stop.js";
 import {
   buildCandidateJudgeRequest,
   type CandidateJudgeInput,
@@ -50,7 +50,26 @@ import type {
   LeanJudgeInput,
   LeanJudgeResponse,
 } from "./lean-investigation.js";
-import type { LeanJevFetchLike } from "./lean-jev-adapter.js";
+
+/**
+ * Bounded POST-only fetch shape for the official direct transport.
+ * Structurally identical to the development adapter's seam type; defined
+ * locally so the official adapter does not import the development module
+ * (package-route-boundary: the dev adapter must not ship in dist).
+ */
+export type LeanJevFetchLike = (input: string, init: {
+  method: "POST";
+  headers: Record<string, string>;
+  body: string;
+  redirect: "error";
+  signal: AbortSignal;
+}) => Promise<{
+  readonly status: number;
+  readonly ok: boolean;
+  readonly headers: { get(name: string): string | null };
+  readonly body: ReadableStream<Uint8Array> | null;
+  readonly text?: () => Promise<string>;
+}>;
 
 // ---------------------------------------------------------------------------
 // Fixed official contract — constants, not configuration

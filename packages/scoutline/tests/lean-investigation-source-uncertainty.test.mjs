@@ -4,7 +4,7 @@ import { runLeanInvestigation } from "../dist/lib/lean-investigation.js";
 import {
   runLeanJevJudgment,
   createLeanJevJudge,
-} from "../dist/lib/lean-jev-adapter.js";
+} from "../dev-dist/lean-jev-adapter.js";
 
 // Approved boolean|null policy; actual engine and native adapter, offline only.
 const SHARED = "Assess ExampleApp 2.4.0 CSV export.";

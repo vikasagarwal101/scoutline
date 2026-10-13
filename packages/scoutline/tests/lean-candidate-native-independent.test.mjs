@@ -7,7 +7,7 @@ import {
   runLunaExtraction,
   runCandidateJudge,
   buildLunaRequestBody,
-} from "../dist/lib/lean-candidate-transport.js";
+} from "../dev-dist/lean-candidate-transport.js";
 const ROOT =
   new URL("..", import.meta.url).pathname;
 const config = {

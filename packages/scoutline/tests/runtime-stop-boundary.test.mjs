@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { runLunaExtraction } from "../dist/lib/lean-candidate-transport.js";
+import { runLunaExtraction } from "../dev-dist/lean-candidate-transport.js";
 const config = {
   endpoint: "https://fixture.invalid/no-network",
   model: "fixture",

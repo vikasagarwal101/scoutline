@@ -59,7 +59,7 @@ import { createHash } from "node:crypto";
 import { promisify } from "node:util";
 
 import { compileLeanContract, runLeanInvestigation } from "../dist/lib/lean-investigation.js";
-import { createLeanJevJudge } from "../dist/lib/lean-jev-adapter.js";
+import { createLeanJevJudge } from "../dev-dist/lean-jev-adapter.js";
 import { resolveTypesafeJudgeProfile } from "../dist/lib/lean-typesafe-judge.js";
 import { createLeanAcquisitionDeps } from "../dist/lib/lean-acquisition-bridge.js";
 import { createTavilyDescriptor } from "../dist/providers/tavily/adapter.js";

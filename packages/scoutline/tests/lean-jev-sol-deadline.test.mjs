@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import vm from "node:vm";
-import { runLeanJevJudgment } from "../dist/lib/lean-jev-adapter.js";
+import { runLeanJevJudgment } from "../dev-dist/lean-jev-adapter.js";
 
 const ROOT =
   new URL("..", import.meta.url).pathname;

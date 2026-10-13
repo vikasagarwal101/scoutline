@@ -5,7 +5,7 @@ import { offlineDeps } from "./unified-review-offline-deps.mjs";
 const root =
   new URL("..", import.meta.url).pathname;
 const { runLeanInvestigation } = await import(`${root}/dist/lib/lean-investigation.js`);
-const { createLeanJevJudge } = await import(`${root}/dist/lib/lean-jev-adapter.js`);
+const { createLeanJevJudge } = await import(`${root}/dev-dist/lean-jev-adapter.js`);
 test("actual native classification wrapper consumes remaining run timeout and disposes delayed body", async () => {
   const c = structuredClone(inputs[0]);
   c.contract.requirements = { csv: c.contract.requirements.csv };

@@ -224,14 +224,20 @@ describe("scoutline package — root export and metadata", () => {
     );
   });
 
-  it("manifest files allowlist is exactly [bin, dist, skills]", async () => {
+  it("manifest allowlist includes only shipped surfaces and explicit temporary-adapter exclusions", async () => {
     const pkg = await loadPackageJson();
     // skills/ joined the allowlist when the agent skill moved into the
     // package (see tests/skill-shipping.test.js for the shipping pins).
     assert.deepStrictEqual(
       pkg.files,
-      ["bin", "dist", "skills"],
-      'package.json "files" allowlist must be exactly ["bin", "dist", "skills"]',
+      [
+        "bin",
+        "dist",
+        "skills",
+        "!dist/lib/lean-jev-adapter.*",
+        "!dist/lib/lean-candidate-transport.*",
+      ],
+      'package.json "files" must restrict shipped surfaces and exclude stale temporary adapters',
     );
   });
 });
@@ -295,6 +301,86 @@ describe("scoutline package — npm pack contents", () => {
       [],
       `pack must exclude tests/fixtures/docs/credentials: ${offenders.join("; ")}`,
     );
+  });
+
+  it("excludes temporary dev-route adapters and their stale compiled artifacts (package-route-boundary)", async () => {
+    const out = await runNpmPackDryRun();
+    const files = (out[0] && out[0].files) || [];
+    const paths = files.map((f) => f.path);
+
+    // The development transports (dev/lean-jev-adapter.ts,
+    // dev/lean-candidate-transport.ts) are repo-only: never under src,
+    // dist, bin, skills, dev/, dev-dist/, or any packed path. This also
+    // catches a STALE dist/ artifact from an older build (tsc does not
+    // delete removed outputs), so a polluted dist cannot re-leak them.
+    const offenders = paths.filter((p) => /lean-jev-adapter|lean-candidate-transport/.test(p));
+    assert.deepStrictEqual(
+      offenders,
+      [],
+      `temporary dev-route artifacts leaked into pack: ${offenders.join("; ")}`,
+    );
+
+    // The neutral stop contract REPLACED the production dependency on the
+    // candidate transport; the shipped engine must not import it either.
+    const stopRoots = await fs.readFile(
+      path.join(PACKAGE_ROOT, "dist", "lib", "lean-composed-stop.js"),
+      "utf8",
+    );
+    assert.ok(
+      stopRoots.includes("COMPOSED_STOP_ROOTS"),
+      "dist/lib/lean-composed-stop.js must exist and define COMPOSED_STOP_ROOTS",
+    );
+  });
+
+  it("package allowlist excludes temporary adapters from a polluted dist", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-pack-dev-boundary-"));
+    try {
+      const pkg = await loadPackageJson();
+      await fs.writeFile(
+        path.join(dir, "package.json"),
+        JSON.stringify({
+          name: pkg.name,
+          version: pkg.version,
+          files: pkg.files,
+        }),
+      );
+      await fs.mkdir(path.join(dir, "dist", "lib"), { recursive: true });
+      await fs.writeFile(path.join(dir, "dist", "index.js"), "export const retained = true;\n");
+      for (const name of ["lean-jev-adapter", "lean-candidate-transport"]) {
+        for (const suffix of [".js", ".js.map", ".d.ts", ".d.ts.map"]) {
+          await fs.writeFile(
+            path.join(dir, "dist", "lib", name + suffix),
+            "stale development artifact\n",
+          );
+        }
+      }
+      const output = await new Promise((resolve, reject) => {
+        const child = spawn("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
+          cwd: dir,
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        let stdout = "",
+          stderr = "";
+        child.stdout.on("data", (d) => {
+          stdout += d;
+        });
+        child.stderr.on("data", (d) => {
+          stderr += d;
+        });
+        child.on("error", reject);
+        child.on("close", (code) => (code === 0 ? resolve(stdout) : reject(new Error(stderr))));
+      });
+      const parsed = JSON.parse(output);
+      const entry = Array.isArray(parsed) ? parsed[0] : Object.values(parsed)[0];
+      const paths = entry.files.map((file) => file.path);
+      assert.ok(paths.includes("dist/index.js"));
+      assert.deepEqual(
+        paths.filter((p) => /lean-jev-adapter|lean-candidate-transport/.test(p)),
+        [],
+      );
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("package summary reports a non-trivial tarball size", async () => {

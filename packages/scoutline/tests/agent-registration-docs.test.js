@@ -135,7 +135,10 @@ const changelog = fs.readFile(new URL("../../../CHANGELOG.md", import.meta.url),
 // section gained the sanctioned "Caller-assisted Investigation"
 // subsection (five closed operations, judge/runtime and retained-evidence
 // boundaries, bounded paging/redaction). No other body copy changed.
-const SKILL_BODY_SHA256 = "4b03124514821d0229125a52810861b948bd33679fae3c87612bc927c3696081";
+// Rebaselined at the package-route-boundary correction: the requirements
+// subsection gained the official-route verification-scope sentence
+// (fake-HTTP fixtures only, not live-attested). No other body copy changed.
+const SKILL_BODY_SHA256 = "b5c48ad2f5c89fa96a0d7a0858e9f52e7459afb1b2360b4282003c5df5624e40";
 
 // AC-10 budget: codex/qwen load name+description before any body
 // byte; the old enumeration (~1500 chars) blows the disclosure

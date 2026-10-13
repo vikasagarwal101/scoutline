@@ -438,7 +438,10 @@ Exit 0 complete / 1 partial. Mutually exclusive with the positional
 question and `--verify/--synthesize/--context/--sources/--max-chars`.
 Semantic judge: `TYPESAFE_API_KEY` + `SCOUTLINE_JUDGE_TRANSMIT=1`
 (both or neither; absent judge = honest deterministic-only partial;
-a selected failing judge never silently downgrades). Executable bounded-transport
+a selected failing judge never silently downgrades). The official
+TypeSafe route is verified only against fake-HTTP protocol fixtures —
+no live-attested service operation or calibrated accuracy is claimed.
+Executable bounded-transport
 suppliers only (tavily, exa, firecrawl, linkup, spider — search AND
 reader over an injected transport); provider precedence preserved
 (--provider > SCOUTLINE_PROVIDER > configured routing > quota-ranked

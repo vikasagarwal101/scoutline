@@ -6,7 +6,7 @@ import * as pure from "../dist/lib/lean-candidates.js";
 import {
   runLunaExtraction,
   runCandidateJudge,
-} from "../dist/lib/lean-candidate-transport.js";
+} from "../dev-dist/lean-candidate-transport.js";
 const ROOT =
   new URL("..", import.meta.url).pathname;
 const rawOutput =

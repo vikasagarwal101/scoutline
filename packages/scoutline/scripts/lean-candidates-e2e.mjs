@@ -20,7 +20,7 @@
  */
 import { readFileSync } from "node:fs";
 import { validateCandidates, assessCandidates, acceptCandidate, candidateSourceDigest, buildCandidateJudgeRequest } from "../dist/lib/lean-candidates.js";
-import { runLunaExtraction, runCandidateJudge } from "../dist/lib/lean-candidate-transport.js";
+import { runLunaExtraction, runCandidateJudge } from "../dev-dist/lean-candidate-transport.js";
 
 const args = process.argv.slice(2);
 const LIVE = args.includes("--live");

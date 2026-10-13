@@ -31,3 +31,5 @@ CLAUDE.md
 .commandcode/
 .agents/
 .commandcode/
+# Development-only compiled adapters (package-route-boundary; never packed)
+/packages/*/dev-dist/

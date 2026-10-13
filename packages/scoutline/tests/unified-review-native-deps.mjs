@@ -6,10 +6,10 @@ import { offlineDeps } from "./unified-review-offline-deps.mjs";
 const root =
   new URL("..", import.meta.url).pathname;
 const { runLunaExtraction, runCandidateJudge } = await import(
-  `${root}/dist/lib/lean-candidate-transport.js`
+  `${root}/dev-dist/lean-candidate-transport.js`
 );
 const { buildCandidateJudgeRequest } = await import(`${root}/dist/lib/lean-candidates.js`);
-const { createLeanJevJudge } = await import(`${root}/dist/lib/lean-jev-adapter.js`);
+const { createLeanJevJudge } = await import(`${root}/dev-dist/lean-jev-adapter.js`);
 const hash = (x) => createHash("sha256").update(x).digest("hex");
 const p = (x) => (x === null ? 0.5 : x ? 0.97 : 0.01);
 const config = (model) => ({

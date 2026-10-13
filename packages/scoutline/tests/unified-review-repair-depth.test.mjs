@@ -5,7 +5,7 @@ import { offlineDeps } from "./unified-review-offline-deps.mjs";
 const root =
   new URL("..", import.meta.url).pathname;
 const { runLeanInvestigation } = await import(`${root}/dist/lib/lean-investigation.js`);
-const { runLunaExtraction } = await import(`${root}/dist/lib/lean-candidate-transport.js`);
+const { runLunaExtraction } = await import(`${root}/dev-dist/lean-candidate-transport.js`);
 const single = () => {
   const c = structuredClone(inputs[0]);
   c.contract.requirements = { version: c.contract.requirements.version };

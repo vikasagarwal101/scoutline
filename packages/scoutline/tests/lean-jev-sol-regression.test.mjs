@@ -6,7 +6,7 @@ import { runLeanInvestigation } from "../dist/lib/lean-investigation.js";
 import {
   runLeanJevJudgment,
   createLeanJevJudge,
-} from "../dist/lib/lean-jev-adapter.js";
+} from "../dev-dist/lean-jev-adapter.js";
 
 const ROOT =
   new URL("..", import.meta.url).pathname;

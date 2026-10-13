@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 const root =
   new URL("..", import.meta.url).pathname;
 const { runLeanInvestigation } = await import(`${root}/dist/lib/lean-investigation.js`);
-const { createLeanJevJudge } = await import(`${root}/dist/lib/lean-jev-adapter.js`);
+const { createLeanJevJudge } = await import(`${root}/dev-dist/lean-jev-adapter.js`);
 const config = {
   endpoint: "https://fixture.invalid/no-network",
   model: "fixture",

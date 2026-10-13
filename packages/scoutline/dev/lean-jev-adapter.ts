@@ -42,9 +42,9 @@
  */
 
 import { createHash } from "node:crypto";
-import { ValidationError } from "./errors.js";
-import { composedStopRootOf } from "./lean-candidate-transport.js";
-import type { LeanJudgeInput, LeanJudgeResponse } from "./lean-investigation.js";
+import { ValidationError } from "../dist/lib/errors.js";
+import { composedStopRootOf } from "../dist/lib/lean-composed-stop.js";
+import type { LeanJudgeInput, LeanJudgeResponse } from "../dist/lib/lean-investigation.js";
 
 // ---------------------------------------------------------------------------
 // Runtime config (no defaults — caller supplies everything)

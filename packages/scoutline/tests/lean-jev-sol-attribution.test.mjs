@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
   buildLeanJevRequest,
   runLeanJevJudgment,
-} from "../dist/lib/lean-jev-adapter.js";
+} from "../dev-dist/lean-jev-adapter.js";
 
 // Offline native construction and mapping proof; no semantic-quality claim.
 const documents = [

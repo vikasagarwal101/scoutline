@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { runLeanInvestigation } from "../dist/lib/lean-investigation.js";
-import { createLeanJevJudge } from "../dist/lib/lean-jev-adapter.js";
+import { createLeanJevJudge } from "../dev-dist/lean-jev-adapter.js";
 const config = {
   endpoint: "https://fixture.invalid/no-network",
   model: "fixture",

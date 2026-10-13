@@ -23,7 +23,7 @@
  *   optional: JEV_DEV_ALLOW_HTTP=1, JEV_DEV_ALLOWED_MODELS=<comma list>
  */
 import { runLeanInvestigation } from "../dist/lib/lean-investigation.js";
-import { createLeanJevJudge } from "../dist/lib/lean-jev-adapter.js";
+import { createLeanJevJudge } from "../dev-dist/lean-jev-adapter.js";
 
 const GLOBAL_ATTEMPT_CAP = 12;
 const OUTER_BOUND_MS = 180_000;

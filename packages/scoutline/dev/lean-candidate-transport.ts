@@ -29,8 +29,9 @@
  */
 
 import { createHash } from "node:crypto";
-import { ValidationError } from "./errors.js";
-import type { CandidateJudgeInput } from "./lean-candidates.js";
+import { ValidationError } from "../dist/lib/errors.js";
+import { composedStopRootOf } from "../dist/lib/lean-composed-stop.js";
+import type { CandidateJudgeInput } from "../dist/lib/lean-candidates.js";
 
 // ---------------------------------------------------------------------------
 // Shared transport core (single derivation of the deadline discipline)
@@ -188,29 +189,6 @@ async function nativePost<T>(
     }
   }
 }
-
-/**
- * FINITE composed-run stop-root vocabulary (trust boundary): a stop
- * reason is preserved through normalization ONLY when the error is the
- * approved stop type (code EVAL_STOPPED) AND the reason is EXACTLY one
- * of the declared roots. Anything else — wrong code, unknown/oversized/
- * arbitrary "global_"-prefixed strings, private dependency text — is
- * DISCARDED without serializing the raw marker. Ordinary network/
- * timeout/auth/protocol classification is untouched.
- */
-export const COMPOSED_STOP_ROOTS: ReadonlySet<string> = new Set([
-  "global_extraction_cap",
-  "global_judgment_cap",
-  "global_deadline",
-]);
-export function composedStopRootOf(error: unknown): string | null {
-  if (!(error instanceof Error)) return null;
-  const code = (error as { code?: unknown }).code;
-  const reason = (error as { reason?: unknown }).reason;
-  if (code !== "EVAL_STOPPED") return null;
-  if (typeof reason !== "string") return null;
-  return COMPOSED_STOP_ROOTS.has(reason) ? reason : null;
-};
 
 async function nativePostInner<T>(
   config: TransportConfig,

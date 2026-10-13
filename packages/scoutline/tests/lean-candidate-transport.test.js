@@ -15,7 +15,7 @@ import {
   runLunaExtraction,
   runCandidateJudge,
   buildLunaRequestBody,
-} from "../dist/lib/lean-candidate-transport.js";
+} from "../dev-dist/lean-candidate-transport.js";
 import { buildCandidateJudgeRequest } from "../dist/lib/lean-candidates.js";
 
 const LUNA_CONFIG = {

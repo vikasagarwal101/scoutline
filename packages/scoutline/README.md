@@ -588,7 +588,11 @@ complete / 1 partial. Mutually exclusive with the positional question
 and plain-mode controls. Semantic judging is explicit:
 `TYPESAFE_API_KEY` + `SCOUTLINE_JUDGE_TRANSMIT=1` (both or neither —
 credentials alone are not consent; an absent judge keeps an honest
-deterministic-only partial, never a silent downgrade). Experimental:
+deterministic-only partial, never a silent downgrade). The official
+TypeSafe route is implemented against the documented protocol and
+verified only with fake-HTTP fixtures — it is NOT live-attested: no
+real account operation or calibrated semantic accuracy is claimed.
+Experimental:
 executable bounded-transport supplier subset (tavily, exa, firecrawl,
 linkup, spider — each serving search AND reader over an injected
 transport), no retention/ZDR promises, value production without a

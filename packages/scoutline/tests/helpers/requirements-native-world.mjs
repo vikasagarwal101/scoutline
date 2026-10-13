@@ -2,7 +2,7 @@
 import { createTavilyDescriptor } from "../../dist/providers/tavily/adapter.js";
 import { createTypesafeJudge } from "../../dist/lib/lean-typesafe-judge.js";
 import assert from "node:assert/strict";
-import { runLunaExtraction } from "../../dist/lib/lean-candidate-transport.js";
+import { runLunaExtraction } from "../../dev-dist/lean-candidate-transport.js";
 
 export function nativeRuntime({
   noJudge = false,

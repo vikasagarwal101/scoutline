@@ -625,15 +625,21 @@ operation: `start` and `continue` execute one explicit bounded round
 with the same compiler, explicit provider/judge wiring and shared
 physical ceiling as requirements mode; `inspect`, `readEvidence`, and
 `delete` are offline, credential-free record operations. Every start or
-continue declares `dataScope: "public" | "synthetic"`; invalid scope,
-private/binary material, unknown keys, malformed bindings and output
-header bounds reject before any HTTP. The response is
+continue declares `dataScope: "public" | "synthetic"`; this is a caller
+assertion, not a privacy classifier — the tool rejects a declared
+`private` scope and unsupported formats, unknown keys, malformed
+bindings and output header bounds before any HTTP, but cannot detect
+every sensitive fact inside public-labelled pasted text. The response is
 `kind: "caller-assisted-investigation"` with investigation reference,
 revision, settled round identity, fulfillment counts, current outcome
 rows, retained evidence derivatives (original and redacted-display
 digests), usage accounting, and cursors for the seven paged
 collections (`evidence`, `outcomes`, `proposals`, `assessments`,
-`changes`, `gaps`, `rounds`). The caller proposes values only against
+`changes`, `gaps`, `rounds`). The handoff header carries a compact
+physical-attempt summary (stage counts, admission, total) with the
+attempt rows marked incomplete and located in the paged `assessments`
+collection, which retains the complete validated native ledger. The
+caller proposes values only against
 accessible current redacted evidence; bindings must be UTF-16 half-open
 ranges whose quote maps to a unique original retained quote. `continue`
 requires the current `expectedRevision` and may acknowledge an

@@ -36,9 +36,46 @@ const REQUIREMENTS = {
   },
 };
 
+// Every helper-created root is registered for failure-safe cleanup: the
+// after-hook removes exactly the directories this run created (native
+// children settled first), never pre-existing owner tmp trees.
+const ownedRoots = new Set();
+const activeChildren = new Set();
+const trackedSpawn = (...args) => {
+  const child = spawn(...args);
+  activeChildren.add(child);
+  child.once("exit", () => activeChildren.delete(child));
+  return child;
+};
 function tempRoot() {
-  return fs.mkdtemp(path.join(os.tmpdir(), "rrs-"));
+  return fs.mkdtemp(path.join(os.tmpdir(), "rrs-")).then((p) => {
+    ownedRoots.add(p);
+    return p;
+  });
 }
+const cleanupFailures = [];
+test.after(async () => {
+  // Native children (spawned writers) must exit before their trees vanish.
+  for (const child of activeChildren) {
+    if (child.exitCode === null) await new Promise((resolve) => child.once("exit", resolve));
+  }
+  // Attempt EVERY owned root; a genuine deletion failure must surface and
+  // fail the suite (reported per-root) rather than pass green with leaked
+  // test trees. test.after failures add to — never replace — body failures.
+  for (const root of ownedRoots) {
+    try {
+      await fs.rm(root, { recursive: true, force: true });
+    } catch (error) {
+      cleanupFailures.push(`${root}: ${error?.message ?? error}`);
+    }
+  }
+  if (cleanupFailures.length > 0) {
+    throw new Error(
+      `temp-root cleanup failed for ${cleanupFailures.length}/${ownedRoots.size} owned roots:\n` +
+        cleanupFailures.join("\n"),
+    );
+  }
+});
 
 async function created(root) {
   const store = openStore({ root });
@@ -194,7 +231,7 @@ test("cross-process live holder blocks contender; kernel releases on exit; succe
   const root = await tempRoot();
   const { store, ref } = await created(root);
   const dir = path.join(root, "investigations", ref);
-  const child = spawn(
+  const child = trackedSpawn(
     process.execPath,
     ["-e", `
       const net = require("node:net");
@@ -230,7 +267,7 @@ test("SIGSTOP'd holder remains owner past any nominal stale age", async () => {
   const { store, ref } = await created(root);
   const dir = path.join(root, "investigations", ref);
   // child acquires ownership THROUGH the real store API, then parks.
-  const child = spawn(
+  const child = trackedSpawn(
     process.execPath,
     [
       "--input-type=module",
@@ -471,7 +508,7 @@ test("unacknowledged incomplete marker blocks a fresh owner's round; acknowledgm
   const { store, ref } = await created(root);
   const dir = path.join(root, "investigations", ref);
   // child becomes the real owner via the store API, begins a round, parks.
-  const child = spawn(
+  const child = trackedSpawn(
     process.execPath,
     [
       "--input-type=module",

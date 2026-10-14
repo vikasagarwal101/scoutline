@@ -14,6 +14,7 @@ test('compiled preflight: closed request/private/binary/header limits reject wit
     {schemaVersion:1,operation:'continue',investigationRef:'../escape',expectedRevision:1},
     {schemaVersion:1,operation:'readEvidence',investigationRef:'../escape',representationId:'x',digest:'x'},
     {schemaVersion:1,operation:'delete',investigationRef:'../escape'},
+    {schemaVersion:1,operation:'toString'}, {schemaVersion:1,operation:'constructor'}, {schemaVersion:1,operation:'__proto__'},
   ];
   for(const request of invalid) {
     const r=await bin(state,request,{env:{REVIEW_REFUSE_HTTP:'1'}});

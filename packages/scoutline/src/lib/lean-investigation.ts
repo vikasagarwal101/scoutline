@@ -590,7 +590,21 @@ export function compileLeanContract(input: unknown): LeanCompiledContract {
       if (!isNonEmptyString(key) || typeof value !== "string") {
         throw new ValidationError("scope keys must be non-empty and values strings.");
       }
+      // Same reserved-key screen as field ids below: a JSON `__proto__` key
+      // would invoke the legacy setter and be silently lost, not retained as
+      // an own property — reject preflight rather than dropping the declared
+      // scope. `constructor`/`prototype` stay allowed unless own-keyed.
+      if (key === "__proto__") {
+        throw new ValidationError(
+          `scope key "__proto__" is reserved and cannot be declared.`,
+        );
+      }
       scope[key] = value;
+    }
+    if (Object.hasOwn(input.scope, "constructor") || Object.hasOwn(input.scope, "prototype")) {
+      throw new ValidationError(
+        `scope key "constructor"/"prototype" is reserved and cannot be declared.`,
+      );
     }
   }
 

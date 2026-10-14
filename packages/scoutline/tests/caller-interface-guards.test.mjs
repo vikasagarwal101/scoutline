@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import {createHash} from 'node:crypto';
-import { api,sandbox,contract,content } from './helpers/caller-review-harness.mjs';
+import { api,sandbox,contract,content,bin,output,noHTTP,root } from './helpers/caller-review-harness.mjs';
 const {executeCallerInvestigation:run}=await api();
 const hash=s=>'sha256:'+createHash('sha256').update(s).digest('hex');
 function localWorld() {
@@ -105,11 +107,68 @@ test('I04 historical complete result pages persist, current cursors stale after 
   const rounds=(await collection(next,'rounds',options)).items;
   assert.ok(rounds.some(r=>r.resultAccess.revision===h.revision),'historical result access manifested');
 });
-test('I05 variable header actually fits prework or rejects before dispatch',async()=>{
-  const w=localWorld(),s=await sandbox();
-  const requirements={...contract,requirements:{['long-field-'.repeat(1800)]:{question:'Which exact release?',schema:{type:'string'}}}};
-  await assert.rejects(run({schemaVersion:1,operation:'start',requirements,dataScope:'synthetic',maxChars:4096},{storeRoot:s.env.SCOUTLINE_INVESTIGATIONS_DIR,deps:w.deps}));
-  assert.equal(w.calls.length,0,'minimum header refused only after paid work');
+test('I05 supported 4096 header fits and assessments paging retains the exact physical ledger offline',async()=>{
+  const requirements={...contract,requirements:Object.fromEntries(['a'.repeat(64),'b'.repeat(64),'c'.repeat(64)].map((id,i)=>[id,{question:`Which audit value ${i}?`,schema:{type:'string'}}]))};
+  const s=await sandbox();
+  const request={schemaVersion:1,operation:'start',requirements,dataScope:'synthetic',maxChars:4096};
+  // Audit witness stimulus: exact retried-read preload clone (REVIEW_RETRIED_READ), no judge
+  // configured — synthetic acquisition key only, judge selection disabled (unset, not empty).
+  const result=await bin(s,request,{env:{REVIEW_RETRIED_READ:'1',TYPESAFE_API_KEY:undefined,SCOUTLINE_JUDGE_TRANSMIT:undefined}});
+  const dispatches=result.events.filter(e=>e.url).length;
+  assert.equal(dispatches,38,'exact audit witness dispatch trace');
+  assert.ok(result.stdout,`committed bounded handoff must be delivered, not a bare validation error: ${result.stderr}`);
+  assert.equal(result.code,1,`partial no-judge round settles exit 1, not 0: ${result.stderr}`);
+  const header=JSON.parse(result.stdout);
+  assert.equal(header.kind,'caller-assisted-investigation');
+  assert.equal(header.status,'partial');assert.equal(header.stopReason,'no-judge-evidence-retained');
+  assert.ok(header.investigationRef,'bounded handoff retains committed reference');
+  assert.equal(header.revision,1);
+  assert.ok(JSON.stringify(header).length<=4096,'serialized header fits maxChars character bound');
+  assert.ok(!Array.isArray(header.physical.attempts),'summary never embeds full attempt rows');
+  assert.equal(header.physical.stages.acquisition,38);assert.equal(header.physical.total,38);
+  assert.equal(header.physical.detail,'summary');assert.equal(header.physical.detailLocation,'assessments');
+  assert.equal(header.physical.detailIncomplete,true,'omitted attempt rows cannot read as complete snapshot');
+  const offlineEnv={REVIEW_REFUSE_HTTP:'1',TAVILY_API_KEY:undefined,TYPESAFE_API_KEY:undefined,SCOUTLINE_JUDGE_TRANSMIT:undefined};
+  const inspected=await bin(s,{schemaVersion:1,operation:'inspect',investigationRef:header.investigationRef,collection:'assessments',maxChars:16384},{env:offlineEnv});
+  assert.equal(inspected.code,0,inspected.stderr);noHTTP(inspected);
+  const assessments=JSON.parse(output(inspected).content);
+  assert.equal(assessments.length,1);
+  const snapshot=assessments[0].physical;
+  assert.equal(snapshot.schemaVersion,1);assert.equal(snapshot.source,'handler-owned-native-ledger');assert.equal(snapshot.cutoff,'locally-settled');
+  assert.equal(snapshot.attempts.length,38,'full persisted ledger intact');
+  const traceUrls=result.events.filter(e=>e.url);
+  assert.equal(snapshot.stages.acquisition,traceUrls.length,'stored count equals native trace dispatches');
+  assert.equal(snapshot.attempts.filter(a=>a.phase==='acquisition').length,traceUrls.length,'one ledger row per actual dispatch');
+  assert.equal(snapshot.total,38);assert.deepEqual(Object.keys(snapshot).sort(),['admission','attempts','cutoff','knownSubtotal','reservationsRefused','schemaVersion','source','stages','total']);
+  // Raw-storage parity (public dist API, no local projection replica): the
+  // paged assessments snapshot must be deep-equal to the raw stored
+  // record.payload.physical, and that stored snapshot must pass the actual
+  // CallerPhysicalSnapshot validator.
+  const {readCallerRecord}=await import(pathToFileURL(join(root,'dist/lib/lean-caller-rounds.js')));
+  const {validateCallerPhysical}=await import(pathToFileURL(join(root,'dist/lib/caller-physical.js')));
+  const raw=await readCallerRecord(s.env.SCOUTLINE_INVESTIGATIONS_DIR,header.investigationRef);
+  validateCallerPhysical(raw.payload.physical);
+  assert.deepEqual(snapshot,raw.payload.physical,'paged full snapshot deep-equals raw stored ledger');
+  // Historical revision: safe continue to revision 2, then inspect revision 1
+  // offline — its recovered full ledger must still equal the original 38.
+  const cont=await bin(s,{schemaVersion:1,operation:'continue',investigationRef:header.investigationRef,expectedRevision:1,requirements,dataScope:'synthetic',maxChars:4096},{env:{REVIEW_RETRIED_READ:'1',TYPESAFE_API_KEY:undefined,SCOUTLINE_JUDGE_TRANSMIT:undefined}});
+  assert.equal(cont.code,1,cont.stderr);
+  const h2=JSON.parse(cont.stdout);
+  assert.equal(h2.revision,2,'continuation committed revision 2');
+  const hist=await bin(s,{schemaVersion:1,operation:'inspect',investigationRef:header.investigationRef,revision:1,collection:'assessments',maxChars:16384},{env:offlineEnv});
+  assert.equal(hist.code,0,hist.stderr);noHTTP(hist);
+  const histAssessments=JSON.parse(output(hist).content);
+  assert.deepEqual(histAssessments[0].physical,snapshot,'historical revision retains the exact original full ledger');
+  // One-field control: same stimulus, 1 field — 30 dispatches, same compact contract.
+  const s1=await sandbox();
+  const oneField={...request,requirements:{...contract,requirements:Object.fromEntries(['a'.repeat(64)].map((id)=>[id,{question:'Which audit value 0?',schema:{type:'string'}}]))}};
+  const r1=await bin(s1,oneField,{env:{REVIEW_RETRIED_READ:'1',TYPESAFE_API_KEY:undefined,SCOUTLINE_JUDGE_TRANSMIT:undefined}});
+  assert.equal(r1.events.filter(e=>e.url).length,30,'one-field witness dispatch trace');
+  assert.equal(r1.code,1,r1.stderr);
+  const h1=JSON.parse(r1.stdout);
+  assert.ok(h1.investigationRef);assert.ok(JSON.stringify(h1).length<=4096);
+  assert.equal(h1.physical.stages.acquisition,30);assert.equal(h1.physical.total,30);
+  assert.equal(h1.physical.detailIncomplete,true);
 });
 test('I06 delete active ownership denied; safe-owned delete; missing ref typed',async()=>{
   const {h,options}=await setup();

@@ -37,15 +37,18 @@ export function validateCallerRequest(value: unknown): asserts value is Obj {
   const v = value as Obj;
   const common = ["schemaVersion", "operation", "maxChars"];
   const mutation = ["requirements", "dataScope", "roundLimits", "representations", "leads"];
-  const allowed: Record<string, string[]> = {
-    start: [...common, ...mutation],
-    continue: [...common, ...mutation, "investigationRef", "expectedRevision", "proposals", "acknowledgeInterruptedRound"],
-    inspect: [...common, "investigationRef", "revision", "collection", "cursor"],
-    readEvidence: [...common, "investigationRef", "revision", "representationId", "digest", "cursor", "range"],
-    delete: ["schemaVersion", "operation", "investigationRef"],
-  };
-  object(v, allowed[v?.operation] ?? [], "caller request");
-  if (v.schemaVersion !== 1 || !allowed[v.operation]) throw new ValidationError("Caller request requires schemaVersion 1 and a supported operation.");
+  // Own-property operation map: a prototype-named operation ("toString",
+  // "constructor", "__proto__") must fall through to the typed unsupported-
+  // operation rejection, never read inherited values as key arrays.
+  const allowed = new Map<string, string[]>([
+    ["start", [...common, ...mutation]],
+    ["continue", [...common, ...mutation, "investigationRef", "expectedRevision", "proposals", "acknowledgeInterruptedRound"]],
+    ["inspect", [...common, "investigationRef", "revision", "collection", "cursor"]],
+    ["readEvidence", [...common, "investigationRef", "revision", "representationId", "digest", "cursor", "range"]],
+    ["delete", ["schemaVersion", "operation", "investigationRef"]],
+  ]);
+  object(v, allowed.get(v?.operation as string) ?? [], "caller request");
+  if (v.schemaVersion !== 1 || !allowed.has(v.operation as string)) throw new ValidationError("Caller request requires schemaVersion 1 and a supported operation.");
   if (v.operation !== "start") string(v.investigationRef, "investigation reference", 128);
   if (v.maxChars !== undefined && (!Number.isSafeInteger(v.maxChars) || v.maxChars < 1024 || v.maxChars > 65536)) throw new ValidationError("maxChars must be an integer in 1024..65536.");
   // ponytail: fixed supported three-field header ceiling; recompute if the contract grows.
@@ -131,7 +134,12 @@ async function view(options: CallerInvestigationOptions, ref: string, revision?:
     round:{id:record.roundId,status:"settled",intent:record.intent}, status:result.status,stopReason:record.payload.stopReason,
     fulfillment:{satisfied:Object.values(result.requirements).filter(r=>r.status==="satisfied").length,total:Object.keys(result.requirements).length},
     definitions:safe(record.payload.definitions,secrets),
-    usage:result.usage, ...(record.payload.physical ? {physical:record.payload.physical} : {}), cumulativeUsage:{rounds:record.snapshot.rounds.length,searches:record.snapshot.rounds.reduce((n,r)=>n+(r.usage?.searches??0),0),reads:record.snapshot.rounds.reduce((n,r)=>n+(r.usage?.reads??0),0),judgments:record.snapshot.rounds.reduce((n,r)=>n+(r.usage?.judgments??0),0),physicalAttempts:null,unknownStages:["acquisition","judge","producer"]},
+    usage:result.usage, ...(record.payload.physical ? {physical:{schemaVersion:1,source:record.payload.physical.source,cutoff:record.payload.physical.cutoff,
+      stages:record.payload.physical.stages,knownSubtotal:record.payload.physical.knownSubtotal,total:record.payload.physical.total,
+      reservationsRefused:record.payload.physical.reservationsRefused,admission:record.payload.physical.admission,
+      attempts:record.payload.physical.attempts.length,
+      detail:'summary',detailLocation:'assessments',detailIncomplete:true,
+      detailNote:'Attempt rows are omitted here; the complete validated native ledger is retained in the paged assessments collection.'}} : {}), cumulativeUsage:{rounds:record.snapshot.rounds.length,searches:record.snapshot.rounds.reduce((n,r)=>n+(r.usage?.searches??0),0),reads:record.snapshot.rounds.reduce((n,r)=>n+(r.usage?.reads??0),0),judgments:record.snapshot.rounds.reduce((n,r)=>n+(r.usage?.judgments??0),0),physicalAttempts:null,unknownStages:["acquisition","judge","producer"]},
     metadataIncomplete:true, contentIncomplete:evidence.length>0,
     counts:Object.fromEntries(COLLECTIONS.map(c=>[c,collections[c].length])),
     cursors:Object.fromEntries(COLLECTIONS.map(c=>[c,cursor({v:1,r:record.snapshot.revision,h:record.revision,b:basis,c,o:0})])),

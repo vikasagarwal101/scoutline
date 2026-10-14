@@ -35,3 +35,17 @@ for (const schema of [
 test("classification duplicate enum values remain fail-loud compiler error", () => {
   assert.throws(() => compileLeanContract(input({ enum: ["supported", "supported"] })));
 });
+test("reserved scope keys are rejected, ordinary scope keys preserved", () => {
+  const base = { schemaVersion: 1, question: "Q", requirements: { v: { question: "V?", schema: { type: "string" } } } };
+  for (const key of ["__proto__", "constructor", "prototype"]) {
+    // JSON.parse produces an own property; a plain literal would not for __proto__.
+    const parsed = JSON.parse(`{"${key}":"Only release999"}`);
+    assert.throws(
+      () => compileLeanContract({ ...base, scope: parsed }),
+      /reserved/,
+      `${key} scope key must be rejected`,
+    );
+  }
+  const compiled = compileLeanContract({ ...base, scope: { release: "2.4.0" } });
+  assert.deepEqual(compiled.scope, { release: "2.4.0" }, "ordinary non-reserved scope preserved");
+});

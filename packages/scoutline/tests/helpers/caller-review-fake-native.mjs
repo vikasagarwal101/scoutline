@@ -9,10 +9,22 @@ process.stdin[Symbol.asyncIterator] = function () {
   return iterator;
 };
 let nativeAttempts=0;
+// Opt-in fixed retry-failure stimulus (F1/I05): clones the audit's exact
+// native-probe-retried-read preload — per-QUERY one 429 then search success
+// (6 URLs), every extract 429 — never configurable per endpoint/key.
+const retriedRead=process.env.REVIEW_RETRIED_READ==='1';
+const retriedQueries=new Map();
 globalThis.fetch=async(url,init={})=>{
   const target=String(url);
   record({url:target,method:init.method??'GET'});
   if(process.env.REVIEW_REFUSE_HTTP==='1') throw new Error('HTTP forbidden for this operation');
+  if(retriedRead && target==='https://api.tavily.com/search'){
+    const body=JSON.parse(init.body),n=retriedQueries.get(body.query)||0;
+    retriedQueries.set(body.query,n+1);
+    if(n%2!==1)return Response.json({error:'synthetic retry'},{status:429,headers:{'retry-after':'0'}});
+    return Response.json({results:Array.from({length:6},(_,i)=>({title:'Audit source '+i,url:'https://example.test/'+i,content:'Audit search snippet'}))});
+  }
+  if(retriedRead && target==='https://api.tavily.com/extract')return Response.json({error:'synthetic retry'},{status:429,headers:{'retry-after':'0'}});
   if(target==='https://api.typesafe.ai/v1/systemone') {
     if(process.env.REVIEW_HANG_JUDGE==='1') return new Promise((_resolve,reject)=>{
       init.signal?.addEventListener('abort',()=>{record({event:'native-abort'});reject(new DOMException('aborted','AbortError'));},{once:true});

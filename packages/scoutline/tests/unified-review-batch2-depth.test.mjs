@@ -5,7 +5,10 @@ import { offlineDeps } from "./unified-review-offline-deps.mjs";
 const root =
   new URL("..", import.meta.url).pathname;
 const { runLeanInvestigation } = await import(`${root}/dist/lib/lean-investigation.js`);
-const { createLeanJevJudge } = await import(`${root}/dev-dist/lean-jev-adapter.js`);
+const { createTypesafeJudge } = await import(`${root}/dist/lib/lean-typesafe-judge.js`);
+// Ported: official direct-TypeSafe judge over a fake fetch — the same
+// late-body disposal and remaining-run-time consumption invariant the
+// development adapter carried.
 test("actual native classification wrapper consumes remaining run timeout and disposes delayed body", async () => {
   const c = structuredClone(inputs[0]);
   c.contract.requirements = { csv: c.contract.requirements.csv };
@@ -13,14 +16,10 @@ test("actual native classification wrapper consumes remaining run timeout and di
   const { deps } = offlineDeps(c);
   deps.now = Date.now;
   let cancelled = false;
-  deps.judge = createLeanJevJudge(
-    {
-      endpoint: "https://fixture.invalid/no-network",
-      model: "fixture",
-      apiKey: "obviously-fake",
-      timeoutMs: 1000,
-    },
-    async (_url, init) => {
+  const profile = createTypesafeJudge({
+    apiKey: "obviously-fake",
+    reserveAttempt: () => {},
+    fetchLike: async (_url, init) => {
       await new Promise((resolve) => setTimeout(resolve, 100));
       const req = JSON.parse(init.body);
       const answers = Object.fromEntries(
@@ -52,7 +51,8 @@ test("actual native classification wrapper consumes remaining run timeout and di
         }),
       };
     },
-  );
+  });
+  deps.judge = profile.judge;
   const started = performance.now();
   await runLeanInvestigation(c.contract, deps);
   const elapsed = performance.now() - started;

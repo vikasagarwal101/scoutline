@@ -8,8 +8,8 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { createTavilyDescriptor } from '../dist/providers/tavily/adapter.js';
 import { createLeanAcquisitionDeps } from '../dist/lib/lean-acquisition-bridge.js';
-import { runLeanVerticalSlice } from '../scripts/lean-vertical-slice.mjs';
 const root = fileURLToPath(new URL('..', import.meta.url));
+const script = join(root, 'bin', 'scoutline.js');
 const json = (v, status = 200) => new Response(JSON.stringify(v), { status });
 const env = { TAVILY_API_KEY: 'synthetic-acquisition-key', TAVILY_TIMEOUT: '1000' };
 const noRetry = { maxRetries: 0, baseDelayMs: 0, maxDelayMs: 0, jitterMs: 0 };
@@ -29,7 +29,6 @@ const sandbox = await mkdtemp(join(tmpdir(), 'scoutline-correction-child-'));
 const preload = join(sandbox, 'offline.mjs');
 await writeFile(preload, `import http from 'node:http';import https from 'node:https';const refuse=()=>{throw Error('REAL_NETWORK_FORBIDDEN')};http.request=refuse;https.request=refuse;
 globalThis.fetch=async(url,init)=>{process.stderr.write('HTTP '+new URL(url).hostname+' '+JSON.stringify({callback:!!init.signal})+'\\n');if(process.env.JEV_DEV_ENDPOINT){const path=new URL(url).pathname;return new Response(JSON.stringify(path=== '/search' ? {results:[{url:'https://offline.test/release',title:'lead',content:'lead'}]} : path=== '/extract' ? {results:[{url:'https://offline.test/release',raw_content:'release documented'}]} : {}));}const signal=init.signal;return new Response(new ReadableStream({start(c){const abort=()=>{process.stderr.write('NATIVE_ABORT\\n');c.error(new DOMException('abort','AbortError'))};signal?.addEventListener('abort',abort,{once:true});setTimeout(()=>{if(!signal?.aborted){c.enqueue(new TextEncoder().encode('{"results":[]}'));c.close()}},75)}}));};`);
-const script = join(root, 'scripts/lean-vertical-slice.mjs');
 function child(args, overrides = {}, stdin = '') {
  return new Promise((resolve,reject) => {
  const proc=spawn(process.execPath,['--import',preload,...args],{cwd:root,env:{PATH:process.env.PATH,HOME:sandbox,SCOUTLINE_CONFIG_DIR:join(sandbox,'config'),SCOUTLINE_CACHE_DIR:join(sandbox,`cache-${Math.random()}`),SCOUTLINE_ARTIFACTS_DIR:join(sandbox,'artifacts'),TAVILY_API_KEY:'synthetic-ambient',SLICE_LIVE_PROFILE:'1',...overrides},stdio:['pipe','pipe','pipe']});let stdout='',stderr='';const timer=setTimeout(()=>{proc.kill();reject(Error('offline child timeout'))},1500);proc.stdout.on('data',x=>stdout+=x);proc.stderr.on('data',x=>stderr+=x);proc.on('error',reject);proc.on('close',code=>{clearTimeout(timer);resolve({code,stdout,stderr})});proc.stdin.end(stdin);
@@ -37,7 +36,7 @@ function child(args, overrides = {}, stdin = '') {
 }
 
 test('explicit authorized fake main uses bounded actual transport and reports observed HTTP attempts',async()=>{
- const r=await child([script,'--live','--requirements-json',JSON.stringify(input())]);
+ const r=await child([script,'investigate','--requirements-json',JSON.stringify(input())]);
  assert.match(r.stderr,/HTTP api.tavily.com/,'real client executed against fake HTTP');
  const out=JSON.parse(r.stdout);
  assert.equal(out.usage.physicalHttpAttempts,1,'actual main must not bypass transport admission');
@@ -47,20 +46,20 @@ test('explicit authorized fake main uses bounded actual transport and reports ob
 
 test('actual authorized main file input reads valid bytes and closes its opened fd',async()=>{
  const path=join(sandbox,'requirements.json');await writeFile(path,JSON.stringify(input()));
- const r=await child([script,'--live','--requirements',path]);
+ const r=await child([script,'investigate','--requirements',path]);
  assert.doesNotMatch(r.stderr,/requirements read failed|invalid|undefined/i);
  assert.ok(r.stdout.length,'same real main executes file input');
  assert.equal(JSON.parse(r.stdout).question,'Check release');
 });
 
 test('actual authorized main pipe parses valid requirements through its real incremental reader',async()=>{
- const r=await child([script,'--live','--requirements','-'],{},JSON.stringify(input()));
+ const r=await child([script,'investigate','--requirements','-'],{},JSON.stringify(input()));
  assert.doesNotMatch(r.stderr,/requirements read failed|not valid JSON/);
  assert.equal(JSON.parse(r.stdout).question,'Check release');
 });
 
 test('Search/Reader consent does not activate an ambient complete judge profile',async()=>{
- const r=await child([script,'--live','--requirements-json',JSON.stringify(input())],{JEV_DEV_ENDPOINT:'https://offline.test/judge',JEV_DEV_MODEL:'synthetic-model',JEV_DEV_API_KEY:'synthetic-judge-key'});
+ const r=await child([script,'investigate','--requirements-json',JSON.stringify(input())],{TYPESAFE_API_KEY:'synthetic-judge-key'});
  assert.doesNotMatch(r.stderr,/HTTP offline.test/,'no separately authorized judge transmission');
  assert.ok(r.code!==0);
 });
@@ -99,24 +98,7 @@ test('bounded bridge cannot silently certify zero HTTP when its selected transpo
  await assert.rejects(()=>deps.search('q'),'must fail closed instead of unwrapped counted-as-zero work');
 });
 
-test('redacted source is explicitly a derivative of its retained normalized digest',async()=>{
- const text='upstream '+env.TAVILY_API_KEY;
- const {opts}=setup(async u=>new URL(u).pathname==='/search'?json({results:[{url,title:'lead',content:'lead'}]}):json({results:[{url,raw_content:text}]}));
- const rt=runtime(opts);await runLeanVerticalSlice(['--requirements-json',JSON.stringify(input())],rt);const out=JSON.parse(rt.output.stdout);
- assert.doesNotMatch(rt.output.stdout,/synthetic-acquisition-key/);
- const e=out.evidence[0];assert.ok(e);assert.notEqual(e.content,text);
- assert.equal(e.contentSha256 ?? e.normalizedContentSha256,createHash('sha256').update(text).digest('hex'),'original digest names retained normalized bytes');
- assert.equal(e.displayContentSha256,createHash('sha256').update(e.content).digest('hex'),'redacted derivative digest named separately');
- assert.equal(e.displayRedacted,true);
-});
 
-test('all early input errors use the injected secret-redaction boundary',async()=>{
- const {opts}=setup(async()=>json({results:[]}));const rt=runtime(opts);rt.invocation.readFile=async()=>{throw Error('file failure '+env.TAVILY_API_KEY)};
- await runLeanVerticalSlice(['--requirements','file'],rt);
- assert.doesNotMatch(rt.output.stderr,/synthetic-acquisition-key/);
- const bad=runtime(opts);await runLeanVerticalSlice(['--requirements-json',`{"${env.TAVILY_API_KEY}"`],bad);
- assert.doesNotMatch(bad.output.stderr,/synthetic-acquisition-key/);
-});
 
 test('operation restoration cannot poison a shared transport across concurrent bridge calls',async()=>{
  let firstRelease;let secondRelease;let calls=0;

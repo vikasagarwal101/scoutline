@@ -259,48 +259,6 @@ test('incremental native body cancellation leaves no stream producer or HTTP ret
   }
 });
 
-const sliceUrl = new URL('../scripts/lean-vertical-slice.mjs', import.meta.url);
-const { runLeanVerticalSlice } = await import(sliceUrl.href);
-for (const mode of ['file', 'stdin', 'inline']) {
-  test(`development invocation ${mode} executes real compiled acquisition and accepted-only output`, async () => {
-    const http = fixtureHTTP();
-    const text = JSON.stringify(contract());
-    let output;
-    let exit;
-    const runtime = {
-      acquisitionOptions: options(http.fetch),
-      engineDeps: semantics(),
-      invocation: { readFile: async path => { assert.equal(path, 'independent.json'); return text; }, readStdin: async () => text, writeOut: value => { output = value; }, writeErr: value => assert.fail(value), setExit: value => { exit = value; } },
-    };
-    const argv = mode === 'inline' ? ['--requirements-json', text] : ['--requirements', mode === 'stdin' ? '-' : 'independent.json'];
-    assert.equal(await runLeanVerticalSlice(argv, runtime), 0);
-    assert.equal(exit, 0);
-    const result = JSON.parse(output);
-    assert.deepEqual(result.data, { license: 'MIT', version: '2.4.0', csv: 'supported' });
-    assert.ok(http.calls.some(c => c.path === '/search'));
-    assert.ok(http.calls.some(c => c.path === '/extract'));
-    assert.ok(result.requirements.license.attemptedRecords.length);
-  });
-}
-
-test('unsupported nested schema and conflicting input modes fail before actual HTTP', async () => {
-  let calls = 0;
-  let output;
-  let exit;
-  const invalid = contract();
-  invalid.requirements.version.schema = { type: 'object', properties: { value: { type: 'string' } } };
-  const runtime = {
-    acquisitionOptions: options(async () => { calls++; return json({ results: [] }); }), engineDeps: semantics(),
-    invocation: { readFile: async () => JSON.stringify(invalid), readStdin: async () => JSON.stringify(invalid), writeOut: value => { output = value; }, writeErr: () => {}, setExit: value => { exit = value; } },
-  };
-  assert.equal(await runLeanVerticalSlice(['--requirements-json', JSON.stringify(invalid)], runtime), 2);
-  assert.equal(exit, 2);
-  assert.equal(output, undefined);
-  assert.equal(calls, 0);
-  await assert.rejects(() => runLeanVerticalSlice(['--requirements', '-', '--requirements-json', '{}'], runtime), /exclusive/);
-  assert.equal(calls, 0);
-});
-
 test('read provenance is from actual normalized Reader serve, never search discovery or malformed warmth', async () => {
   const provenance = [];
   let calls = 0;
@@ -385,17 +343,4 @@ test('chunked native response is bounded before client JSON normalization and ca
   await assert.rejects(() => deps.search('ExampleApp', { signal: new AbortController().signal, timeoutMs: 1000 }));
   assert.equal(cancelled, true, 'body must cancel at byte ceiling, not buffer and parse later');
   assert.ok(chunks < 4);
-});
-
-test('stdin input boundary requests a finite byte bound before reading requirements', async () => {
-  let requested;
-  let calls = 0;
-  const runtime = {
-    acquisitionOptions: options(async () => { calls++; return json({ results: [] }); }),
-    engineDeps: semantics(),
-    invocation: { readStdin: async maxBytes => { requested = maxBytes; return '{}'; }, writeOut: () => assert.fail('invalid input printed data'), writeErr: () => {}, setExit: () => {} },
-  };
-  assert.equal(await runLeanVerticalSlice(['--requirements', '-'], runtime), 2);
-  assert.ok(Number.isSafeInteger(requested) && requested > 0, 'post-buffer length check does not bound reading');
-  assert.equal(calls, 0);
 });

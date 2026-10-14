@@ -3,8 +3,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 const root =
   new URL("..", import.meta.url).pathname;
-const { buildCandidateJudgeRequest } = await import(`${root}/dist/lib/lean-candidates.js`);
-const { buildLunaRequestBody } = await import(`${root}/dev-dist/lean-candidate-transport.js`);
+import { buildCandidateJudgeRequest } from "../dist/lib/lean-candidates.js";
 const digest = createHash("sha256").update("accepted version evidence").digest("hex");
 const depBindings = {
   version: { value: "2.4", evidenceId: "version-evidence", sourceDigest: digest },
@@ -46,16 +45,7 @@ test("native judgment request identity changes with dependency revision alone", 
   );
   assert.notEqual(before, after);
 });
-test("native extraction payload includes scope and explicit dependency binding", () => {
-  const input = {
-    sourceId: source.evidenceId,
-    sourceText: source.content,
-    fields: [{ id: "license", description: "License for accepted version" }],
-    scope: { entity: "Test" },
-    depBindings,
-  };
-  const request = JSON.parse(buildLunaRequestBody(input, "offline-fixture"));
-  const state = JSON.parse(request.messages.find((m) => m.role === "user").content);
-  assert.deepEqual(state.scope, input.scope);
-  assert.deepEqual(state.depBindings, depBindings);
+test("official candidate judgment state includes explicit dependency binding", () => {
+  const request = JSON.parse(buildCandidateJudgeRequest(judgeInput, "offline-fixture"));
+  assert.deepEqual(request.state.depBindings, depBindings);
 });

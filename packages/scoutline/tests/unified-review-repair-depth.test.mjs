@@ -5,7 +5,10 @@ import { offlineDeps } from "./unified-review-offline-deps.mjs";
 const root =
   new URL("..", import.meta.url).pathname;
 const { runLeanInvestigation } = await import(`${root}/dist/lib/lean-investigation.js`);
-const { runLunaExtraction } = await import(`${root}/dev-dist/lean-candidate-transport.js`);
+// Ported off the development transport: the extractor boundary is now a
+// production-shaped ExtractorDeps double that honors the run-owned
+// cancellation signal the engine hands it (same contract the removed
+// transport exercised through nativePost options).
 const single = () => {
   const c = structuredClone(inputs[0]);
   c.contract.requirements = { version: c.contract.requirements.version };
@@ -19,50 +22,57 @@ test("run deadline bounds an in-flight native extractor rather than only blockin
   let observedSignal;
   let cancelled = false;
   base.deps.extract = async (request, options) => {
-    const config = {
-      endpoint: "https://fixture.invalid/no-network",
-      model: "fixture",
-      allowedModels: ["fixture"],
-      apiKey: "obviously-fake",
-      timeoutMs: options?.timeoutMs ?? request.timeoutMs ?? 1000,
-      maxRequestBytes: 65536,
-      maxResponseBytes: 65536,
-    };
     observedSignal = options?.signal ?? request.signal;
-    const result = await runLunaExtraction(request, config, async () => {
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      return {
-        status: 200,
-        ok: true,
-        headers: { get: () => "application/json" },
-        body: new ReadableStream({
-          start(controller) {
-            controller.enqueue(
-              new TextEncoder().encode(
-                JSON.stringify({
-                  model: "fixture",
-                  choices: [
-                    {
-                      finish_reason: "stop",
-                      message: {
-                        content: '{"version":{"value":"2.4","quote":"Aster release 2.4."}}',
-                      },
+    const response = {
+      status: 200,
+      ok: true,
+      headers: { get: () => "application/json" },
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(
+            new TextEncoder().encode(
+              JSON.stringify({
+                model: "fixture",
+                choices: [
+                  {
+                    finish_reason: "stop",
+                    message: {
+                      content: '{"version":{"value":"2.4","quote":"Aster release 2.4."}}',
                     },
-                  ],
-                  usage: { prompt_tokens: 1, completion_tokens: 1 },
-                }),
-              ),
-            );
-            controller.close();
-          },
-          cancel() {
-            cancelled = true;
-          },
-        }),
-      };
+                  },
+                ],
+                usage: { prompt_tokens: 1, completion_tokens: 1 },
+              }),
+            ),
+          );
+          controller.close();
+        },
+        cancel() {
+          cancelled = true;
+        },
+      }),
+    };
+    // Native-shaped bounded wait: headers land only after 100ms; the
+    // run-owned signal must abort the in-flight wait, not just block
+    // the next dispatch.
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(resolve, 100);
+      observedSignal?.addEventListener(
+        "abort",
+        () => {
+          clearTimeout(timer);
+          reject(Object.assign(new Error("aborted"), { code: "TYPESAFE_CANCELLED" }));
+        },
+        { once: true },
+      );
     });
-    if (result.kind !== "ok") throw new Error(result.code);
-    return { ...result.value, ...result.metadata };
+    void response;
+    return {
+      finishReason: "stop",
+      rawOutput: '{"version":{"value":"2.4","quote":"Aster release 2.4."}}',
+      usage: { inputTokens: 1, outputTokens: 1 },
+      observedCost: null,
+    };
   };
   const start = performance.now();
   const result = await runLeanInvestigation(c.contract, base.deps);

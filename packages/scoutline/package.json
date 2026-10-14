@@ -25,7 +25,7 @@
     "!dist/lib/lean-candidate-transport.*"
   ],
   "scripts": {
-    "build": "node scripts/generate-minimax-vision-revisions.mjs && tsc && tsc -p dev/tsconfig.json",
+    "build": "node scripts/generate-minimax-vision-revisions.mjs && node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc",
     "dev": "tsc --watch",
     "test": "npm run test:offline",
     "test:offline": "npm run build && node scripts/run-tests.mjs offline",

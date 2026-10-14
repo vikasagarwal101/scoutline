@@ -3,9 +3,8 @@
  *
  * The set of EXACT declared composed-stop roots and the guard that
  * converts an EVAL_STOPPED error into one of them. Production-neutral by
- * design: no transport, no endpoint/model/credential surface. The
- * development transports (dev/lean-candidate-transport.ts) import this
- * module — never the reverse — so no temporary adapter ships in dist.
+ * design: no transport, no endpoint/model/credential surface. Engine and
+ * judge both consume this vocabulary; nothing outside src imports it.
  */
 
 /**

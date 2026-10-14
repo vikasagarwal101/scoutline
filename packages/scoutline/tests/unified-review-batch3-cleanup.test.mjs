@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 const root =
   new URL("..", import.meta.url).pathname;
 const { runLeanInvestigation } = await import(`${root}/dist/lib/lean-investigation.js`);
-const { createLeanJevJudge } = await import(`${root}/dev-dist/lean-jev-adapter.js`);
+const { createTypesafeJudge } = await import(`${root}/dist/lib/lean-typesafe-judge.js`);
 const config = {
   endpoint: "https://fixture.invalid/no-network",
   model: "fixture",
@@ -83,19 +83,25 @@ test("actual native chunked-body timeout cancels owned reader and removes extern
       removes++;
       return remove(...args);
     };
-    const judge = createLeanJevJudge(config, async () => ({
-      status: 200,
-      ok: true,
-      headers: { get: () => "application/json" },
-      body: new ReadableStream({
-        start(c) {
-          c.enqueue(new TextEncoder().encode('{"model":'));
-        },
-        cancel() {
-          cancelled = true;
-        },
+    const profile = createTypesafeJudge({
+      apiKey: "obviously-fake",
+      reserveAttempt: () => {},
+      timeoutMs: 10,
+      fetchLike: async () => ({
+        status: 200,
+        ok: true,
+        headers: { get: () => "application/json" },
+        body: new ReadableStream({
+          start(c) {
+            c.enqueue(new TextEncoder().encode('{"model":'));
+          },
+          cancel() {
+            cancelled = true;
+          },
+        }),
       }),
-    }));
+    });
+    const judge = profile.judge;
     await assert.rejects(
       judge(
         {

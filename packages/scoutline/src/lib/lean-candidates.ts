@@ -29,6 +29,7 @@
 
 import { createHash } from "node:crypto";
 import { ValidationError } from "./errors.js";
+import { COMPOSED_STOP_ROOTS } from "./lean-composed-stop.js";
 import type { LeanEvidenceRecord } from "./lean-investigation.js";
 
 // ---------------------------------------------------------------------------
@@ -633,6 +634,9 @@ export async function assessCandidates(
 ): Promise<{
   readonly judgements: readonly CandidateJudgement[];
   readonly error?: string;
+  /** Validated composed-stop root carried through a rejected judgment
+   * (exact COMPOSED_STOP_ROOTS membership only; absent otherwise). */
+  readonly stopRoot?: string;
   readonly metadata?: unknown;
 }> {
   // Threshold overrides are NOT part of the contract: any attempt to
@@ -649,12 +653,26 @@ export async function assessCandidates(
     // latency on the thrown error) survives normalization — the audit
     // keeps the observation; only the judgement is dropped.
     const observed = (judgeError as { observed?: unknown } | null)?.observed;
+    // Composed-run stop root retention: a VALIDATED finite vocabulary
+    // root carried by the rejection (either carrier field) survives
+    // normalization as a separate typed envelope field — the error
+    // string taxonomy is unchanged, observations stay attached, and an
+    // arbitrary reason string never promotes (exact-membership gate,
+    // same boundary as the engine's other promotion sites).
+    const stopCarrier = judgeError as { stopReason?: unknown; reason?: unknown } | null;
+    const stopRoot =
+      typeof stopCarrier?.stopReason === "string" && COMPOSED_STOP_ROOTS.has(stopCarrier.stopReason)
+        ? stopCarrier.stopReason
+        : typeof stopCarrier?.reason === "string" && COMPOSED_STOP_ROOTS.has(stopCarrier.reason)
+          ? stopCarrier.reason
+          : undefined;
     return {
       judgements: [],
       error: `JEV_DEV_NETWORK:judge_rejected:${(judgeError as { code?: string } | null)?.code ?? "unknown"}`,
       ...(observed !== undefined && observed !== null && typeof observed === "object"
         ? { metadata: sanitizeCandidateObservation(observed as Record<string, unknown>) ?? {} }
         : {}),
+      ...(stopRoot !== undefined ? { stopRoot } : {}),
     };
   }
   if (response == null || typeof response !== "object") {

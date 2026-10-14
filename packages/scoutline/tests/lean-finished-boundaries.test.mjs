@@ -2,7 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createTavilyDescriptor } from "../dist/providers/tavily/adapter.js";
 import { createLeanAcquisitionDeps } from "../dist/lib/lean-acquisition-bridge.js";
-import { runLeanVerticalSlice } from "../scripts/lean-vertical-slice.mjs";
 const env = { TAVILY_API_KEY: "synthetic-key", TAVILY_TIMEOUT: "1000" };
 const json = (v, s = 200) => new Response(JSON.stringify(v), { status: s });
 const cache = () => ({ get: async () => null, set: async () => {} });
@@ -240,17 +239,5 @@ test("legacy cache candidate decoding certifies the actual serve without physica
     records[0].fromCache,
     true,
     "candidate.decode, not decodeCached, was the serve basis",
-  );
-});
-
-test("invalid argv containing a configured key is redacted at the same outward boundary", async () => {
-  const rt = {
-    acquisitionOptions: options(async () => json({ results: [] })),
-    engineDeps: { judge: null, now: Date.now },
-    invocation: { writeOut() {}, writeErr() {}, setExit() {} },
-  };
-  await assert.rejects(
-    () => runLeanVerticalSlice(["--requirements-json", "{}", env.TAVILY_API_KEY], rt),
-    (e) => !String(e.message).includes(env.TAVILY_API_KEY),
   );
 });

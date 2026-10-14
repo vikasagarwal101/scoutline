@@ -1,18 +1,23 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { runLeanInvestigation } from "../dist/lib/lean-investigation.js";
-import { createLeanJevJudge } from "../dev-dist/lean-jev-adapter.js";
-const config = {
-  endpoint: "https://fixture.invalid/no-network",
-  model: "fixture",
-  apiKey: "fake-only",
-  timeoutMs: 20,
-};
+import { createTypesafeJudge } from "../dist/lib/lean-typesafe-judge.js";
+// Official adapter over a fake fetch: an admission refusal carrying a
+// composed-stop root must surface as the run's stop reason with ZERO
+// physical judge dispatch — the same classification-composition
+// invariant the development adapter carried.
 for (const root of ["global_judgment_cap", "global_deadline"])
   test(`actual classification composition preserves ${root}`, async () => {
     let physical = 0;
-    const native = createLeanJevJudge(config, async () => {
-      throw Object.assign(Error("refused before network"), { code: "EVAL_STOPPED", reason: root });
+    const profile = createTypesafeJudge({
+      apiKey: "fake-only",
+      reserveAttempt: () => {
+        throw Object.assign(Error("refused before network"), { code: "EVAL_STOPPED", reason: root });
+      },
+      fetchLike: async () => {
+        physical++;
+        throw new Error("must not dispatch");
+      },
     });
     const r = await runLeanInvestigation(
       {
@@ -24,7 +29,7 @@ for (const root of ["global_judgment_cap", "global_deadline"])
         now: () => 0,
         search: async () => [{ url: "https://fixture.invalid/doc" }],
         read: async () => "CSV works.",
-        judge: native,
+        judge: profile.judge,
       },
     );
     assert.equal(physical, 0);

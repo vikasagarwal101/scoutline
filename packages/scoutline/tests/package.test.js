@@ -226,17 +226,9 @@ describe("scoutline package — root export and metadata", () => {
 
   it("manifest allowlist includes only shipped surfaces and explicit temporary-adapter exclusions", async () => {
     const pkg = await loadPackageJson();
-    // skills/ joined the allowlist when the agent skill moved into the
-    // package (see tests/skill-shipping.test.js for the shipping pins).
     assert.deepStrictEqual(
       pkg.files,
-      [
-        "bin",
-        "dist",
-        "skills",
-        "!dist/lib/lean-jev-adapter.*",
-        "!dist/lib/lean-candidate-transport.*",
-      ],
+      ["bin", "dist", "skills", "!dist/lib/lean-jev-adapter.*", "!dist/lib/lean-candidate-transport.*"],
       'package.json "files" must restrict shipped surfaces and exclude stale temporary adapters',
     );
   });
@@ -303,46 +295,20 @@ describe("scoutline package — npm pack contents", () => {
     );
   });
 
-  it("excludes temporary dev-route adapters and their stale compiled artifacts (package-route-boundary)", async () => {
-    const out = await runNpmPackDryRun();
-    const files = (out[0] && out[0].files) || [];
-    const paths = files.map((f) => f.path);
-
-    // The development transports (dev/lean-jev-adapter.ts,
-    // dev/lean-candidate-transport.ts) are repo-only: never under src,
-    // dist, bin, skills, dev/, dev-dist/, or any packed path. This also
-    // catches a STALE dist/ artifact from an older build (tsc does not
-    // delete removed outputs), so a polluted dist cannot re-leak them.
-    const offenders = paths.filter((p) => /lean-jev-adapter|lean-candidate-transport/.test(p));
-    assert.deepStrictEqual(
-      offenders,
-      [],
-      `temporary dev-route artifacts leaked into pack: ${offenders.join("; ")}`,
-    );
-
-    // The neutral stop contract REPLACED the production dependency on the
-    // candidate transport; the shipped engine must not import it either.
-    const stopRoots = await fs.readFile(
-      path.join(PACKAGE_ROOT, "dist", "lib", "lean-composed-stop.js"),
-      "utf8",
-    );
-    assert.ok(
-      stopRoots.includes("COMPOSED_STOP_ROOTS"),
-      "dist/lib/lean-composed-stop.js must exist and define COMPOSED_STOP_ROOTS",
-    );
-  });
-
-  it("package allowlist excludes temporary adapters from a polluted dist", async () => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-pack-dev-boundary-"));
+  it("package allowlist excludes stale dev-route artifacts from a polluted dist (package-route-boundary)", async () => {
+    // npm pack does NOT run this package's build or prepublishOnly, so a
+    // dirty dist is a real pack path: stale compiled outputs from older
+    // builds would ship. The manifest excludes the two NAMED historical
+    // temporary adapters unconditionally; OTHER stale outputs are
+    // removed by the clean build (dist/ is wiped before tsc), which
+    // pack itself never runs — the two protections are complementary,
+    // not one general guarantee.
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-pack-stale-"));
     try {
       const pkg = await loadPackageJson();
       await fs.writeFile(
         path.join(dir, "package.json"),
-        JSON.stringify({
-          name: pkg.name,
-          version: pkg.version,
-          files: pkg.files,
-        }),
+        JSON.stringify({ name: pkg.name, version: pkg.version, files: pkg.files }),
       );
       await fs.mkdir(path.join(dir, "dist", "lib"), { recursive: true });
       await fs.writeFile(path.join(dir, "dist", "index.js"), "export const retained = true;\n");
@@ -377,6 +343,7 @@ describe("scoutline package — npm pack contents", () => {
       assert.deepEqual(
         paths.filter((p) => /lean-jev-adapter|lean-candidate-transport/.test(p)),
         [],
+        "stale dev-route artifacts must not enter a dirty-dist tarball",
       );
     } finally {
       await fs.rm(dir, { recursive: true, force: true });

@@ -1,100 +1,130 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import vm from "node:vm";
 import { runLeanInvestigation } from "../dist/lib/lean-investigation.js";
-import { createLeanJevJudge } from "../dev-dist/lean-jev-adapter.js";
-const ROOT =
-  new URL("..", import.meta.url).pathname;
+import { createTypesafeJudge } from "../dist/lib/lean-typesafe-judge.js";
+// Actual engine + official adapter over fixture native probabilities.
 async function evaluate(mode) {
-  const logs = [];
-  const results = [];
-  const context = vm.createContext({
-    Date,
-    console: { log: (text) => logs.push(text), error: () => {} },
-    process: {
-      argv: ["node", "runner", "--live"],
-      env: {
-        JEV_DEV_ENDPOINT: "https://fixture.invalid/native",
-        JEV_DEV_MODEL: "fixture",
-        JEV_DEV_API_KEY: "fixture-key",
-      },
-      exit: () => {
-        throw Error("unexpected exit");
-      },
-    },
-  });
-  const engine = new vm.SyntheticModule(
-    ["runLeanInvestigation"],
-    function () {
-      this.setExport("runLeanInvestigation", async (contract, deps) => {
-        const result = await runLeanInvestigation(JSON.parse(JSON.stringify(contract)), deps);
-        results.push(result);
-        return result;
+  const profile = createTypesafeJudge({
+    apiKey: "fixture-key",
+    reserveAttempt: () => {},
+    fetchLike: async (_url, init) => {
+      const request = JSON.parse(init.body);
+      const probabilities = request.state.sources.map((doc) => {
+        if (doc.url.includes("guide"))
+          return mode === "refuted"
+            ? [0.97, 0.01, 0.97]
+            : mode === "disputed"
+              ? [0.97, 0.97, 0.97]
+              : [0.97, 0.97, 0.01];
+        if (doc.url.includes("keywords"))
+          return mode === "refuted"
+            ? [0.25, 0.01, 0.25]
+            : mode === "blocked" || mode === "disputed"
+              ? [0.25, 0.25, 0.25]
+              : [0.25, 0.25, 0.01];
+        return [0.01, 0.01, 0.01];
       });
-    },
-    { context },
-  );
-  const adapter = new vm.SyntheticModule(
-    ["createLeanJevJudge"],
-    function () {
-      this.setExport("createLeanJevJudge", (config, _fetch, hooks) =>
-        createLeanJevJudge(
-          config,
-          async (_url, init) => {
-            const request = JSON.parse(init.body);
-            const probabilities = request.state.sources.map((doc) => {
-              if (doc.url.includes("guide"))
-                return mode === "refuted"
-                  ? [0.97, 0.01, 0.97]
-                  : mode === "disputed"
-                    ? [0.97, 0.97, 0.97]
-                    : [0.97, 0.97, 0.01];
-              if (doc.url.includes("keywords"))
-                return mode === "refuted"
-                  ? [0.25, 0.01, 0.25]
-                  : mode === "blocked" || mode === "disputed"
-                    ? [0.25, 0.25, 0.25]
-                    : [0.25, 0.25, 0.01];
-              return [0.01, 0.01, 0.01];
-            });
-            const answers = Object.fromEntries(
-              probabilities.flatMap((p, i) =>
-                ["r", "s", "f"].map((axis, j) => [`q${i}${axis}`, { type: "noul", noul: p[j] }]),
-              ),
-            );
-            return new Response(
-              JSON.stringify({
-                model: "fixture-resolved",
-                usage: { input_tokens: 1, output_tokens: 1 },
-                answers,
-              }),
-            );
-          },
-          hooks,
+      const answers = Object.fromEntries(
+        probabilities.flatMap((p, i) =>
+          ["r", "s", "f"].map((axis, j) => [`q${i}${axis}`, { type: "noul", noul: p[j] }]),
         ),
       );
+      return new Response(
+        JSON.stringify({
+          model: "jev-1.13.0",
+          usage: { input_tokens: 1, output_tokens: 1 },
+          answers,
+        }),
+      );
     },
-    { context },
+  });
+  const SHARED = "Assess CSV export support in ExampleApp 2.4.0.";
+  const CSV = "Does ExampleApp 2.4.0 support CSV export?";
+  const result = await runLeanInvestigation(
+    {
+      schemaVersion: 1,
+      question: SHARED,
+      scope: { entity: "ExampleApp", release: "2.4.0" },
+      requirements: {
+        csv: {
+          question: CSV,
+          schema: { enum: ["supported", "refuted", "disputed"] },
+          criteria: ["Use statements about this exact product and release."],
+          required: true,
+        },
+      },
+      evidence: { criteria: ["Check relevant contrary evidence before accepting a result."] },
+    },
+    {
+      now: () => 0,
+      search: async (q) =>
+        q === SHARED
+          ? [
+              { url: "https://spam.example/keywords" },
+              { url: "https://news.example/unrelated" },
+            ]
+          : q === CSV
+            ? [{ url: "https://docs.example/guide" }]
+            : [],
+      read: async (url) =>
+        url.includes("guide")
+          ? "ExampleApp 2.4.0 supports CSV export from the reports screen."
+          : url.includes("keywords")
+            ? "csv export exampleapp 2.4.0 csv export exampleapp 2.4.0 csv export"
+            : "Quarterly industry results announced today.",
+      judge: profile.judge,
+    },
   );
-  const module = new vm.SourceTextModule(
-    fs.readFileSync(`${ROOT}/scripts/lean-jev-e2e.mjs`, "utf8"),
-    { context },
-  );
-  await module.link((specifier) => (specifier.includes("adapter") ? adapter : engine));
-  await module.evaluate();
-  return { actual: JSON.parse(logs[0]).cases[0].actual, result: results[0] };
+  return { result };
 }
+
+// Engine-derived readers: the deleted dev report recomputed these from
+// the engine's own assessments; the assertions below therefore stay
+// anchored on the ENGINE result rows, with the two axis questions
+// derived from the engine's latest accepted round only.
+const latestRound = (row) => (row.assessments ?? []).at(-1) ?? [];
+const clearContributions = (row) =>
+  latestRound(row).flatMap((d) => {
+    if (d.relevant !== true) return [];
+    const sides = [];
+    if (d.supportsClaim === true) sides.push({ evidenceId: d.evidenceId, side: "support" });
+    if (d.refutesClaim === true) sides.push({ evidenceId: d.evidenceId, side: "refute" });
+    return sides;
+  });
+const pendingPossibleOpposite = (row) => {
+  const latest = latestRound(row);
+  const hasClearSupport = latest.some((d) => d.relevant === true && d.supportsClaim === true);
+  const hasClearRefute = latest.some((d) => d.relevant === true && d.refutesClaim === true);
+  const answer =
+    row.value === "supported" || row.value === "refuted" || row.value === "disputed"
+      ? row.value
+      : hasClearSupport && hasClearRefute
+        ? "disputed"
+        : hasClearSupport
+          ? "supported"
+          : hasClearRefute
+            ? "refuted"
+            : "none";
+  return latest.flatMap((d) => {
+    if (d.relevant === false) return [];
+    if (answer === "disputed" || answer === "none") return [];
+    const refuteBlocks = answer !== "supported" ? false : d.refutesClaim !== false;
+    const supportBlocks = answer !== "refuted" ? false : d.supportsClaim !== false;
+    if (!refuteBlocks && !supportBlocks) return [];
+    return [{ evidenceId: d.evidenceId, relevant: d.relevant, supportsClaim: d.supportsClaim, refutesClaim: d.refutesClaim }];
+  });
+};
+
 test("accepted support ignores unknown support when opposite refutation is false", async () => {
-  const { actual, result } = await evaluate("supported");
+  const { result } = await evaluate("supported");
   assert.equal(result.data.csv, "supported");
   assert.deepEqual(
-    actual.requirements.csv.pendingPossibleOpposite,
+    pendingPossibleOpposite(result.requirements.csv),
     [],
     "own-axis uncertainty is not pending opposition to accepted support",
   );
   assert.ok(
-    actual.requirements.csv.attemptedRecords.some((record) =>
+    result.requirements.csv.attemptedRecords.some((record) =>
       record.assessments.some(
         (d) => d.evidenceId === "e1" && d.supportsClaim === null && d.refutesClaim === false,
       ),
@@ -102,15 +132,15 @@ test("accepted support ignores unknown support when opposite refutation is false
   );
 });
 test("accepted refutation ignores unknown refutation when opposite support is false", async () => {
-  const { actual, result } = await evaluate("refuted");
+  const { result } = await evaluate("refuted");
   assert.equal(result.data.csv, "refuted");
   assert.deepEqual(
-    actual.requirements.csv.pendingPossibleOpposite,
+    pendingPossibleOpposite(result.requirements.csv),
     [],
     "own-axis uncertainty is not pending opposition to accepted refutation",
   );
   assert.ok(
-    actual.requirements.csv.attemptedRecords.some((record) =>
+    result.requirements.csv.attemptedRecords.some((record) =>
       record.assessments.some(
         (d) => d.evidenceId === "e1" && d.refutesClaim === null && d.supportsClaim === false,
       ),
@@ -118,13 +148,13 @@ test("accepted refutation ignores unknown refutation when opposite support is fa
   );
 });
 test("clear established dispute has both sides and no pending acceptance blocker", async () => {
-  const { actual, result } = await evaluate("disputed");
+  const { result } = await evaluate("disputed");
   assert.equal(result.data.csv, "disputed");
-  const row = actual.requirements.csv;
-  assert.ok(row.clearContributions.some((d) => d.evidenceId === "e3" && d.side === "support"));
-  assert.ok(row.clearContributions.some((d) => d.evidenceId === "e3" && d.side === "refute"));
+  const row = result.requirements.csv;
+  assert.ok(clearContributions(row).some((d) => d.evidenceId === "e3" && d.side === "support"));
+  assert.ok(clearContributions(row).some((d) => d.evidenceId === "e3" && d.side === "refute"));
   assert.deepEqual(
-    row.pendingPossibleOpposite,
+    pendingPossibleOpposite(row),
     [],
     "source uncertainty cannot be labeled an acceptance blocker for fulfilled scoped disagreement",
   );
@@ -136,16 +166,16 @@ test("clear established dispute has both sides and no pending acceptance blocker
   );
 });
 test("control: genuinely unknown refutation remains pending against clear support", async () => {
-  const { actual, result } = await evaluate("blocked");
+  const { result } = await evaluate("blocked");
   assert.equal(result.requirements.csv.status, "unresolved");
   assert.equal(Object.hasOwn(result.data, "csv"), false);
   assert.ok(
-    actual.requirements.csv.pendingPossibleOpposite.some(
+    pendingPossibleOpposite(result.requirements.csv).some(
       (d) => d.evidenceId === "e1" && d.refutesClaim === null,
     ),
   );
   assert.ok(
-    actual.requirements.csv.clearContributions.some(
+    clearContributions(result.requirements.csv).some(
       (d) => d.evidenceId === "e3" && d.side === "support",
     ),
   );

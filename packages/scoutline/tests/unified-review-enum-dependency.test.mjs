@@ -5,7 +5,7 @@ import { offlineDeps } from "./unified-review-offline-deps.mjs";
 const root =
   new URL("..", import.meta.url).pathname;
 const { runLeanInvestigation } = await import(`${root}/dist/lib/lean-investigation.js`);
-const { buildLeanJevRequest } = await import(`${root}/dev-dist/lean-jev-adapter.js`);
+const { buildTypesafeNoulRequest } = await import(`${root}/dist/lib/lean-typesafe-judge.js`);
 test("dependent classification receives accepted dependency value and evidence revision", async () => {
   const c = structuredClone(inputs.find((x) => x.id === "grove-transitive-chain"));
   const { deps, calls } = offlineDeps(c);
@@ -38,14 +38,11 @@ test("native classification wire encodes dependency context and revision", () =>
     ],
     depBindings,
   };
-  const before = buildLeanJevRequest(input, "offline-fixture");
+  const before = buildTypesafeNoulRequest(input);
   assert.deepEqual(JSON.parse(before).state.depBindings, depBindings);
-  const after = buildLeanJevRequest(
-    {
-      ...input,
-      depBindings: { license: { ...depBindings.license, sourceDigest: "b".repeat(64) } },
-    },
-    "offline-fixture",
-  );
+  const after = buildTypesafeNoulRequest({
+    ...input,
+    depBindings: { license: { ...depBindings.license, sourceDigest: "b".repeat(64) } },
+  });
   assert.notEqual(before, after);
 });

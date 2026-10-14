@@ -1050,6 +1050,20 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
   // INCOMPLETE — no value field may finalize its accept on the claim
   // that the current context is final.
   let runTypedStop: string | null = null;
+  // Composed-stop root carried by a collaborator rejection. The typed
+  // collaborators disagree on the carrier field: the direct-TypeSafe
+  // judge attaches it as `stopReason` (TypesafeRejection), while
+  // transport-style adapters rethrow it as `reason` alongside an
+  // EVAL_STOPPED code. Both promote ONLY through the exact
+  // COMPOSED_STOP_ROOTS vocabulary — an arbitrary string on either
+  // field is discarded, so the finite trust boundary is unchanged.
+  const composedRootOf = (error: unknown): string | null => {
+    const carrier = error as { stopReason?: unknown; reason?: unknown } | null;
+    for (const value of [carrier?.stopReason, carrier?.reason]) {
+      if (typeof value === "string" && COMPOSED_STOP_ROOTS.has(value)) return value;
+    }
+    return null;
+  };
   let extractorCacheHits = 0;
   let candidateJudgeCalls = 0;
   let retainedBytes = 0;
@@ -2629,11 +2643,7 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
                 // error.reason with the transport's error code. Membership
                 // in the exact vocabulary is the validation here — an
                 // arbitrary string never promotes.
-                const stopErr = extractError as { code?: unknown; reason?: unknown } | null;
-                f.stopReason =
-                  typeof stopErr?.reason === "string" && COMPOSED_STOP_ROOTS.has(stopErr.reason)
-                    ? stopErr.reason
-                    : null;
+                f.stopReason = composedRootOf(extractError);
                 if (f.stopReason !== null) runTypedStop = f.stopReason;
                 f.attemptedRecords.push({
                   trusted: false,
@@ -2737,6 +2747,18 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
               // trusted:false rather than vanishing.
               if (judged.error !== undefined) {
                 pushLog("judge-invalid", `${f.id} candidate judge ${judged.error}`);
+                // Minimal returned-error promotion: a stop root that
+                // survived the normalizer's exact-vocabulary gate stops
+                // the composed run — same finite boundary as every other
+                // promotion site; the audit row below is unchanged.
+                const normalizedRoot = judged.stopRoot;
+                if (
+                  typeof normalizedRoot === "string" &&
+                  COMPOSED_STOP_ROOTS.has(normalizedRoot)
+                ) {
+                  f.stopReason = normalizedRoot;
+                  runTypedStop = normalizedRoot;
+                }
                 f.attemptedRecords.push({
                   trusted: false,
                   reason: judged.error,
@@ -2753,6 +2775,11 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
                       : {}),
                   },
                 });
+                // A validated composed-stop root is RUN-WIDE: after its
+                // single refused audit record, no later retained source in
+                // this batch may extract or admit again. An unrecognized
+                // error keeps the ordinary continue (next source).
+                if (f.stopReason !== null) break;
                 continue;
               }
               const judgement = judged.judgements[0] ?? null;
@@ -2840,9 +2867,7 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
               // observation survives into the audit; taxonomy preserved.
               // Composed-run stops promote through the SAME finite
               // vocabulary boundary as the extract and enum paths.
-              const cjStop = (judgeError as { reason?: unknown } | null)?.reason;
-              f.stopReason =
-                typeof cjStop === "string" && COMPOSED_STOP_ROOTS.has(cjStop) ? cjStop : null;
+              f.stopReason = composedRootOf(judgeError);
               if (f.stopReason !== null) runTypedStop = f.stopReason;
               const observed = sanitizeObservation(
                 (judgeError as { observed?: unknown } | null)?.observed,
@@ -2942,11 +2967,7 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
           // Classification composed-run stops take the SAME finite trust
           // boundary as the value path: only an exact vocabulary root
           // promotes; anything else keeps the honest unavailability label.
-          const judgeStopReason = (error as { reason?: unknown } | null)?.reason;
-          f.stopReason =
-            typeof judgeStopReason === "string" && COMPOSED_STOP_ROOTS.has(judgeStopReason)
-              ? judgeStopReason
-              : null;
+          f.stopReason = composedRootOf(error);
           if (f.stopReason !== null) runTypedStop = f.stopReason;
           f.judgeUnavailable = true;
           f.pendingAccept = null;

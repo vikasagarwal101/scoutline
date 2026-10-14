@@ -2,19 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 const root =
   new URL("..", import.meta.url).pathname;
-const { runLunaExtraction, runCandidateJudge } = await import(
-  `${root}/dev-dist/lean-candidate-transport.js`
-);
-const { buildCandidateJudgeRequest } = await import(`${root}/dist/lib/lean-candidates.js`);
-const { createLeanJevJudge } = await import(`${root}/dev-dist/lean-jev-adapter.js`);
-const config = {
-  endpoint: "https://fixture.invalid/no-network",
-  model: "fixture",
-  apiKey: "obviously-fake",
-  timeoutMs: 1000,
-  maxRequestBytes: 65536,
-  maxResponseBytes: 65536,
-};
+const { createTypesafeJudge } = await import(`${root}/dist/lib/lean-typesafe-judge.js`);
+const { createLeanAcquisitionDeps } = await import(`${root}/dist/lib/lean-acquisition-bridge.js`);
+const { createTavilyDescriptor } = await import(`${root}/dist/providers/tavily/adapter.js`);
 const source = {
   evidenceId: "e1",
   url: "https://fixture.invalid/source",
@@ -46,30 +36,44 @@ const enumInput = {
   documents: [{ evidenceId: "e1", url: source.url, title: "source", content: source.content }],
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Real production seams only: the acquisition bridge (extractor-side
+// bounded native read) and the official direct-TypeSafe judge. No
+// test-local abort races or read pumps — production owns them.
+function bridgeOver(fetch) {
+  const env = { TAVILY_API_KEY: "obviously-fake", TAVILY_TIMEOUT: "1000" };
+  const transport = { fetch, env };
+  const descriptor = createTavilyDescriptor({ transport });
+  return createLeanAcquisitionDeps({
+    transports: { tavily: transport },
+    descriptorFactory: (_id, t) => createTavilyDescriptor({ transport: t }),
+    searchDescriptor: descriptor,
+    readerDescriptor: descriptor,
+    env,
+    cache: { get: async () => null, set: async () => {} },
+    sleep: async () => {},
+    random: () => 0,
+    retryPolicy: { maxRetries: 0, baseDelayMs: 0, maxDelayMs: 0, jitterMs: 0 },
+    now: Date.now,
+  });
+}
 async function invoke(stage, fetchLike, options) {
-  if (stage === "extractor")
-    return runLunaExtraction(
-      {
-        sourceId: "e1",
-        sourceText: source.content,
-        fields: [{ id: "license", description: "License?" }],
-      },
-      config,
-      fetchLike,
-      Date.now,
-      options,
-    );
-  if (stage === "candidate")
-    return runCandidateJudge(
-      cand,
-      config,
-      buildCandidateJudgeRequest,
-      fetchLike,
-      Date.now,
-      options,
-    );
+  if (stage === "extractor") {
+    try {
+      return { kind: "ok", value: await bridgeOver(fetchLike).read(source.url, options) };
+    } catch (error) {
+      return { kind: "error", code: error.code ?? error.name };
+    }
+  }
+  const profile = createTypesafeJudge({
+    apiKey: "obviously-fake",
+    reserveAttempt: () => {},
+    fetchLike,
+  });
+  const call = stage === "candidate" ? profile.candidateJudge : profile.judge;
+  const input = stage === "candidate" ? cand : enumInput;
   try {
-    return await createLeanJevJudge(config, fetchLike)(enumInput, options);
+    return { kind: "ok", value: await call(input, options) };
   } catch (error) {
     return { kind: "error", code: error.code };
   }

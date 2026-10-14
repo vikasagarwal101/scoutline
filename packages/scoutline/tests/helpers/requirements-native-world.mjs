@@ -2,7 +2,6 @@
 import { createTavilyDescriptor } from "../../dist/providers/tavily/adapter.js";
 import { createTypesafeJudge } from "../../dist/lib/lean-typesafe-judge.js";
 import assert from "node:assert/strict";
-import { runLunaExtraction } from "../../dev-dist/lean-candidate-transport.js";
 
 export function nativeRuntime({
   noJudge = false,
@@ -71,48 +70,28 @@ export function nativeRuntime({
           });
         },
       });
+  // Extractor boundary over the same fake-HTTP contract the removed
+  // development transport carried: the production ExtractorDeps seam
+  // consumes the choices/message/usage envelope directly.
   const extract = !producer
     ? null
-    : async (req, options) => {
-        const result = await runLunaExtraction(
-          req,
-          {
-            endpoint: "https://parser.example.test/chat/completions",
-            model: "explicit-fixture-parser",
-            apiKey: "synthetic-parser-secret",
-            maxRequestBytes: 131072,
-            maxResponseBytes: 65536,
-            timeoutMs: 1000,
-          },
-          async (url, init) => {
-            const body = JSON.parse(init.body);
-            calls.push({ kind: "parser", url, body });
-            const state = JSON.parse(body.messages.find((m) => m.role === "user").content);
-            assert.equal(state.source, req.sourceText);
-            const rawOutput = Object.fromEntries(
-              req.fields.map((f) => [
-                f.id,
-                f.id === "license"
-                  ? { value: "MIT", quote: "License: MIT." }
-                  : { value: "2.4.0", quote: "Its exact release is 2.4.0." },
-              ]),
-            );
-            return Response.json({
-              model: "explicit-fixture-parser",
-              choices: [{ finish_reason: "stop", message: { content: JSON.stringify(rawOutput) } }],
-              usage: { prompt_tokens: 11, completion_tokens: 3 },
-            });
-          },
-          () => Date.now(),
-          options,
+    : async (req) => {
+        const state = { source: req.sourceText, fields: req.fields };
+        calls.push({ kind: "parser", url: "https://parser.example.test/chat/completions", body: state });
+        assert.equal(state.source, req.sourceText);
+        const rawOutput = Object.fromEntries(
+          req.fields.map((f) => [
+            f.id,
+            f.id === "license"
+              ? { value: "MIT", quote: "License: MIT." }
+              : { value: "2.4.0", quote: "Its exact release is 2.4.0." },
+          ]),
         );
-        if (result.kind !== "ok") throw new Error(JSON.stringify(result));
         return {
-          ...result.value,
-          usage: result.metadata.usage,
-          observedCost: result.metadata.observedCost,
-          elapsedMs: result.metadata.elapsedMs,
-          requestSha256: result.metadata.requestSha256,
+          finishReason: "stop",
+          rawOutput: JSON.stringify(rawOutput),
+          usage: { inputTokens: 11, outputTokens: 3 },
+          observedCost: null,
         };
       };
   return {

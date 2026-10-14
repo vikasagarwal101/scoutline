@@ -1,10 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { runLeanInvestigation } from "../dist/lib/lean-investigation.js";
-import {
-  runLeanJevJudgment,
-  createLeanJevJudge,
-} from "../dev-dist/lean-jev-adapter.js";
+import * as tsr from "../dist/lib/lean-typesafe-judge.js";
 
 // Approved boolean|null policy; actual engine and native adapter, offline only.
 const SHARED = "Assess ExampleApp 2.4.0 CSV export.";
@@ -271,33 +268,39 @@ test("adapter returns complete boolean|null records and exact per-question proba
     })),
   };
   const probabilities = { q0r: 0.97, q0s: 0.97, q0f: 0.01, q1r: 0.28, q1s: 0.25, q1f: 0.02 };
-  const result = await runLeanJevJudgment(
-    input,
-    config,
-    async () =>
+  const profile = tsr.createTypesafeJudge({
+    apiKey: config.apiKey,
+    reserveAttempt: () => {},
+    fetchLike: async () =>
       new Response(
         JSON.stringify({
-          model: "fixture-resolved",
+          model: tsr.TYPESAFE_PINNED_MODEL,
           usage: { input_tokens: 1, output_tokens: 1 },
           answers: Object.fromEntries(
             Object.entries(probabilities).map(([id, noul]) => [id, { type: "noul", noul }]),
           ),
         }),
       ),
-  );
+  });
+  const response = await profile.judge(input);
+  const metadata = response[Symbol.for("leanJevAttemptMeta")];
   assert.ok(
-    result.response,
+    response.documents,
     "middle bands must return complete source assessments instead of discard-all response",
   );
-  assert.deepEqual(result.response.documents, [
+  assert.deepEqual(response.documents, [
     { evidenceId: "e1", relevant: true, supportsClaim: true, refutesClaim: false },
     { evidenceId: "e2", relevant: null, supportsClaim: null, refutesClaim: false },
   ]);
-  assert.deepEqual(result.metadata.probabilities, probabilities);
+  assert.deepEqual(metadata.probabilities, probabilities);
 });
 
-test("actual adapter wrapper and engine complete mixed clear guide/unknown junk", async () => {
-  const judge = createLeanJevJudge(config, async (_endpoint, init) => {
+test("actual official judge and engine complete mixed clear guide/unknown junk", async () => {
+  const profile = tsr.createTypesafeJudge({
+    apiKey: config.apiKey,
+    reserveAttempt: () => {},
+    timeoutMs: config.timeoutMs,
+    fetchLike: async (_endpoint, init) => {
     const request = JSON.parse(init.body);
     const answers = Object.fromEntries(
       request.state.sources.flatMap((doc, i) =>
@@ -307,15 +310,16 @@ test("actual adapter wrapper and engine complete mixed clear guide/unknown junk"
         ]),
       ),
     );
-    return new Response(
-      JSON.stringify({
-        model: "fixture-resolved",
-        usage: { input_tokens: 1, output_tokens: 1 },
-        answers,
-      }),
-    );
+      return new Response(
+        JSON.stringify({
+          model: tsr.TYPESAFE_PINNED_MODEL,
+          usage: { input_tokens: 1, output_tokens: 1 },
+          answers,
+        }),
+      );
+    },
   });
-  const { result } = await run({ judge });
+  const { result } = await run({ judge: profile.judge });
   assert.equal(result.data.csv, "supported");
   assert.equal(result.status, "complete");
   assert.ok(
@@ -351,20 +355,26 @@ test("control: native missing IDs/wrong types/nonfinite values stay rejected", a
     { ...base, q0s: { type: "choice", noul: 0.5 } },
     { ...base, q0f: { type: "noul", noul: null } },
   ]) {
-    const result = await runLeanJevJudgment(
-      input,
-      config,
-      async () =>
+    const profile = tsr.createTypesafeJudge({
+      apiKey: config.apiKey,
+      reserveAttempt: () => {},
+      fetchLike: async () =>
         new Response(
           JSON.stringify({
-            model: "fixture-resolved",
+            model: tsr.TYPESAFE_PINNED_MODEL,
             usage: { input_tokens: 1, output_tokens: 1 },
             answers,
           }),
         ),
-    );
-    assert.equal(result.kind, "error");
-    assert.equal(result.code, "JEV_DEV_PROTOCOL");
+    });
+    let rejection;
+    try {
+      await profile.judge(input);
+    } catch (error) {
+      rejection = error;
+    }
+    assert(rejection, "protocol-invalid answers must reject at the official boundary");
+    assert.match(rejection.code, /^TYPESAFE_(PROTOCOL|MALFORMED)$/);
   }
 });
 

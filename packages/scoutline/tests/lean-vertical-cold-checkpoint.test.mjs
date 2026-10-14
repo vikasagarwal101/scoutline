@@ -7,8 +7,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createTavilyDescriptor } from '../dist/providers/tavily/adapter.js';
 import { createLeanAcquisitionDeps } from '../dist/lib/lean-acquisition-bridge.js';
-import { runLeanVerticalSlice } from '../scripts/lean-vertical-slice.mjs';
 const root = fileURLToPath(new URL('..', import.meta.url));
+const script = join(root, 'bin', 'scoutline.js');
 const json = value => new Response(JSON.stringify(value), { status: 200 });
 const sourceURL = 'https://offline.test/release';
 const env = { TAVILY_API_KEY: 'offline-sentinel-secret', TAVILY_TIMEOUT: '1000' };
@@ -42,29 +42,15 @@ function child(args, extra = {}, stdin = '') {
     proc.stdin.end(stdin);
   });
 }
-const script = join(root, 'scripts/lean-vertical-slice.mjs');
 
-test('importing development entrypoint with sentinel ambient credential is inert', async () => {
-  const result = await child(['--input-type=module', '-e', `await import(${JSON.stringify(new URL('../scripts/lean-vertical-slice.mjs', import.meta.url).href)})`]);
-  assert.equal(result.calls, 0);
-  assert.equal(result.stdout, '');
-});
-for (const disabled of [undefined, '0']) {
-  test(`direct main without explicit live opt-in refuses ambient dispatch (${disabled ?? 'unset'})`, async () => {
-    const result = await child([script, '--requirements-json', JSON.stringify(input())], disabled === undefined ? { SCOUTLINE_CACHE_DIR: join(sandbox, 'noopt-unset') } : { SLICE_DEV_MAIN: disabled, SCOUTLINE_CACHE_DIR: join(sandbox, 'noopt-zero') });
-    assert.equal(result.calls, 0, 'ambient credential is not live authorization');
-    assert.notEqual(result.code, 0);
-    assert.equal(result.stdout, '', 'no fabricated completed/partial result before opt-in');
-  });
-}
 
 test('actual stdin pipe is read and validated, not treated as a zero-length regular file', async () => {
-  const result = await child([script, '--requirements', '-'], {}, JSON.stringify(input()));
+  const result = await child([script, 'investigate', '--requirements', '-'], {}, JSON.stringify(input()));
   assert.doesNotMatch(result.stderr, /not valid JSON|Unexpected end of JSON input/, 'valid pipe bytes must not disappear');
 });
 
-test('partial configured judge profile fails closed before acquisition, not deterministic-only downgrade', async () => {
-  const result = await child([script, '--requirements-json', JSON.stringify(input())], { JEV_DEV_ENDPOINT: 'https://offline.test/judge' });
+test('judge credentials without transmit consent fail closed before acquisition, not deterministic-only downgrade', async () => {
+  const result = await child([script, 'investigate', '--requirements-json', JSON.stringify(input())], { TYPESAFE_API_KEY: 'synthetic-partial-key' });
   assert.equal(result.calls, 0);
   assert.doesNotMatch(result.stdout, /deterministic-only/);
 });
@@ -117,35 +103,4 @@ test('actual cache serve provenance follows executor read rather than a separate
   assert.equal(await deps.read(sourceURL), 'fresh');
   assert.equal(calls, 1);
   assert.equal(provenance[0].fromCache, false, 'cache evicted between probe and executor serve');
-});
-
-test('development output includes actual acquisition provenance and physical counts', async () => {
-  const records = [];
-  const { opts } = setup(async (url) => new URL(url).pathname === '/search' ? json({ results: [{ url: sourceURL, title: 'discovery', content: 'lead' }] }) : json({ results: [{ url: 'https://offline.test/final', raw_content: 'retained' }] }), { onReadProvenance: record => records.push(record) });
-  const rt = runtime(opts);
-  await runLeanVerticalSlice(['--requirements-json', JSON.stringify(input())], rt);
-  assert.ok(records.length);
-  const result = JSON.parse(rt.output.stdout);
-  assert.match(rt.output.stdout, /"finalUrl"\s*:\s*"https:\/\/offline.test\/final"/);
-  assert.ok(Number.isSafeInteger(result.usage.physicalHttpAttempts), 'logical calls do not expose physical retry/HTTP admission');
-});
-
-test('development stdout and validation errors redact injected credentials', async () => {
-  const { opts } = setup(async url => new URL(url).pathname === '/search' ? json({ results: [{ url: sourceURL, title: 'lead', content: 'lead' }] }) : json({ results: [{ url: sourceURL, raw_content: `upstream echoed ${env.TAVILY_API_KEY}` }] }));
-  const rt = runtime(opts);
-  await runLeanVerticalSlice(['--requirements-json', JSON.stringify(input())], rt);
-  assert.doesNotMatch(rt.output.stdout, /offline-sentinel-secret/);
-  const bad = input(); bad.requirements.release.schema.enum = [env.TAVILY_API_KEY];
-  const rtBad = runtime(opts);
-  await runLeanVerticalSlice(['--requirements-json', JSON.stringify(bad)], rtBad);
-  assert.doesNotMatch(rtBad.output.stderr, /offline-sentinel-secret/);
-});
-
-test('unknown policy/deep fields reject before actual HTTP, never accept-and-drop', async () => {
-  let calls = 0;
-  const { opts } = setup(async () => { calls++; return json({ results: [] }); });
-  const bad = input(); bad.retention = { privateTransmission: false, nested: { value: 'unsupported' } };
-  const rt = runtime(opts);
-  assert.equal(await runLeanVerticalSlice(['--requirements-json', JSON.stringify(bad)], rt), 2);
-  assert.equal(calls, 0);
 });

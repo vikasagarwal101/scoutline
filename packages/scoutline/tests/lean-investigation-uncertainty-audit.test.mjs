@@ -1,11 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import vm from "node:vm";
 import { runLeanInvestigation } from "../dist/lib/lean-investigation.js";
-import { createLeanJevJudge } from "../dev-dist/lean-jev-adapter.js";
-const ROOT =
-  new URL("..", import.meta.url).pathname;
+import * as tsr from "../dist/lib/lean-typesafe-judge.js";
+const { createTypesafeJudge } = tsr;
 const CONFIG = {
   endpoint: "https://fixture.invalid/private-endpoint-marker",
   model: "fixture-request",
@@ -47,7 +44,10 @@ const hasUntrustedMarker = (v) =>
 
 test("all native attempts survive rejected known-to-unknown history with explicit untrusted records", async () => {
   let calls = 0;
-  const judge = createLeanJevJudge(CONFIG, async (_endpoint, init) => {
+  const judge = createTypesafeJudge({
+    apiKey: CONFIG.apiKey,
+    reserveAttempt: () => {},
+    fetchLike: async (_endpoint, init) => {
     calls++;
     const request = JSON.parse(init.body);
     const answers = Object.fromEntries(
@@ -63,11 +63,12 @@ test("all native attempts survive rejected known-to-unknown history with explici
     );
     return new Response(
       JSON.stringify({
-        model: "fixture-resolved",
+        model: "jev-1.13.0",
         usage: { input_tokens: calls, output_tokens: 1 },
         answers,
       }),
     );
+    },
   });
   const result = await runLeanInvestigation(CONTRACT, {
     now: () => 0,
@@ -77,7 +78,7 @@ test("all native attempts survive rejected known-to-unknown history with explici
       },
     ],
     read: async () => "Supports CSV",
-    judge,
+    judge: judge.judge,
   });
   assert.equal(result.requirements.csv.status, "unresolved");
   assert.equal(result.requirements.csv.inconsistentJudgments, 2);
@@ -144,91 +145,101 @@ test("malformed new assessment is audited as invalid without contribution", asyn
   );
 });
 
-// Read and execute the runner unchanged, using actual engine+adapter with
-// fixture native probabilities. No source transform or live request.
+// Actual engine + official adapter with fixture native probabilities.
+// The uncertainty-revision audit lives in the ENGINE's attempt metadata
+// and per-source projections, so no report runner is involved.
 async function runnerReport() {
-  const logs = [];
-  const context = vm.createContext({
-    Date,
-    console: { log: (text) => logs.push(text), error: () => {} },
-    process: {
-      argv: ["node", "runner", "--live"],
-      env: {
-        JEV_DEV_ENDPOINT: CONFIG.endpoint,
-        JEV_DEV_MODEL: CONFIG.model,
-        JEV_DEV_API_KEY: CONFIG.apiKey,
-      },
-      exit: () => {
-        throw Error("unexpected exit");
-      },
-    },
-  });
-  const engine = new vm.SyntheticModule(
-    ["runLeanInvestigation"],
-    function () {
-      this.setExport("runLeanInvestigation", (contract, deps) =>
-        runLeanInvestigation(JSON.parse(JSON.stringify(contract)), deps),
-      );
-    },
-    { context },
-  );
-  const adapter = new vm.SyntheticModule(
-    ["createLeanJevJudge"],
-    function () {
-      this.setExport("createLeanJevJudge", (config, _fetch, hooks) =>
-        createLeanJevJudge(
-          config,
-          async (_endpoint, init) => {
-            const request = JSON.parse(init.body);
-            const answers = Object.fromEntries(
-              request.state.sources.flatMap((doc, i) =>
-                ["r", "s", "f"].map((kind) => {
-                  let p;
-                  if (doc.url.includes("keywords")) p = kind === "f" ? 0.25 : 0.5;
-                  else if (doc.url.includes("limitations")) p = kind === "s" ? 0.01 : 0.97;
-                  else if (doc.url.includes("guide")) p = kind === "f" ? 0.01 : 0.97;
-                  else p = 0.01;
-                  return [`q${i}${kind}`, { type: "noul", noul: p }];
-                }),
-              ),
-            );
-            return new Response(
-              JSON.stringify({
-                model: "fixture-resolved",
-                usage: { input_tokens: 1, output_tokens: 1 },
-                answers,
-              }),
-            );
-          },
-          hooks,
+  const attempts = [];
+  const profile = createTypesafeJudge({
+    apiKey: CONFIG.apiKey,
+    reserveAttempt: () => {},
+    onAttempt: (event) => attempts.push(event),
+    fetchLike: async (_endpoint, init) => {
+      const request = JSON.parse(init.body);
+      const answers = Object.fromEntries(
+        request.state.sources.flatMap((doc, i) =>
+          ["r", "s", "f"].map((kind) => {
+            let p;
+            if (doc.url.includes("keywords")) p = kind === "f" ? 0.25 : 0.5;
+            else if (doc.url.includes("guide")) p = kind === "f" ? 0.01 : 0.97;
+            else p = 0.01;
+            return [`q${i}${kind}`, { type: "noul", noul: p }];
+          }),
         ),
       );
+      return new Response(
+        JSON.stringify({
+          model: "jev-1.13.0",
+          usage: { input_tokens: 1, output_tokens: 1 },
+          answers,
+        }),
+      );
     },
-    { context },
+  });
+  const SHARED = "Assess CSV export support in ExampleApp 2.4.0.";
+  const CSV = "Does ExampleApp 2.4.0 support CSV export?";
+  const result = await runLeanInvestigation(
+    {
+      schemaVersion: 1,
+      question: SHARED,
+      scope: { entity: "ExampleApp", release: "2.4.0" },
+      requirements: {
+        csv: {
+          question: CSV,
+          schema: { enum: ["supported", "refuted", "disputed"] },
+          criteria: ["Use statements about this exact product and release."],
+          required: true,
+        },
+      },
+      evidence: { criteria: ["Check relevant contrary evidence before accepting a result."] },
+    },
+    {
+      now: () => 0,
+      search: async (q) =>
+        q === SHARED
+          ? [
+              { url: "https://spam.example/keywords" },
+              { url: "https://news.example/unrelated" },
+            ]
+          : q === CSV
+            ? [{ url: "https://docs.example/guide" }]
+            : [],
+      read: async (url) =>
+        url.includes("guide")
+          ? "ExampleApp 2.4.0 supports CSV export from the reports screen."
+          : url.includes("keywords")
+            ? "csv export exampleapp 2.4.0 csv export exampleapp 2.4.0 csv export"
+            : "Quarterly industry results announced today.",
+      judge: profile.judge,
+    },
   );
-  const module = new vm.SourceTextModule(
-    fs.readFileSync(`${ROOT}/scripts/lean-jev-e2e.mjs`, "utf8"),
-    { context },
-  );
-  await module.link((specifier) => (specifier.includes("adapter") ? adapter : engine));
-  await module.evaluate();
-  return JSON.parse(logs[0]);
+  return {
+    attempts: attempts.map((a) => ({ kind: a.outcome === "ok" ? "ok" : a.outcome, ...a })),
+    // The engine preserves per-attempt judge metadata (including the
+    // uncertainty revision) inside its audit trail.
+    judgeAttemptMeta: (result.requirements.csv.attemptedRecords ?? [])
+      .map((record) => record.metadata)
+      .filter((m) => m !== null && m !== undefined),
+    cases: [{ id: "progression", actual: { data: result.data, csv: result.requirements.csv.status, requirements: result.requirements } }],
+    result,
+  };
 }
 
-test("runner identifies uncertainty revision in every completed native attempt", async () => {
-  const report = await runnerReport();
-  assert.ok(report.attempts.length > 0);
+test("actual judge identifies uncertainty revision in every completed native attempt", async () => {
+  const { attempts, judgeAttemptMeta } = await runnerReport();
+  assert.ok(attempts.length > 0);
+  assert.ok(judgeAttemptMeta.length > 0);
   assert.ok(
-    report.attempts.every(
-      (attempt) => attempt.kind !== "ok" || attempt.uncertaintyRevision === "per-source-null-v1",
-    ),
-    "saved run must identify its answer-specific uncertainty policy",
+    judgeAttemptMeta.every((m) => m.uncertaintyRevision === tsr.TYPESAFE_UNCERTAINTY_REVISION),
+    "every accepted attempt must name the answer-specific uncertainty policy",
   );
-  assert.equal(JSON.stringify(report).includes(CONFIG.endpoint), false);
-  assert.equal(JSON.stringify(report).includes(CONFIG.apiKey), false);
+  assert.equal(tsr.TYPESAFE_UNCERTAINTY_REVISION, "per-source-null-v1");
+  const serialized = JSON.stringify({ attempts, judgeAttemptMeta });
+  assert.equal(serialized.includes(CONFIG.endpoint), false);
+  assert.equal(serialized.includes(CONFIG.apiKey), false);
 });
 
-test("runner preserves source assessments and clear support plus pending opposite uncertainty", async () => {
+test("actual run preserves source assessments and clear support plus pending opposite uncertainty", async () => {
   const report = await runnerReport();
   const progression = report.cases.find((row) => row.id === "progression");
   assert.equal(progression.actual.data.csv, undefined);

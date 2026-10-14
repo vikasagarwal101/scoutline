@@ -1,8 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import vm from "node:vm";
-import { runLeanJevJudgment } from "../dev-dist/lean-jev-adapter.js";
+import * as tsr from "../dist/lib/lean-typesafe-judge.js";
 
 const ROOT =
   new URL("..", import.meta.url).pathname;
@@ -23,7 +21,7 @@ const INPUT = {
   ],
 };
 const payload = {
-  model: "fixture-resolved",
+  model: "jev-1.13.0",
   usage: { input_tokens: 1, output_tokens: 1 },
   answers: {
     q0r: { type: "noul", noul: 1 },
@@ -52,144 +50,116 @@ test("successful header/body races dispose every owned timer", async () => {
   let result;
   let pending;
   try {
-    result = await runLeanJevJudgment(
-      INPUT,
-      CONFIG,
-      async () => new Response(JSON.stringify(payload)),
-    );
+    const profile = tsr.createTypesafeJudge({
+      apiKey: CONFIG.apiKey,
+      reserveAttempt: () => {},
+      timeoutMs: CONFIG.timeoutMs,
+      fetchLike: async () => new Response(JSON.stringify(payload)),
+    });
+    result = await profile.judge(INPUT);
     pending = active.size;
   } finally {
     for (const handle of active) originalClear(handle);
     globalThis.setTimeout = originalSet;
     globalThis.clearTimeout = originalClear;
   }
-  assert.equal(result.kind, "ok");
+  assert.ok(Array.isArray(result.documents));
   assert.equal(pending, 0, "settled races must not leave timeout handles keeping process alive");
 });
 
 test("late header response after timeout disposes its unread body", async () => {
   let cancelled = false;
-  const result = await runLeanJevJudgment(INPUT, { ...CONFIG, timeoutMs: 5 }, async () => {
-    await new Promise((resolve) => setTimeout(resolve, 25));
-    return {
-      status: 200,
-      ok: true,
-      headers: new Headers(),
-      body: new ReadableStream({
-        cancel() {
-          cancelled = true;
-        },
-      }),
-    };
+  const profile = tsr.createTypesafeJudge({
+    apiKey: CONFIG.apiKey,
+    reserveAttempt: () => {},
+    timeoutMs: 5,
+    fetchLike: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      return {
+        status: 200,
+        ok: true,
+        headers: new Headers(),
+        body: new ReadableStream({
+          cancel() {
+            cancelled = true;
+          },
+        }),
+      };
+    },
   });
-  assert.equal(result.code, "JEV_DEV_TIMEOUT");
+  let result;
+  try {
+    await profile.judge(INPUT);
+  } catch (error) {
+    result = error;
+  }
+  assert.equal(result.code, "TYPESAFE_TIMEOUT");
   await new Promise((resolve) => setTimeout(resolve, 45));
   assert.equal(cancelled, true, "losing fetch promise may resolve later but cannot leak a body");
 });
 
-// Unchanged runner linked to synthetic clock/adapter/engine, no network.
-async function runClockedRunner(startNearDeadline) {
-  let now = 0;
-  const timeouts = [];
-  const reservations = [];
-  const logs = [];
-  let constructed = 0;
-  const context = vm.createContext({
-    Date: { now: () => now },
-    console: { log: (value) => logs.push(value), error: () => {} },
-    process: {
-      argv: ["node", "runner", "--live"],
-      env: {
-        JEV_DEV_ENDPOINT: CONFIG.endpoint,
-        JEV_DEV_MODEL: CONFIG.model,
-        JEV_DEV_API_KEY: CONFIG.apiKey,
-      },
-      exit: () => {
-        throw Error("unexpected exit");
-      },
+// Production clamp guard: the official judge clamps its attempt deadline
+// to the run budget the CALLER hands it (options.timeoutMs), never to its
+// own configured attempt timeout. Observed through actual settlement
+// time against a stalled body — no locally computed arrays.
+async function clampedDispatch(runBudgetMs, stalledBody = true) {
+  let cancelled = false;
+  const body = new ReadableStream({
+    start(c) {
+      if (!stalledBody) {
+        c.enqueue(new TextEncoder().encode(JSON.stringify(payload)));
+        c.close();
+      }
+    },
+    cancel() {
+      cancelled = true;
     },
   });
-  const adapter = new vm.SyntheticModule(
-    ["createLeanJevJudge"],
-    function () {
-      this.setExport("createLeanJevJudge", (config, _fetch, hooks) => {
-        constructed++;
-        return async () => {
-          timeouts.push(config.timeoutMs);
-          reservations.push(now);
-          hooks.onAttempt({
-            kind: "ok",
-            metadata: {
-              probabilities: {},
-              usage: { inputTokens: 1, outputTokens: 1 },
-              resolvedModel: "fixture-resolved",
-              requestedModel: CONFIG.model,
-              attemptSha256: "a".repeat(64),
-              thresholdRevision: "fixture",
-              status: 200,
-              elapsedMs: 0,
-            },
-          });
-          now = 179_995;
-          return { documents: [] };
-        };
-      });
-    },
-    { context },
-  );
-  const engine = new vm.SyntheticModule(
-    ["runLeanInvestigation"],
-    function () {
-      this.setExport("runLeanInvestigation", async (_contract, deps) => {
-        if (deps.judge && timeouts.length === 0) {
-          if (startNearDeadline) now = 179_990;
-          await deps.judge(INPUT);
-          await deps.judge(INPUT);
-        }
-        return {
-          status: "empty",
-          data: {},
-          requirements: { csv: { status: "unresolved" } },
-          assessment: "semantic",
-          usage: { judgeCalls: 0 },
-          evidence: [],
-        };
-      });
-    },
-    { context },
-  );
-  const module = new vm.SourceTextModule(
-    fs.readFileSync(`${ROOT}/scripts/lean-jev-e2e.mjs`, "utf8"),
-    { context },
-  );
-  await module.link((specifier) => (specifier.includes("adapter") ? adapter : engine));
-  await module.evaluate();
-  return { timeouts, reservations, constructed, report: JSON.parse(logs[0]) };
+  const profile = tsr.createTypesafeJudge({
+    apiKey: CONFIG.apiKey,
+    reserveAttempt: () => {},
+    timeoutMs: 15_000, // far larger than the run budget
+    fetchLike: async () => ({
+      status: 200,
+      ok: true,
+      headers: new Headers(),
+      body,
+    }),
+  });
+  const started = performance.now();
+  let error;
+  try {
+    await profile.judge(INPUT, { timeoutMs: runBudgetMs });
+  } catch (caught) {
+    error = caught;
+  }
+  return { elapsed: performance.now() - started, error, cancelled };
 }
 
-test("runner recalculates attempt deadline for every dispatch in same case", async () => {
-  const { timeouts, reservations } = await runClockedRunner(false);
-  assert.deepEqual(reservations, [0, 179_995]);
-  assert.deepEqual(
-    timeouts,
-    [15_000, 5],
-    "cached judge must not carry first dispatch timeout past outer deadline",
+test("run budget clamps the configured attempt timeout on a stalled body", async () => {
+  const { elapsed, error, cancelled } = await clampedDispatch(10);
+  assert(
+    elapsed < 200,
+    `a 10ms run budget must bound a 15s-configured stalled attempt; took ${elapsed.toFixed(1)}ms`,
   );
+  assert.equal(error.code, "TYPESAFE_TIMEOUT");
+  assert(cancelled, "the stalled reader must be cancelled, not awaited");
 });
 
-test("control: first dispatch already near outer bound uses remaining time", async () => {
-  const { timeouts, reservations, report } = await runClockedRunner(true);
-  assert.equal(reservations[0], 179_990);
-  assert.equal(timeouts[0], 10);
-  assert.equal(report.caps.attemptsUsed, 2);
+test("control: a body that completes stays inside the run budget", async () => {
+  const { elapsed, error } = await clampedDispatch(1_000, false);
+  assert(elapsed < 1_000, "completing bodies settle within their budget");
+  assert.equal(error, undefined);
 });
 
 test("control: ordinary finite successful native response is accepted", async () => {
-  const result = await runLeanJevJudgment(
-    INPUT,
-    { ...CONFIG, timeoutMs: 5 },
-    async () => new Response(JSON.stringify(payload)),
-  );
-  assert.equal(result.kind, "ok");
-  assert.deepEqual(result.metadata.usage, { inputTokens: 1, outputTokens: 1 });
+  const profile = tsr.createTypesafeJudge({
+    apiKey: CONFIG.apiKey,
+    reserveAttempt: () => {},
+    timeoutMs: 5,
+    fetchLike: async () => new Response(JSON.stringify(payload)),
+  });
+  const result = await profile.judge(INPUT);
+  const metadata = result[Symbol.for("leanJevAttemptMeta")];
+  assert.deepEqual(metadata.usage, { inputTokens: 1, outputTokens: 1 });
 });

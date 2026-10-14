@@ -5,11 +5,8 @@ import { createHash } from "node:crypto";
 import { offlineDeps } from "./unified-review-offline-deps.mjs";
 const root =
   new URL("..", import.meta.url).pathname;
-const { runLunaExtraction, runCandidateJudge } = await import(
-  `${root}/dev-dist/lean-candidate-transport.js`
-);
 const { buildCandidateJudgeRequest } = await import(`${root}/dist/lib/lean-candidates.js`);
-const { createLeanJevJudge } = await import(`${root}/dev-dist/lean-jev-adapter.js`);
+const { createTypesafeJudge } = await import(`${root}/dist/lib/lean-typesafe-judge.js`);
 const hash = (x) => createHash("sha256").update(x).digest("hex");
 const p = (x) => (x === null ? 0.5 : x ? 0.97 : 0.01);
 const config = (model) => ({
@@ -170,46 +167,74 @@ export function nativeDeps(c) {
           };
     return response(body, physical);
   };
+  const enumProfile = createTypesafeJudge({
+    apiKey: "obviously-fake-offline-key",
+    reserveAttempt: () => {},
+    onAttempt: (event) => attempts.push({ stage: "classification", result: { kind: event.outcome, metadata: event } }),
+    fetchLike: fetchFor("classification"),
+  });
+  const candidateProfile = createTypesafeJudge({
+    apiKey: "obviously-fake-offline-key",
+    reserveAttempt: () => {},
+    fetchLike: fetchFor("candidate"),
+  });
   const deps = {
     now: base.deps.now,
     search: base.deps.search,
     read: base.deps.read,
     extractorRevision: "native-composed-offline-v1",
-    judge: createLeanJevJudge(config("fixture-native-enum"), fetchFor("classification"), {
-      onAttempt: (x) => attempts.push({ stage: "classification", result: x }),
-    }),
+    judge: enumProfile.judge,
     extract: async (input) => {
-      const result = await runLunaExtraction(
-        input,
-        config("fixture-native-extractor"),
-        fetchFor("extraction"),
+      // Extractor boundary over the same fake HTTP solver; the envelope
+      // (choices/message/usage) is the contract the production engine
+      // consumes via ExtractorDeps.
+      const state = {
+        source: input.sourceText,
+        fields: input.fields,
+        scope: input.scope ?? {},
+        depBindings: input.depBindings ?? {},
+      };
+      const response = await fetchFor("extraction")(
+        "https://parser.example.test/chat/completions",
+        {
+          method: "POST",
+          redirect: "error",
+          signal: new AbortController().signal,
+          body: JSON.stringify({
+            model: "fixture-native-extractor",
+            messages: [
+              { role: "system", content: "extract" },
+              { role: "user", content: JSON.stringify(state) },
+            ],
+          }),
+        },
       );
-      attempts.push({ stage: "extraction", result });
-      if (result.kind !== "ok") throw Object.assign(new Error(result.code), { code: result.code });
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let text = "";
+      for (;;) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        text += decoder.decode(chunk.value, { stream: true });
+      }
+      const parsed = JSON.parse(text);
+      attempts.push({ stage: "extraction", result: { kind: "ok", value: parsed } });
       return {
-        ...result.value,
-        usage: result.metadata.usage,
-        observedCost: result.metadata.observedCost,
-        elapsedMs: result.metadata.elapsedMs,
-        requestSha256: result.metadata.requestSha256,
+        finishReason: parsed.choices[0].finish_reason,
+        rawOutput: parsed.choices[0].message.content,
+        usage: { inputTokens: parsed.usage.prompt_tokens, outputTokens: parsed.usage.completion_tokens },
+        observedCost: null,
       };
     },
     candidateJudge: async (input) => {
-      const result = await runCandidateJudge(
-        input,
-        config("fixture-native-candidate"),
-        buildCandidateJudgeRequest,
-        fetchFor("candidate"),
-      );
-      attempts.push({ stage: "candidate", result });
-      if (result.kind !== "ok") throw Object.assign(new Error(result.code), { code: result.code });
-      return {
-        model: result.metadata.resolvedModel,
-        answers: result.value,
-        usage: result.metadata.usage,
-        elapsedMs: result.metadata.elapsedMs,
-        requestSha256: result.metadata.requestSha256,
-      };
+      try {
+        const value = await candidateProfile.candidateJudge(input);
+        attempts.push({ stage: "candidate", result: { kind: "ok", value } });
+        return value;
+      } catch (error) {
+        attempts.push({ stage: "candidate", result: { kind: "error", code: error.code } });
+        throw error;
+      }
     },
   };
   return { deps, physical, requests, attempts, acquisition: base.calls };

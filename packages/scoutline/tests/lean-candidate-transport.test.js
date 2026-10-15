@@ -158,6 +158,35 @@ describe("candidate transport: shared guards", () => {
     assert.equal(calls, 1);
   });
 
+  // Deterministic timer-ordering regression (Sol P2): an injected clock
+  // advanced to 1ms-before-deadline during fetch setup makes the HEADER
+  // timer (1ms) fire strictly before the whole-attempt timer. When the
+  // header deadline wins, the owned controller must abort and the typed
+  // result must be TYPESAFE_TIMEOUT (dispatched work, remote uncertainty
+  // preserved) — never a bare AbortError reclassified as
+  // TYPESAFE_REMOTE_UNCERTAIN with the local signal left un-aborted.
+  it("header-deadline race settles timeout: owned abort + TYPESAFE_TIMEOUT, single dispatch", async () => {
+    let clock = 0, calls = 0, ownedSignal;
+    let error;
+    try {
+      await judgeOnce(judgedInputGuard(), async (_url, options) => {
+        calls += 1;
+        ownedSignal = options.signal;
+        clock = 29; // header timer now ~1ms while the attempt timer has ~30ms
+        return new Promise(() => {}); // never settles: only the deadline can bound it
+      }, { timeoutMs: 30, now: () => clock });
+    } catch (caught) {
+      error = caught;
+    }
+    assert(error, "bounded by the deadline");
+    assert.equal(calls, 1, "single physical dispatch");
+    assert.equal(error.code, "TYPESAFE_TIMEOUT", `typed deadline, got ${error.code}`);
+    assert.equal(error.remoteWorkUncertain, true, "dispatched work stays remote-uncertain");
+    // After the deadline has passed, the owned local signal must be aborted.
+    await new Promise((resolve) => setTimeout(resolve, 45));
+    assert.equal(ownedSignal.aborted, true, "owned controller aborted once the header deadline wins");
+  });
+
   it("timeout during stalled body cancels the owned reader", async () => {
     let cancelled = false;
     const body = new ReadableStream({ cancel() { cancelled = true; } });

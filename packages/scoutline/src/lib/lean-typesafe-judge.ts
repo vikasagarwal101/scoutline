@@ -558,7 +558,15 @@ async function dispatchOnce(input: DispatchInput): Promise<{
       const response = await Promise.race([
         fetchPromise,
         new Promise<never>((_, reject) => {
-          headerTimer = setTimeout(() => reject(abortError()), remaining());
+          // Header-deadline settlement (Sol P2): when the header timer wins,
+          // settle the SAME timeout state the whole-attempt timer would have
+          // — typed TYPESAFE_TIMEOUT (not a reclassified AbortError) and the
+          // owned fetch controller aborted — before rejecting the race.
+          headerTimer = setTimeout(() => {
+            timedOut = true;
+            controller.abort();
+            reject(abortError());
+          }, remaining());
           onHeaderAbort = () => reject(abortError());
           runSignal.addEventListener("abort", onHeaderAbort, { once: true });
           controller.signal.addEventListener("abort", onHeaderAbort, { once: true });

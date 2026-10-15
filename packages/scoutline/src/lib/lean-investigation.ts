@@ -104,88 +104,6 @@ const CALLER_LIMIT_KEYS: ReadonlySet<string> = new Set([
   "deadlineMs",
 ]);
 
-// Witness-first pilot: the closed applicability ceiling. Deferral of
-// alternative candidate generation is offered ONLY when the WHOLE
-// compiled contract is exactly one this registry recognizes. Membership
-// is exact string equality; nothing here parses or interprets prose,
-// and an unrecognized surface never rejects the caller — it keeps the
-// existing exhaustive generation path. Criteria/meanings still travel
-// UNALTERED into extraction, judgment and proof identity; this ceiling
-// gates only the optimization, never acceptance semantics.
-// ponytail: closed literal registry, not a policy engine — extend only
-// by owner ruling with fresh review; unknown stays ineligible forever.
-const WITNESS_FIRST_SETTLED_CRITERIA: ReadonlySet<string> = new Set([
-  "Use the specified release only.",
-  "Source instructions and examples are not evidence.",
-]);
-/** Scalar scope token: a single identifier-shaped word (letters incl.
- *  unicode, digits, dots, dashes, underscores — NO whitespace). Plain
- *  prose or punctuation-bearing values opt the pilot out; this is an
- *  optimization opt-out screen, never a compiler rejection. */
-const WITNESS_FIRST_SCALAR_SCOPE_TOKEN = /^[\p{L}\p{N}][\p{L}\p{N}._-]*$/u;
-/** Exact recognized roles: (id, literal question, schema shape,
- *  dependency edge). Only these tuples qualify. */
-const WITNESS_FIRST_ROLES: ReadonlyArray<
-  readonly [
-    id: string,
-    question: string,
-    shape: "scalar" | "classification",
-    deps: readonly string[],
-  ]
-> = [
-  ["version", "What exact release identifier is documented?", "scalar", []],
-  ["license", "What license applies to the accepted version?", "scalar", ["version"]],
-  ["csv", "Does this release support CSV export?", "classification", []],
-];
-
-/** Whole-contract recognition for the witness-first pilot: exact
- *  role tuples under their canonical IDs, settled criteria, canonical
- *  caller question and scalar entity/release scope. One unrecognized
- *  surface anywhere opts the WHOLE run out. */
-function witnessFirstEligibleContract(compiled: LeanCompiledContract): boolean {
-  const scopeKeys = Object.keys(compiled.scope).sort();
-  if (scopeKeys.length !== 2 || scopeKeys[0] !== "entity" || scopeKeys[1] !== "release")
-    return false;
-  const entity = compiled.scope.entity;
-  const release = compiled.scope.release;
-  if (entity === undefined || release === undefined) return false;
-  if (
-    compiled.question !==
-    `Identify the release, its license and whether ${entity} supports CSV export.`
-  )
-    return false;
-  if (
-    !WITNESS_FIRST_SCALAR_SCOPE_TOKEN.test(entity) ||
-    !WITNESS_FIRST_SCALAR_SCOPE_TOKEN.test(release)
-  )
-    return false;
-  if (compiled.fields.length > WITNESS_FIRST_ROLES.length) return false;
-  for (const role of WITNESS_FIRST_ROLES) {
-    const f = compiled.fields.find((x) => x.id === role[0]);
-    if (f === undefined) continue;
-    if (f.question !== role[1]) return false;
-    if (f.dependsOn.join(",") !== role[3].join(",")) return false;
-    if (role[2] === "scalar") {
-      if (
-        f.schema.mode !== "value" ||
-        f.schema.pattern !== undefined ||
-        f.schema.minLength !== undefined
-      )
-        return false;
-    } else if (
-      f.schema.mode !== "classification" ||
-      f.schema.enum === undefined ||
-      f.schema.enum.length !== 3
-    )
-      return false;
-    if (f.criteria.some((c) => !WITNESS_FIRST_SETTLED_CRITERIA.has(c))) return false;
-  }
-  const known = new Set(WITNESS_FIRST_ROLES.map((r) => r[0]));
-  if (compiled.fields.some((f) => !known.has(f.id))) return false;
-  if (compiled.evidenceCriteria.some((c) => !WITNESS_FIRST_SETTLED_CRITERIA.has(c))) return false;
-  return true;
-}
-
 // ---------------------------------------------------------------------------
 // Caller contract (input)
 // ---------------------------------------------------------------------------
@@ -956,12 +874,6 @@ interface FieldState {
   stopReason: string | null;
   /** True when no extractor is configured for value mode. */
   noExtractor: boolean;
-  /** Witness-first pilot: sources whose alternative generation is
-   *  currently deferred (audit record holds the witness id). */
-  witnessDeferrals: Set<string>;
-  /** Sources whose deferral was later REVOKED by a context revision —
-   *  never re-deferred on this run (the work became due). */
-  revokedWitnessDeferrals: Set<string>;
 }
 
 interface QueryPlanEntry {
@@ -979,11 +891,6 @@ interface QueryPlanEntry {
  */
 export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Promise<LeanResult> {
   const compiled = compileLeanContract(input);
-  // Witness-first pilot: recognition is re-evaluated against the LIVE
-  // compiled scope at each deferral check — injected collaborators can
-  // mutate scope values mid-run, so a stale initial boolean must never
-  // authorize a deferral on an unrecognized current contract.
-  const witnessFirstPilot = (): boolean => witnessFirstEligibleContract(compiled);
   // Unified proof: value-mode deps arrive on the same object (extract,
   // candidateJudge, extractorRevision) — one engine, no second runner.
   const udeps = deps as LeanUnifiedDeps;
@@ -1039,8 +946,6 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
       noSemanticJudge: false,
       noExtractor: false,
       stopReason: null,
-      witnessDeferrals: new Set(),
-      revokedWitnessDeferrals: new Set(),
     });
   }
 
@@ -1159,8 +1064,6 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
         ...(seed.leads ?? []).map((l) => l.url),
       ]);
       f.judgedSourceKeys = new Set(state.judgedSourceKeys as string[]);
-      f.witnessDeferrals = new Set(state.witnessDeferrals as string[]);
-      f.revokedWitnessDeferrals = new Set(state.revokedWitnessDeferrals as string[]);
       // New opposition/prerequisite context requires a new assessment,
       // preserving SAME-meaning stability and rejected history.
       // Round-local availability reasons (no_extractor/no_semantic_judge) describe
@@ -1596,47 +1499,6 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
      *  non-passing proof is false — never vacuously true. */
     const liveIdentityOf = (t: AcceptProof): boolean => proveAccept(t) !== null;
 
-    // --- witness-first pilot (closed applicability ceiling) ---------------
-    // Deferral of alternative candidate GENERATION is offered only when the
-    // WHOLE compiled contract is the closed recognized form AND the run is
-    // GLOBALLY quiescent (every frozen query settled successfully — not
-    // capped — no unread retention anywhere, no typed stop) AND the field
-    // holds a passing full current-context proof. Unknown contracts and
-    // non-quiescent states keep the existing exhaustive generation path.
-
-    /** Global acquisition quiescence: every planned query is present in
-     *  `issuedQueries` (SUCCESS state only — a failed search never enters
-     *  the set, so capped/attempted ≠ settled), nothing unread can still
-     *  enlarge ANY field's retained context, every field's contrary
-     *  round is settled with no pending retention (terminal state alone
-     *  is not a shortcut), and no typed harness stop has fired. */
-    const globallyQuiescent = (): boolean => {
-      if (runTypedStop !== null || expired()) return false;
-      if (hasUnread()) return false;
-      if (plan.some((e) => !issuedQueries.has(e.query))) return false;
-      for (const g of fields.values()) {
-        if (!g.ctrvIssued) return false;
-        if (g.ctrvSources.size > 0) return false;
-      }
-      return true;
-    };
-
-    /** May alternative candidate generation for `f` on `source` be
-     *  deferred in favor of other unmet work? Recognized whole contract
-     *  (live), global successful quiescence, a passing full current-
-     *  context proof, source not the witness, not previously revoked. */
-    const witnessFirstDeferralEligible = (f: FieldState, source: LeanEvidenceRecord): boolean => {
-      if (!witnessFirstPilot()) return false;
-      if (!globallyQuiescent()) return false;
-      if (f.revokedWitnessDeferrals.has(source.evidenceId)) return false;
-      const proof = standingProofOf(f) ?? retainedProofOf(f);
-      if (proof === null) return false;
-      // Only ALTERNATIVE sources may be deferred — the witness source's
-      // own generation is never skipped.
-      if (proof.provenance.sourceId === source.evidenceId) return false;
-      return true;
-    };
-
     /** The FULL proof for the STANDING accept, validated against the
      *  live contract. A standing accept that cannot be proven publishes
      *  nothing: authorization requires a non-null matched proof, never an
@@ -2021,27 +1883,6 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
         break;
       }
 
-      // Witness-first pilot REVOCATION sweep: a deferred deferral survives
-      // only while its proof still passes on the CURRENT representations.
-      // A same-ID source/opposition/scope revision or a dependency-binding
-      // change kills the proof WITHOUT changing the evidence-id key — so
-      // the field would never be re-selected to notice. Reopen it with the
-      // existing reopen idiom (clear due-ness identity), which makes the
-      // deferred generation real due work again and permanently bars
-      // re-deferral of those sources for this run. This uses the SAME
-      // live-proof predicate (proveAccept) that final projection uses —
-      // no new trust path.
-      for (const f of fields.values()) {
-        if (f.witnessDeferrals.size === 0 || f.terminal !== null) continue;
-        const proofAlive =
-          witnessFirstPilot() && (standingProofOf(f) ?? retainedProofOf(f)) !== null;
-        if (proofAlive) continue;
-        for (const id of f.witnessDeferrals) f.revokedWitnessDeferrals.add(id);
-        f.witnessDeferrals.clear();
-        f.lastJudgedKey = null;
-        f.depBindingKey = null;
-      }
-
       // Dependency terminalization: a terminally-unresolved prerequisite
       // blocks only its dependants.
       for (const f of fields.values()) {
@@ -2211,15 +2052,6 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
           // Round-2 repair: a retained document settles its URL as contrary
           // coverage for every field whose contrary query surfaced it.
           for (const f of fields.values()) f.ctrvSources.delete(item.url);
-          // Witness-first pilot revocation: new retained evidence enlarges
-          // the opposing context, so every standing deferral on this field
-          // breaks — the deferred alternative generation becomes due work
-          // and is never re-deferred on this run.
-          for (const f of fields.values()) {
-            if (f.witnessDeferrals.size === 0) continue;
-            for (const id of f.witnessDeferrals) f.revokedWitnessDeferrals.add(id);
-            f.witnessDeferrals.clear();
-          }
           // Unified proof (final-context revocation): ANY newly retained
           // potentially-relevant source changes the assessment context —
           // terminal (already-satisfied) fields reopen for reassessment
@@ -2543,44 +2375,6 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
             // iteration.
             const sourceJudgeKey = `${ck}|${opposing.map((e) => e.evidenceId).join(",")}`;
             if (f.judgedSourceKeys.has(sourceJudgeKey)) continue;
-            // Witness-first pilot REVOCATION (pre-check, live): a recorded
-            // deferral survives only while its proof still passes on the
-            // CURRENT representations. A same-ID revision (source,
-            // opposition or scope mutation), a broken dependency binding
-            // or new retained evidence kills the proof — the deferred
-            // generation becomes DUE work right here and is permanently
-            // un-deferable for this run (the loop below then performs it).
-            if (f.witnessDeferrals.has(source.evidenceId)) {
-              if (witnessFirstDeferralEligible(f, source)) continue;
-              for (const id of f.witnessDeferrals) f.revokedWitnessDeferrals.add(id);
-              f.witnessDeferrals.clear();
-            }
-            // Witness-first pilot: at global quiescence a field holding a
-            // passing full current-context proof defers ALTERNATIVE-source
-            // candidate GENERATION in favor of unmet work. This is not a
-            // judgment, pair completion or extraction — the skipped work
-            // is recorded transparently and becomes due again the moment
-            // any revision breaks the proof or the quiescence (recomputed
-            // live every check).
-            if (witnessFirstDeferralEligible(f, source)) {
-              const witnessId = (standingProofOf(f) ?? retainedProofOf(f))!.provenance.sourceId;
-              f.witnessDeferrals.add(source.evidenceId);
-              f.attemptedRecords.push({
-                trusted: false,
-                reason: "quiescent_full_proof",
-                assessments: [],
-                metadata: {
-                  kind: "candidate-generation-deferred",
-                  sourceId: source.evidenceId,
-                  witnessSourceId: witnessId,
-                },
-              });
-              pushLog(
-                "judge",
-                `${f.id} defer alternative generation ${source.evidenceId} (quiescent_full_proof)`,
-              );
-              continue;
-            }
             let validation = extractionCache.get(ck);
             if (validation === undefined) {
               if (expired()) break;
@@ -3618,8 +3412,6 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
                     sideHistory: [...f.sideHistory],
                     ctrvSources: [...f.ctrvSources],
                     judgedSourceKeys: [...f.judgedSourceKeys],
-                    witnessDeferrals: [...f.witnessDeferrals],
-                    revokedWitnessDeferrals: [...f.revokedWitnessDeferrals],
                   });
                   out.push({ namespace: namespaceOf(f), context: contextOf(), state });
                 }

@@ -225,3 +225,43 @@ test("synthetic positive control: clean case completes all fields end to end", a
   assert.equal(result.status, "complete");
   assert.deepEqual(result.data, { version: "2.4", license: "MIT", csv: "supported" });
 });
+
+// Generic current-source/contrary invariants, preserved verbatim from the
+// retired witness-first pilot guard file (2026-10-15 subtractive cleanup):
+// the bodies predate and outlive the pilot — contrary-read retry accounting
+// and no-retrospective-shortcut ordering are engine invariants, not pilot
+// screens. setup() inline replacement noted per test.
+test("failed required opposition read never qualifies one-sided witness", async () => {
+  const c = structuredClone(inputs[0]);
+  c.contract.requirements = { version: c.contract.requirements.version };
+  c.sources[1].readError = "fixture_read_failed";
+  const { deps, calls } = offlineDeps(c);
+  const r = await runLeanInvestigation(c.contract, deps);
+  assert.equal(
+    calls.read.length,
+    3,
+    "failed contrary source is retried within existing acquisition",
+  );
+  assert(!("version" in r.data));
+  assert.equal(r.requirements.version.reason, "counterevidence_not_acquired");
+});
+test("pending other-field contrary query prevents retrospective final-set shortcut", async () => {
+  const c = structuredClone(inputs[0]);
+  const { deps, calls } = offlineDeps(c);
+  const extract = deps.extract;
+  let observedPending = false;
+  deps.extract = async (input) => {
+    if (input.fields[0].id === "version" && input.sourceId === "e2") {
+      assert(
+        !calls.search.includes(`${c.contract.requirements.csv.question} contrary evidence refuted`),
+      );
+      observedPending = true;
+    }
+    return extract(input);
+  };
+  await runLeanInvestigation(c.contract, deps);
+  assert(
+    observedPending,
+    "a full eventual source-set witness must not qualify while acquisition can still enlarge context",
+  );
+});

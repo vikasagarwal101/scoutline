@@ -120,7 +120,25 @@ const changelog = fs.readFile(new URL("../../../CHANGELOG.md", import.meta.url),
 // section header now cites ADR-0012 (0004 superseded) and its merge
 // description states fusion ranking + near-dup clustering + occurrence
 // escape hatch (was: occurrence ranking). No other body copy changed.
-const SKILL_BODY_SHA256 = "ad83e0d577de175404422eab44ced1fe6ba29b22b9426a3e495b7cf796e4ded8";
+// Rebaselined at the unified-investigation requirements mode: the
+// Investigation section gained an "Requirements mode" subsection
+// (--requirements/--requirements-json, judge consent pairing, result
+// envelope) — the sanctioned per-ticket docs edit. Rebaselined again
+// at the correction round: the subsection's supplier list narrowed to
+// the executable subset (tavily/exa/firecrawl/linkup/spider) and the
+// selection sentence now states the full established resolver chain.
+// Rebaselined at the seven-CLI-correction round for that selection
+// sentence only, and again at the consolidated follow-up for the
+// snapshot-sensitive selection + shared-ceiling sentences. No other
+// body copy changed.
+// Rebaselined at the caller-assisted compiled interface: the Investigation
+// section gained the sanctioned "Caller-assisted Investigation"
+// subsection (five closed operations, judge/runtime and retained-evidence
+// boundaries, bounded paging/redaction). No other body copy changed.
+// Rebaselined at the package-route-boundary correction: the requirements
+// subsection gained the official-route verification-scope sentence
+// (fake-HTTP fixtures only, not live-attested). No other body copy changed.
+const SKILL_BODY_SHA256 = "b5c48ad2f5c89fa96a0d7a0858e9f52e7459afb1b2360b4282003c5df5624e40";
 
 // AC-10 budget: codex/qwen load name+description before any body
 // byte; the old enumeration (~1500 chars) blows the disclosure

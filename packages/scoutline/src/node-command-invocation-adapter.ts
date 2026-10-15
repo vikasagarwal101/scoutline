@@ -46,9 +46,7 @@ let quietOriginals: {
  * a direct command invocation — it can never escape to the process
  * streams and corrupt the batch's single summary write.
  */
-export async function runQuietlyWithSuppressedConsole<T>(
-  operation: () => Promise<T>,
-): Promise<T> {
+export async function runQuietlyWithSuppressedConsole<T>(operation: () => Promise<T>): Promise<T> {
   if (quietDepth === 0) {
     quietOriginals = {
       log: console.log,
@@ -115,8 +113,8 @@ export function createNodeCommandInvocationAdapter(): CommandInvocationAdapter {
       return typeof value === "string" && value.length > 0 ? value : undefined;
     },
 
-    async readStdin(maxBytes?: number): Promise<string> {
-      return (await readBytesBounded(process.stdin, maxBytes)).toString("utf8");
+    async readStdin(maxBytes?: number, signal?: AbortSignal): Promise<string> {
+      return (await readBytesBounded(process.stdin, maxBytes, signal)).toString("utf8");
     },
 
     writeStdout(value: string): void {
@@ -144,7 +142,6 @@ export function createNodeCommandInvocationAdapter(): CommandInvocationAdapter {
   };
 }
 
-
 /**
  * Collects an async byte stream into one buffer, stopping as soon as the
  * running total exceeds `maxBytes` (when given): the crossing chunk is
@@ -156,6 +153,62 @@ export function createNodeCommandInvocationAdapter(): CommandInvocationAdapter {
 export async function readBytesBounded(
   input: AsyncIterable<Buffer | string>,
   maxBytes?: number,
+  /**
+   * Optional cancellation (final boundary repair). ABSENT signal: the
+   * ORIGINAL for-await semantics — bounded chunk accumulation with the
+   * crossing chunk retained, async iterator close AWAITED, and a
+   * cleanup rejection propagating outward. PRESENT signal: the read
+   * owns the actual iterator; cancelling destroys a Node Readable
+   * (unblocking a pending next()), a pre-aborted read rejects without
+   * calling next(), and every disposal invocation — synchronous or
+   * asynchronous — is contained so the primary AbortError survives.
+   */
+  signal?: AbortSignal,
+): Promise<Buffer> {
+  if (signal === undefined) {
+    return readBytesBoundedOriginal(input, maxBytes);
+  }
+  const iterator = input[Symbol.asyncIterator]();
+  const abortError = (): Error =>
+    Object.assign(new Error("input read cancelled"), { name: "AbortError" });
+  /** Invoke a disposal callback that may throw SYNCHRONOUSLY without
+   *  letting that failure displace the primary abort error. */
+  const safeDispose = (dispose: () => unknown): void => {
+    try {
+      void Promise.resolve(dispose()).catch(() => undefined);
+    } catch {
+      // Synchronous return() throw: contained; the cancellation error
+      // is the outward contract.
+    }
+  };
+  if (signal.aborted) {
+    safeDispose(() => iterator.return?.(undefined));
+    return Promise.reject(abortError());
+  }
+  let onAbort: (() => void) | undefined;
+  const dispose = (): void => {
+    const destroyable = input as unknown as { destroy?: (error?: Error) => void };
+    if (typeof destroyable.destroy === "function") destroyable.destroy(abortError());
+    safeDispose(() => iterator.return?.(undefined));
+  };
+  onAbort = dispose;
+  signal.addEventListener("abort", onAbort, { once: true });
+  try {
+    return await readBytesBoundedSignalled(iterator, maxBytes, signal);
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
+}
+
+/**
+ * The exact pre-signal implementation, preserved verbatim for every
+ * caller that omits the cancellation signal (compatibility, root 1):
+ * for-await drives the source, and the language runtime awaits the
+ * iterator's return()/propagates its rejection on early exit.
+ */
+async function readBytesBoundedOriginal(
+  input: AsyncIterable<Buffer | string>,
+  maxBytes?: number,
 ): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let total = 0;
@@ -164,8 +217,85 @@ export async function readBytesBounded(
     chunks.push(buffer);
     total += buffer.length;
     if (maxBytes !== undefined && total > maxBytes) {
-      break;
+      break; // crossing chunk retained
     }
   }
+  return Buffer.concat(chunks);
+}
+
+/**
+ * Signalled variant: drives the OWNED iterator directly, races each
+ * chunk wait against the signal, and checks aborted before every step.
+ */
+async function readBytesBoundedSignalled(
+  iterator: AsyncIterator<Buffer | string>,
+  maxBytes?: number,
+  signal?: AbortSignal,
+): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  // The iterator is OWNED here: every early exit — byte-cap crossing,
+  // conversion failure, a throwing next(), cancellation — releases the
+  // producer subscription exactly once (guarded by disposed). The
+  // PRIMARY error always wins: when one exists, cleanup failure is
+  // observed without displacing it. On SUCCESS (or cap crossing, no
+  // primary error), an actual close rejection PROPAGATES as the outward
+  // failure — the read claims its resource settled, so a failing close
+  // cannot silently pass.
+  let disposed = false;
+  const closeIterator = (propagateRejection: boolean): Promise<unknown> => {
+    if (disposed) return Promise.resolve(undefined);
+    disposed = true;
+    try {
+      const settled = Promise.resolve(iterator.return?.(undefined));
+      return propagateRejection ? settled : settled.catch(() => undefined);
+    } catch (error) {
+      if (propagateRejection) throw error;
+      return Promise.resolve(undefined);
+    }
+  };
+  try {
+    for (;;) {
+      if (signal?.aborted === true) {
+        throw Object.assign(new Error("input read cancelled"), { name: "AbortError" });
+      }
+      let step: IteratorResult<Buffer | string>;
+      if (signal === undefined) {
+        step = await iterator.next();
+      } else {
+        let onChunkAbort: (() => void) | undefined;
+        const cancelled = new Promise<never>((_resolve, reject) => {
+          onChunkAbort = () => {
+            reject(Object.assign(new Error("input read cancelled"), { name: "AbortError" }));
+          };
+          signal.addEventListener("abort", onChunkAbort, { once: true });
+        });
+        try {
+          step = (await Promise.race([iterator.next(), cancelled])) as IteratorResult<
+            Buffer | string
+          >;
+        } finally {
+          if (onChunkAbort !== undefined) signal.removeEventListener("abort", onChunkAbort);
+        }
+      }
+      if (step.done === true) break;
+      const buffer = step.value instanceof Buffer ? step.value : Buffer.from(step.value);
+      chunks.push(buffer);
+      total += buffer.length;
+      if (maxBytes !== undefined && total > maxBytes) {
+        break;
+      }
+    }
+  } catch (error) {
+    // Early/ex exceptional exit: release the subscription, keep the
+    // primary error (cleanup failure is observed, contained). After an
+    // ABORT the outer dispose() already released the iterator — no
+    // second call.
+    if (signal?.aborted !== true) await closeIterator(false);
+    throw error;
+  }
+  // Normal or cap-crossing completion (an abort exited via the catch):
+  // no primary error exists, so an actual close rejection PROPAGATES.
+  await closeIterator(true);
   return Buffer.concat(chunks);
 }

@@ -573,6 +573,87 @@ pointers, and a negation-cue count. `contradicted` is a disclosed
 negation-cue heuristic (hint-grade), not semantic judgment;
 `--context` + `--verify` is a mode-conflict VALIDATION_ERROR.
 
+#### Requirements mode (EXPERIMENTAL)
+
+`investigate --requirements <path|->` (or `--requirements-json
+'<json>'`) runs the requirements-driven investigation engine instead of
+the EvidencePack pipeline: the document declares the authoritative
+question, scope tokens, and named fields (enum classifications or
+source-bound string values); a strict compiler rejects unknown
+keys/declarations BEFORE any acquisition; a bounded acquisition loop
+over the selected provider produces an accepted-only structured answer
+(`kind: "requirements-investigation"`) with per-field outcomes,
+evidence identity digests, and physical HTTP accounting. Exit 0
+complete / 1 partial. Mutually exclusive with the positional question
+and plain-mode controls. Semantic judging is explicit:
+`TYPESAFE_API_KEY` + `SCOUTLINE_JUDGE_TRANSMIT=1` (both or neither —
+credentials alone are not consent; an absent judge keeps an honest
+deterministic-only partial, never a silent downgrade). The official
+TypeSafe route is implemented against the documented protocol and
+verified only with fake-HTTP fixtures — it is NOT live-attested: no
+real account operation or calibrated semantic accuracy is claimed.
+Experimental:
+executable bounded-transport supplier subset (tavily, exa, firecrawl,
+linkup, spider — each serving search AND reader over an injected
+transport), no retention/ZDR promises, value production without a
+production extractor reports unsupported outcomes.
+Selection reuses the existing resolver unchanged, and its outcome is
+snapshot-sensitive exactly as everywhere else: with an undefined quota
+snapshot the Z.AI compatibility default stands; with a real snapshot and
+only Tavily configured, quota ranking legitimately picks Tavily
+(--provider > SCOUTLINE_PROVIDER > configured routing > quota-ranked
+pick > Z.AI). A resolved supplier outside the executable subset fails
+closed, naming it. `--no-cache` and `--provider` carry over.
+Runs share one finite physical-dispatch ceiling across acquisition,
+judge and an explicitly observing producer; `SCOUTLINE_REQUIREMENTS_MAX_PHYSICAL`
+may LOWER it (1..48, integer) and never raises it — any other value
+rejects before any HTTP. An injected producer that does not use the
+observer seam leaves its physical count explicitly unknown.
+
+```bash
+scoutline investigate --requirements reqs.json
+cat reqs.json | scoutline investigate --requirements -
+scoutline investigate --requirements-json '{"schemaVersion":1,...}'
+```
+
+#### Caller-assisted Investigation (EXPERIMENTAL)
+
+`investigate --caller-request <file|->` (or `--caller-request-json
+'<json>'`) runs the retained caller-assisted investigation surface.
+Requests are closed versioned objects (`schemaVersion: 1`) selecting one
+operation: `start` and `continue` execute one explicit bounded round
+with the same compiler, explicit provider/judge wiring and shared
+physical ceiling as requirements mode; `inspect`, `readEvidence`, and
+`delete` are offline, credential-free record operations. Every start or
+continue declares `dataScope: "public" | "synthetic"`; this is a caller
+assertion, not a privacy classifier — the tool rejects a declared
+`private` scope and unsupported formats, unknown keys, malformed
+bindings and output header bounds before any HTTP, but cannot detect
+every sensitive fact inside public-labelled pasted text. The response is
+`kind: "caller-assisted-investigation"` with investigation reference,
+revision, settled round identity, fulfillment counts, current outcome
+rows, retained evidence derivatives (original and redacted-display
+digests), usage accounting, and cursors for the seven paged
+collections (`evidence`, `outcomes`, `proposals`, `assessments`,
+`changes`, `gaps`, `rounds`). The handoff header carries a compact
+physical-attempt summary (stage counts, admission, total) with the
+attempt rows marked incomplete and located in the paged `assessments`
+collection, which retains the complete validated native ledger. The
+caller proposes values only against
+accessible current redacted evidence; bindings must be UTF-16 half-open
+ranges whose quote maps to a unique original retained quote. `continue`
+requires the current `expectedRevision` and may acknowledge an
+interrupted settled round. Whole metadata/body redaction runs before
+bounded paging; changed secret bases invalidate old cursors rather
+than mixing pages. Local records are retained until explicit safe-owned
+deletion and are stored under `SCOUTLINE_INVESTIGATIONS_DIR` or
+`<config-root>/investigations`.
+
+```bash
+cat request.json | scoutline investigate --caller-request -
+scoutline investigate --caller-request-json '{"schemaVersion":1,"operation":"start",...}'
+```
+
 ## Usage
 
 The CLI is self-documenting. Use `--help` at any level:

@@ -45,7 +45,7 @@ export type CommandResult<T = unknown> = DataCommandResult<T> | TextCommandResul
 
 export interface CommandContext {
   readonly stdinIsTTY: boolean;
-  readStdin(maxBytes?: number): Promise<string>;
+  readStdin(maxBytes?: number, signal?: AbortSignal): Promise<string>;
   notice(message: string): void;
 }
 
@@ -53,7 +53,7 @@ export interface CommandInvocationAdapter {
   readonly stdoutIsTTY: boolean;
   readonly stdinIsTTY: boolean;
   readonly environmentOutputMode?: string;
-  readStdin(maxBytes?: number): Promise<string>;
+  readStdin(maxBytes?: number, signal?: AbortSignal): Promise<string>;
   writeStdout(value: string): void;
   writeStderr(value: string): void;
   runQuietly<T>(operation: () => Promise<T>): Promise<T>;
@@ -169,7 +169,7 @@ export async function invokeCommand(
 
   const context: CommandContext = {
     stdinIsTTY: adapter.stdinIsTTY,
-    readStdin: (maxBytes?: number) => adapter.readStdin(maxBytes),
+    readStdin: (maxBytes?: number, signal?: AbortSignal) => adapter.readStdin(maxBytes, signal),
     notice: (message: string) => {
       notices.push(message);
     },

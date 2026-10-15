@@ -224,14 +224,12 @@ describe("scoutline package — root export and metadata", () => {
     );
   });
 
-  it("manifest files allowlist is exactly [bin, dist, skills]", async () => {
+  it("manifest allowlist includes only shipped surfaces and explicit temporary-adapter exclusions", async () => {
     const pkg = await loadPackageJson();
-    // skills/ joined the allowlist when the agent skill moved into the
-    // package (see tests/skill-shipping.test.js for the shipping pins).
     assert.deepStrictEqual(
       pkg.files,
-      ["bin", "dist", "skills"],
-      'package.json "files" allowlist must be exactly ["bin", "dist", "skills"]',
+      ["bin", "dist", "skills", "!dist/lib/lean-jev-adapter.*", "!dist/lib/lean-candidate-transport.*"],
+      'package.json "files" must restrict shipped surfaces and exclude stale temporary adapters',
     );
   });
 });
@@ -295,6 +293,61 @@ describe("scoutline package — npm pack contents", () => {
       [],
       `pack must exclude tests/fixtures/docs/credentials: ${offenders.join("; ")}`,
     );
+  });
+
+  it("package allowlist excludes stale dev-route artifacts from a polluted dist (package-route-boundary)", async () => {
+    // npm pack does NOT run this package's build or prepublishOnly, so a
+    // dirty dist is a real pack path: stale compiled outputs from older
+    // builds would ship. The manifest excludes the two NAMED historical
+    // temporary adapters unconditionally; OTHER stale outputs are
+    // removed by the clean build (dist/ is wiped before tsc), which
+    // pack itself never runs — the two protections are complementary,
+    // not one general guarantee.
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "scoutline-pack-stale-"));
+    try {
+      const pkg = await loadPackageJson();
+      await fs.writeFile(
+        path.join(dir, "package.json"),
+        JSON.stringify({ name: pkg.name, version: pkg.version, files: pkg.files }),
+      );
+      await fs.mkdir(path.join(dir, "dist", "lib"), { recursive: true });
+      await fs.writeFile(path.join(dir, "dist", "index.js"), "export const retained = true;\n");
+      for (const name of ["lean-jev-adapter", "lean-candidate-transport"]) {
+        for (const suffix of [".js", ".js.map", ".d.ts", ".d.ts.map"]) {
+          await fs.writeFile(
+            path.join(dir, "dist", "lib", name + suffix),
+            "stale development artifact\n",
+          );
+        }
+      }
+      const output = await new Promise((resolve, reject) => {
+        const child = spawn("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
+          cwd: dir,
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        let stdout = "",
+          stderr = "";
+        child.stdout.on("data", (d) => {
+          stdout += d;
+        });
+        child.stderr.on("data", (d) => {
+          stderr += d;
+        });
+        child.on("error", reject);
+        child.on("close", (code) => (code === 0 ? resolve(stdout) : reject(new Error(stderr))));
+      });
+      const parsed = JSON.parse(output);
+      const entry = Array.isArray(parsed) ? parsed[0] : Object.values(parsed)[0];
+      const paths = entry.files.map((file) => file.path);
+      assert.ok(paths.includes("dist/index.js"));
+      assert.deepEqual(
+        paths.filter((p) => /lean-jev-adapter|lean-candidate-transport/.test(p)),
+        [],
+        "stale dev-route artifacts must not enter a dirty-dist tarball",
+      );
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("package summary reports a non-trivial tarball size", async () => {

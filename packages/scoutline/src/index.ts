@@ -97,6 +97,15 @@ import {
   type SynthesisPrompt,
   type SynthesizeBrief,
 } from "./commands/investigate.js";
+import {
+  handleInvestigateRequirements,
+  readRequirementsFileBounded,
+  MAX_REQUIREMENTS_BYTES as MAX_REQUIREMENTS_BYTES_HANDLER,
+  INVESTIGATE_REQUIREMENTS_HELP,
+  type RequirementsRuntimeFactory,
+  type InvestigateRequirementsDeps,
+} from "./commands/investigate-requirements.js";
+import { handleInvestigateCaller, readCallerRequest, INVESTIGATE_CALLER_HELP } from "./commands/investigate-caller.js";
 import { ZaiApiClient } from "./lib/api-client.js";
 import {
   buildProviderCacheKey,
@@ -695,6 +704,13 @@ export const STRICT_FLAG_ALLOWLIST: Readonly<Record<string, ReadonlySet<string>>
     // investigate-verify lane (DESIGN D5): claim-corroboration mode
     // flag. Pair-rejected with --context below (verify owns planning).
     "verify",
+    // requirements mode (unified-investigation public-command-
+    // integration): file/stdin/inline requirements document. Mutually
+    // exclusive; plain-mode-only controls reject inside the handler.
+    "requirements",
+    "requirements-json",
+    "caller-request",
+    "caller-request-json",
   ]),
 };
 
@@ -1277,6 +1293,37 @@ export interface HandlerDependencies {
    * handler seam builds the Z.AI chat-completions default.
    */
   readonly synthesize?: SynthesizeBrief;
+  /**
+   * Requirements mode (unified-investigation): injectable runtime
+   * factory for `investigate --requirements/--requirements-json`.
+   * Tests inject fake transports + fake judge/extractor collaborators;
+   * production leaves it undefined and the requirements handler composes
+   * the real acquisition bridge + explicit direct TypeSafe judge.
+   */
+  readonly requirementsRuntime?: RequirementsRuntimeFactory;
+  /**
+   * Requirements-lane selection parity (cold-review finding 6): a
+   * fail-open quota-snapshot reader (the same quotaStore.read() main
+   * performs in production) exposed ONLY to the requirements branch so
+   * it resolves through the established resolver with production
+   * inputs. No other command reads it.
+   */
+  readonly readRequirementsQuotaSnapshot?: () => unknown;
+  /**
+   * Overrides the requirements lane's OS-interrupt registrar (tests
+   * drive the owned signal directly); default is process SIGINT.
+   */
+  readonly requirementsUserInterrupt?: (onInterrupt: () => void) => () => void;
+  /**
+   * Requirements-lane refresh disposition (cold-review finding 4):
+   * a REQUEST-LOCAL one-shot cell main() creates per invocation and
+   * consults after dispatch. handleInvestigate's requirements branch
+   * marks it when the run dies before/without acquisition, suppressing
+   * THIS invocation's quota due-refresh (the only incidental network
+   * the dispatcher adds). Module-free by construction: an overlapping
+   * main() entry owns a different cell.
+   */
+  readonly requirementsRefreshSuppressed?: { value: boolean };
   readonly env: NodeJS.ProcessEnv;
   readonly secrets: string[];
   readonly now?: () => number;
@@ -4906,6 +4953,238 @@ async function handleInvestigate(
 ): Promise<number> {
   const { flags, positional } = parseArgs(args);
 
+  // Requirements mode (unified-investigation public-command-integration,
+  // EXPERIMENTAL): --requirements <path|-> / --requirements-json '<json>'
+  // delegate to the requirements handler BEFORE any plain-mode guard so
+  // plain-question semantics (ADR-0013) stay byte-identical. Mutually
+  // exclusive flags; the requirements document's question is
+  // authoritative — a positional question and plain-mode-only controls
+  // reject as mode conflicts here.
+  if (flags.requirements !== undefined || flags["requirements-json"] !== undefined) {
+    // Owned interruption from the DISPATCHER's requirements branch start
+    // (final closure): registration must precede input reading AND any
+    // main() preflight the lane performs, so an interrupt during
+    // preflight settles 130 instead of dying (or hanging) mid-preflight.
+
+    // Requirements-lane preflight ownership (cold-review finding 3):
+    // every throw from this branch — the synchronous mode/flag guards
+    // below AND the handler's document/consent/supplier preflight —
+    // marks the invocation cell so main's after-command quota
+    // due-refresh (the only incidental network the dispatcher adds)
+    // stays suppressed for the rejected run. Plain-mode behavior is
+    // untouched: the cell is cleared at every main() entry and set
+    // only inside this branch.
+    try {
+      if (flags.requirements !== undefined && flags["requirements-json"] !== undefined) {
+        throw new ValidationError(
+          "--requirements and --requirements-json are mutually exclusive.",
+          "Pass exactly one requirements source.",
+        );
+      }
+      // `--requirements -` : parseArgs treats a bare `-` as flag-like, so
+      // the flag lands as `true` and the dash in positional — the batch
+      // manifest precedent. Exactly that one positional is stdin; anything
+      // else is a rejected positional question.
+      const dashStdin =
+        flags.requirements === true && positional.length === 1 && positional[0] === "-";
+      if (positional.length > 0 && !dashStdin) {
+        throw new ValidationError(
+          "investigate --requirements does not accept a positional question; the requirements document's question is authoritative.",
+          "Move the question into the requirements document, or run plain mode: investigate <question>.",
+        );
+      }
+      // Correction finding 6: the FULL promised plain-mode control set
+      // rejects with VALIDATION_ERROR before input/runtime work — the
+      // five lane controls plus investigate's designed-rejected trio and
+      // the search-only spelling. The two-spelling contract maps --no-X
+      // to both flags, so both spellings reject; nothing is
+      // accepted-and-dropped, and the strict-allowlist UNKNOWN_ERROR
+      // path can never mask these (they are allowlisted for plain mode).
+      const PLAIN_MODE_ONLY = [
+        "verify",
+        "synthesize",
+        "context",
+        "sources",
+        "max-chars",
+        "depth",
+        "arms",
+        "budget-tokens",
+        "context-stdin",
+        "no-journal",
+      ] as const;
+      for (const flag of PLAIN_MODE_ONLY) {
+        if (flags[flag] !== undefined) {
+          throw new ValidationError(
+            `--${flag} is a plain-mode (EvidencePack) control and cannot combine with --requirements.`,
+            "Drop it, or run plain mode: investigate <question>.",
+          );
+        }
+      }
+      const inline = flags["requirements-json"];
+      const source =
+        flags.requirements !== undefined
+          ? dashStdin
+            ? ({ kind: "stdin" } as const)
+            : (() => {
+                const target = flags.requirements;
+                if (typeof target !== "string" || target === "") {
+                  throw new ValidationError(
+                    "--requirements requires a file path or '-' for stdin.",
+                    "Pass --requirements <path> or --requirements -.",
+                  );
+                }
+                return { kind: "file", path: target } as const;
+              })()
+          : (() => {
+              if (typeof inline !== "string" || inline === "") {
+                throw new ValidationError(
+                  "--requirements-json requires a JSON string argument.",
+                  "Pass --requirements-json '<json>'.",
+                );
+              }
+              return { kind: "inline", value: inline } as const;
+            })();
+
+      // Requirements-save wiring (correction finding 7): the same
+      // createSaveArtifactHook the plain lane uses — master/index/export
+      // semantics, complete AND partial (partial exits 1 AFTER the save
+      // hook runs inside invokeCommand, so --save delivers the artifact
+      // for both outcomes). args record the lane's actual controls.
+      const reqSaveArgs = {
+        ...(deps.provider !== undefined ? { provider: deps.provider } : {}),
+        ...(flags["no-cache"] !== undefined ? { "no-cache": true } : {}),
+        requirements: true,
+      };
+      // Save provenance (cold-review finding 6): requested = the caller's
+      // pin or env door; effective = the runtime's ACTUAL resolved
+      // supplier (captured from the runtime context when the injected
+      // factory exposes it, else the dispatcher-side resolver answer).
+      // The save hook's effective overrides below repair it with the
+      // served supplier at write time when a capture cell exists.
+      // Save provenance (cold-review finding 6): requested = the
+      // caller's pin or env door; effective starts at the dispatcher's
+      // resolver answer and is REPLACED by the handler's actual resolved
+      // supplier (the save hook reads this object at write time, which
+      // happens after the behavior returned).
+      const requirementsRouting = {
+        mode: "single" as const,
+        ...(deps.provider !== undefined ? { requested: deps.provider } : {}),
+        ...(deps.provider === undefined && deps.env?.SCOUTLINE_PROVIDER !== undefined
+          ? { requested: deps.env.SCOUTLINE_PROVIDER as string }
+          : {}),
+        effective: deps.provider ?? "zai",
+      };
+      const reqSave = createSaveArtifactHook(deps, {
+        command: "investigate",
+        outputMode,
+        args: reqSaveArgs,
+        provider: requirementsRouting as Parameters<typeof createSaveArtifactHook>[1]["provider"],
+      });
+
+      // Merged redaction basis for THIS lane, assembled locally (cold-
+      // review findings 2/3, no shared-seam change): the invocation's
+      // provider secrets PLUS the explicit direct-judge credential,
+      // before any requirements error can be formatted. The handler's
+      // runtime-secret sink pushes runtime/producer secrets into the
+      // SAME array once the runtime exists, so the error, output and
+      // save boundaries all consume one list.
+      const requirementsSecrets: string[] = [
+        ...new Set([
+          ...deps.secrets,
+          ...(typeof deps.env?.TYPESAFE_API_KEY === "string" && deps.env.TYPESAFE_API_KEY !== ""
+            ? [deps.env.TYPESAFE_API_KEY]
+            : []),
+        ]),
+      ];
+      const reqDeps: InvestigateRequirementsDeps = {
+        onResolvedProvider: (provider) => {
+          requirementsRouting.effective = provider;
+        },
+        onRuntimeSecrets: (secrets) => {
+          for (const secret of secrets) {
+            if (typeof secret === "string" && secret !== "" && !requirementsSecrets.includes(secret)) {
+              requirementsSecrets.push(secret);
+            }
+          }
+        },
+        // Owned interruption (correction 7): bridge the host process's
+        // SIGINT into the run for the requirements lane only — the
+        // registrar removes itself at run exit, so no listener leaks
+        // into subsequent commands in embedded callers. The dev/test
+        // adapters omit the field and stay un-bridged.
+        // Incremental bounded file read (correction finding 4): fd reader
+        // with maxBytes+1 detection and guaranteed close — never an
+        // unbounded whole-file buffer before the ceiling check.
+        readFile: (path) => readRequirementsFileBounded(path, MAX_REQUIREMENTS_BYTES_HANDLER),
+        // Carries the owned interruption so the compiled bin's real
+        // stdin subscription is DISPOSED on interrupt — an open pipe
+        // with no EOF then settles 130 instead of hanging until killed.
+        readStdin: (signal) => deps.invocation.readStdin(MAX_REQUIREMENTS_BYTES_HANDLER, signal),
+        // Caller-provided interrupt registrar wins (tests drive the
+        // owned-signal lifecycle directly); default is the process
+        // SIGINT bridge below.
+        // Production registrar: the handler's owned signal (the deps
+        // override remains for callers/tests driving it directly).
+        ...(deps.requirementsUserInterrupt !== undefined
+          ? { registerUserInterrupt: deps.requirementsUserInterrupt }
+          : typeof process !== "undefined" && typeof process.on === "function" ? {
+              registerUserInterrupt: (onInterrupt: () => void) => {
+                process.on("SIGINT", onInterrupt);
+                return () => process.removeListener("SIGINT", onInterrupt);
+              },
+            } : {}),
+        now: () => Date.now(),
+        ...(deps.requirementsRuntime !== undefined ? { requirementsRuntime: deps.requirementsRuntime } : {}),
+      };
+      // Requirements-mode selection inputs (correction finding 1): the
+      // handler resolves the effective provider through main's OWN
+      // precedence (explicit pin > env door > routing > quota-rank >
+      // zai compat) — never a requirements-only Tavily default.
+      const reqHost = {
+        env: deps.env,
+        // Findings 2/3: the invocation's provider secret list joins the
+        // runtime/explicit-judge/producer secrets as the ONE merged
+        // redaction basis at every boundary (projection, error, save).
+        secrets: requirementsSecrets,
+        ...(deps.provider !== undefined ? { provider: deps.provider } : {}),
+        noCache: flags["no-cache"] !== undefined,
+        cache: deps.searchCache,
+        sleep: deps.searchSleep,
+        random: deps.searchRandom,
+        routing: deps.routing,
+        quotaState: deps.quotaState,
+        readQuotaSnapshot: deps.readRequirementsQuotaSnapshot,
+        providerDescriptors: deps.providerDescriptors,
+      };
+      const requirementsExitCode = await invokeCommand(
+        deps.invocation,
+        async () => {
+          try {
+            return await handleInvestigateRequirements({ source }, reqDeps, reqHost);
+          } catch (error) {
+            // invokeCommand formats this error itself (it never
+            // rethrows); the request-local refresh disposition is set
+            // HERE so the zero-HTTP contract holds for the whole
+            // invocation, including the swallowed-error path.
+            if (deps.requirementsRefreshSuppressed !== undefined) deps.requirementsRefreshSuppressed.value = true;
+            throw error;
+          }
+        },
+        outputMode,
+        undefined,
+        requirementsSecrets,
+        reqSave,
+      );
+      // The requirements lane owns its own save hook (above); journaling
+      // stays off this experimental lane (the no-journal control is
+      // rejected above with the rest).
+      return requirementsExitCode;
+    } catch (error) {
+      if (deps.requirementsRefreshSuppressed !== undefined) deps.requirementsRefreshSuppressed.value = true;
+      throw error;
+    }
+  }
+
   // Valueless --context guard BEFORE the help-gate (the handleSearch
   // D1 placement pin): parseArgs records `true` for a valueless flag,
   // so without this check `investigate --context` would short-circuit
@@ -4997,7 +5276,7 @@ async function handleInvestigate(
   const synthesize = flags.synthesize === true;
 
   if (flags.help || flags.h || positional.length === 0) {
-    deps.invocation.writeStdout(INVESTIGATE_HELP);
+    deps.invocation.writeStdout(INVESTIGATE_HELP + INVESTIGATE_REQUIREMENTS_HELP + INVESTIGATE_CALLER_HELP);
     return 0;
   }
 
@@ -5963,6 +6242,20 @@ export interface MainDependencies {
    * escape hatch runs with no network.
    */
   readonly synthesize?: SynthesizeBrief;
+  /**
+   * Requirements mode (unified-investigation): injectable runtime
+   * factory for `investigate --requirements/--requirements-json`.
+   * Tests inject fake transports + fake judge/extractor collaborators;
+   * production leaves it undefined and the requirements handler composes
+   * the real acquisition bridge + explicit direct TypeSafe judge.
+   */
+    readonly requirementsRuntime?: RequirementsRuntimeFactory;
+  /** Overrides the requirements lane's fail-open quota-snapshot read
+   *  (tests stall/pin it); default is main's own reader. */
+  readonly readRequirementsQuotaSnapshot?: () => unknown;
+  /** Overrides the lane's OS-interrupt registrar (tests drive the owned
+   *  signal directly); default is process SIGINT. */
+  readonly requirementsUserInterrupt?: (onInterrupt: () => void) => () => void;
   readonly env: NodeJS.ProcessEnv;
   readonly now?: () => number;
   /**
@@ -6280,6 +6573,8 @@ export async function main(
 ): Promise<number> {
   const { invocation, env: initialEnv, now } = dependencies;
   let env: NodeJS.ProcessEnv = initialEnv;
+  let zaiLedgerSink: ConsumptionSink | undefined;
+
   // #73: one normalized config-loader seam — an explicit loader wins,
   // then an injected deps.config, else production ambient loading. All
   // hermeticity gates below read this local, never the raw field.
@@ -6443,6 +6738,35 @@ export async function main(
   const command = rest[0] ?? "";
   const commandArgs = rest.slice(1);
 
+  // Caller operation input is validated before credential/config work; offline reads never initialize a runtime.
+  let callerRequest: unknown;
+  let callerInterrupt: AbortController | undefined;
+  let callerRelease: (() => void) | undefined;
+  if (command === "investigate" && commandArgs.some(a => a === "--caller-request" || a === "--caller-request-json")) {
+    callerInterrupt = new AbortController();
+    const onInterrupt = (): void => callerInterrupt!.abort();
+    callerRelease = dependencies.requirementsUserInterrupt?.(onInterrupt) ?? (() => { process.on("SIGINT", onInterrupt); return () => process.removeListener("SIGINT", onInterrupt); })();
+    try {
+      const parsed = parseArgs(commandArgs), f = parsed.flags;
+      if (f["caller-request"] !== undefined && f["caller-request-json"] !== undefined) throw new ValidationError("Caller request sources are mutually exclusive.");
+      const stdin = f["caller-request"] === true && parsed.positional.length === 1 && parsed.positional[0] === "-";
+      if (parsed.positional.length && !stdin) throw new ValidationError("Caller request does not accept a positional question.");
+      const allowed = new Set(["caller-request", "caller-request-json", "no-cache", "cache", "output"]);
+      for (const k of Object.keys(f)) if (!allowed.has(k)) throw new ValidationError(`--${k} cannot combine with caller-assisted operations.`);
+      const inline = f["caller-request-json"], file = f["caller-request"];
+      const source = inline !== undefined ? (() => { if (typeof inline !== "string" || !inline) throw new ValidationError("--caller-request-json requires JSON."); return {kind:"inline" as const,value:inline}; })()
+        : stdin ? {kind:"stdin" as const} : (() => { if(typeof file!=="string"||!file)throw new ValidationError("--caller-request requires a file or '-'.");return {kind:"file" as const,path:file};})();
+      callerRequest = await readCallerRequest(source, signal => invocation.readStdin(MAX_REQUIREMENTS_BYTES_HANDLER,signal),callerInterrupt.signal);
+      if(callerInterrupt.signal.aborted)throw Object.assign(new ValidationError("Caller operation interrupted."),{exitCode:130});
+      if (!["start","continue"].includes((callerRequest as {operation:string}).operation)) {
+        const root = env.SCOUTLINE_INVESTIGATIONS_DIR ?? path.join(resolveConfigRootPure(env,{homedir:os.homedir()}),"investigations");
+        const exit = await invokeCommand(invocation,()=>handleInvestigateCaller(callerRequest,root,{readFile: p=>readRequirementsFileBounded(p,MAX_REQUIREMENTS_BYTES_HANDLER),readStdin:s=>invocation.readStdin(MAX_REQUIREMENTS_BYTES_HANDLER,s),now:Date.now},{env,secrets:envSecrets}),outputMode,undefined,envSecrets);
+        callerRelease();return exit;
+      }
+    } catch(error) {callerRelease();if(callerInterrupt.signal.aborted)error=Object.assign(new ValidationError("Caller operation interrupted before record creation."),{exitCode:130});invocation.writeStderr(formatErrorOutput(error,outputMode,envSecrets));return getErrorExitCode(error);}
+  }
+
+  try {
   // #244: validate the env doors ONCE, pre-dispatch, for ALL command
   // RUNS — a typo'd env value used to fail only on the paths that
   // happened to resolve it first (quota yes, config get no). Help
@@ -6604,7 +6928,6 @@ export async function main(
   // fails the other.
   // glm-ocr lane: late-bound sink reference for the rebuilt zai
   // descriptor (assigned immediately after `consume` below).
-  let zaiLedgerSink: ConsumptionSink | undefined;
   const consume: ConsumptionSink | undefined =
     dependencies.consume ??
     // ADR-0006 §5: --isolated runs skip local state persistence
@@ -6643,6 +6966,23 @@ export async function main(
   // Build HandlerDependencies for a given credential view. The
   // cache/sleep/random fields are always available (resolved above); only
   // env/secrets/fallbackEnabled depend on whether config has been loaded.
+  // Requirements-lane selection parity (cold-review finding 6): a
+  // fail-open reader over main's production quotaStore, exposed ONLY
+  // to the requirements branch (the branch awaits it once, before the
+  // lane resolves a provider; no refresh, no transport).
+  const requirementsSnapshotReader = async (): Promise<unknown> => {
+    // Exact main parity (cold-review finding 6): the requirements lane
+    // resolves through the established resolver with the SAME inputs
+    // main itself would hand it — its fail-open store read, production
+    // or injected. The read NEVER refreshes and NEVER transports; when
+    // it yields nothing the resolver's documented undefined-snapshot
+    // compatibility branch applies (no invented snapshot).
+    try {
+      return await quotaStore.read();
+    } catch {
+      return undefined; // fail-open: the store's own compat behavior
+    }
+  };
   const buildHandlerDeps = (
     credEnv: NodeJS.ProcessEnv,
     credSecrets: string[],
@@ -6653,6 +6993,15 @@ export async function main(
   ): HandlerDependencies => ({
     invocation,
     synthesize: dependencies.synthesize,
+    requirementsRuntime: dependencies.requirementsRuntime,
+    // Requirements-lane selection parity (cold-review finding 6): the
+    // fail-open snapshot read main's quotaStore would perform, exposed
+    // ONLY to this lane so the shared resolver sees production inputs
+    // without changing any other command's selection.
+    // Caller injection wins (tests can stall or pin this seam); the
+    // default is main's own fail-open reader.
+    readRequirementsQuotaSnapshot: dependencies.readRequirementsQuotaSnapshot ?? requirementsSnapshotReader,
+    requirementsUserInterrupt: dependencies.requirementsUserInterrupt,
     env: credEnv,
     secrets: credSecrets,
     now,
@@ -7150,6 +7499,19 @@ export async function main(
   const resolvedEnv = resolveEnvFromConfig(env, config, providerDescriptors);
   const secrets = configuredSecrets(resolvedEnv);
 
+  if (callerRequest !== undefined) {
+    const callerSecrets = [...secrets, ...(resolvedEnv.TYPESAFE_API_KEY ? [resolvedEnv.TYPESAFE_API_KEY] : [])];
+    try {
+      const root = resolvedEnv.SCOUTLINE_INVESTIGATIONS_DIR ?? path.join(resolveConfigRootPure(resolvedEnv,{homedir:os.homedir()}),"investigations");
+      return await invokeCommand(invocation,()=>handleInvestigateCaller(callerRequest,root,{
+        readFile:p=>readRequirementsFileBounded(p,MAX_REQUIREMENTS_BYTES_HANDLER),readStdin:s=>invocation.readStdin(MAX_REQUIREMENTS_BYTES_HANDLER,s),now:Date.now,
+        requirementsRuntime:dependencies.requirementsRuntime,
+        registerUserInterrupt: listener => {const abort=()=>listener();callerInterrupt!.signal.addEventListener("abort",abort);if(callerInterrupt!.signal.aborted)listener();return ()=>callerInterrupt!.signal.removeEventListener("abort",abort);},
+        onRuntimeSecrets: values=>{for(const s of values)if(s&&!callerSecrets.includes(s))callerSecrets.push(s);},
+      },{env:resolvedEnv,secrets:callerSecrets,provider,noCache:commandArgs.includes("--no-cache"),cache:searchCache,sleep:searchSleep,random:searchRandom,routing:dependencies.routing??config.routing,quotaState,readQuotaSnapshot:dependencies.readRequirementsQuotaSnapshot??requirementsSnapshotReader,providerDescriptors}),outputMode,undefined,callerSecrets);
+    } finally {callerRelease?.();}
+  }
+
   // Trigger detection (T3b — Option B). The ONLY interception here is
   // the env-only one-time hint: when the user is running on
   // environment-variable credentials and has never been through
@@ -7418,6 +7780,12 @@ export async function main(
           };
   let exitCode: number;
   let commandRecognized = false;
+  // Requirements-lane refresh disposition (cold-review finding 4):
+  // REQUEST-LOCAL — an overlapping/reentrant main() entry owns its own
+  // cell and can never clear or set this one. True only when THIS
+  // invocation's requirements run died before/without acquisition;
+  // ordinary commands and successful runs keep the standard refresh.
+  const requirementsRefreshDisposition = { value: false };
   try {
     switch (command) {
       case "vision":
@@ -7499,7 +7867,10 @@ export async function main(
         // PRD AC-9: --isolated is ACCEPTED (never rejected — investigate
         // has no stateful dir; resumability is pure cache replay, and the
         // isolated/<pid> cache segment is exactly the right namespace).
-        exitCode = await handleInvestigate(commandArgs, outputMode, handlerDepsWithSave);
+        exitCode = await handleInvestigate(commandArgs, outputMode, {
+          ...handlerDepsWithSave,
+          requirementsRefreshSuppressed: requirementsRefreshDisposition,
+        });
         break;
       case "code":
         commandRecognized = true;
@@ -7535,6 +7906,13 @@ export async function main(
   //   - unrecognized commands (the default case above)
   //   - dry-run batch invocations — the preview contract promises no
   //     transport, and this refresh live-probes stale providers
+  //   - requirements-mode runs that FAILED preflight (cold-review
+  //     finding 3): the requirements lane's contract is zero HTTP
+  //     before a valid document + consented profile — a rejected run
+  //     must not then live-probe quota endpoints. A run that REACHES
+  //     acquisition refreshed like any other command (the flag below is
+  //     cleared on the success path), so plain-mode behavior is
+  //     untouched and only the failed-preflight lane is suppressed.
   // Run even when the handler threw (commandRecognized + caught):
   // the refresh is independent of the command's outcome and the
   // snapshot stays live regardless. The staleness check inside
@@ -7547,7 +7925,8 @@ export async function main(
     commandRecognized &&
     !isQuotaObservationalCommand &&
     !isHelpInvocation &&
-    !isDryRunBatch
+    !isDryRunBatch &&
+    !requirementsRefreshDisposition.value
   ) {
     await refreshQuotaSnapshots({
       descriptors: providerDescriptors,
@@ -7563,4 +7942,5 @@ export async function main(
   }
 
   return exitCode;
+  } finally { callerRelease?.(); }
 }

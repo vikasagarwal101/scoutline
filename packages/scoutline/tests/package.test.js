@@ -321,9 +321,13 @@ describe("scoutline package — npm pack contents", () => {
         }
       }
       const output = await new Promise((resolve, reject) => {
+        // Match the local npm child convention without mutating the parent.
+        const env = { ...process.env };
+        delete env.npm_config_allow_scripts;
         const child = spawn("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
           cwd: dir,
           stdio: ["ignore", "pipe", "pipe"],
+          env,
         });
         let stdout = "",
           stderr = "";

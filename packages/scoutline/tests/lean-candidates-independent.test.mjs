@@ -69,6 +69,74 @@ function noCandidates(result) {
   assert.ok(result.fields.every((row) => row.status !== "candidate"));
 }
 
+test("successful assessment metadata owns only supported usage counters", async () => {
+  const s = source();
+  const validated = validate(s);
+  const input = judgeInput(s, validated.fields);
+  const counters = { inputTokens: 11, outputTokens: 3, reasoningTokens: 2 };
+  const response = {
+    ...native(input), usage: {
+      ...counters, headers: { "x-synthetic": "BENIGN_EXTRA" },
+      endpoint: "https://synthetic.invalid/observation", raw: "BENIGN_TEXT",
+    },
+    contextSha256: "b".repeat(64), policySha256: "c".repeat(64),
+  };
+  const assessed = await assessCandidates(input, { judge: async () => response });
+  const control = await assessCandidates(input, { judge: async () => ({ ...response, usage: { ...counters } }) });
+  assert.deepEqual(assessed.judgements, control.judgements, "observation extras do not change judgements");
+  assert.deepEqual(assessed.metadata, {
+    requestSha256: response.requestSha256, model: response.model, usage: counters,
+    elapsedMs: response.elapsedMs, contextSha256: response.contextSha256, policySha256: response.policySha256,
+  });
+  assert.notEqual(assessed.metadata.usage, response.usage, "audit counters are code-owned");
+  response.usage.inputTokens = 99;
+  assert.deepEqual(assessed.metadata.usage, counters, "later supplier mutation cannot rewrite the observation");
+  for (let i = 0; i < validated.fields.length; i++) {
+    assert.equal(acceptCandidate(validated.fields[i], assessed.judgements[i], s, validated.sourceDigest, input).status, "accepted");
+  }
+});
+
+test("success observation scalars are bounded without changing judgement or legacy metadata keys", async () => {
+  const s = source();
+  const validated = validate(s);
+  const input = judgeInput(s, validated.fields);
+  const base = native(input);
+  const control = await assessCandidates(input, { judge: async () => base });
+  const keys = ["requestSha256", "model", "usage", "elapsedMs", "contextSha256", "policySha256"];
+  for (const [key, value] of [
+    ["requestSha256", { raw: "BENIGN_OBJECT" }], ["requestSha256", "x".repeat(513)],
+    ["requestSha256", ""], ["model", "m".repeat(513)],
+    ["elapsedMs", { raw: "BENIGN_OBJECT" }], ["elapsedMs", "5"],
+    ["elapsedMs", -1], ["elapsedMs", Infinity], ["elapsedMs", NaN],
+  ]) {
+    const assessed = await assessCandidates(input, { judge: async () => ({ ...base, [key]: value }) });
+    assert.deepEqual(assessed.judgements, control.judgements, `invalid optional ${key} cannot relabel judgements`);
+    assert.deepEqual(Object.keys(assessed.metadata), keys, "public six-key envelope is stable");
+    assert.equal(assessed.metadata[key], null, `invalid ${key} normalizes to null`);
+    assert.equal(assessed.metadata.contextSha256, null);
+    assert.equal(assessed.metadata.policySha256, null);
+    assert.equal(acceptCandidate(validated.fields[0], assessed.judgements[0], s, validated.sourceDigest, input).status, "accepted");
+  }
+  for (const [model, hash, elapsedMs] of [["fixture", "x", 0], ["m".repeat(512), "h".repeat(512), 0.25]]) {
+    const assessed = await assessCandidates(input, { judge: async () => ({
+      ...base, model, requestSha256: hash, elapsedMs,
+      usage: { inputTokens: 0, outputTokens: 0, reasoningTokens: 0, extra: "BENIGN_EXTRA" },
+      contextSha256: "invalid", policySha256: { raw: "BENIGN_OBJECT" },
+    }) });
+    assert.deepEqual(assessed.metadata, {
+      requestSha256: hash, model, usage: { inputTokens: 0, outputTokens: 0, reasoningTokens: 0 },
+      elapsedMs, contextSha256: null, policySha256: null,
+    }, "legitimate zeros/fractional latency/short hashes and bounded strings retain the legacy keys");
+    assert.deepEqual(assessed.judgements, control.judgements);
+  }
+  for (const reasoningTokens of [-1, 0.5, { raw: "BENIGN_OBJECT" }]) {
+    const assessed = await assessCandidates(input, { judge: async () => ({
+      ...base, usage: { inputTokens: 1, outputTokens: 1, reasoningTokens },
+    }) });
+    assert.deepEqual(assessed.metadata.usage, { inputTokens: 1, outputTokens: 1 });
+  }
+});
+
 test("control: valid literal values bind exact UTF8 digest and half-open UTF16 ranges", async () => {
   const s = source();
   const result = validate(s);

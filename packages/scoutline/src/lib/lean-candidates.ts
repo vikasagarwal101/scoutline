@@ -905,15 +905,28 @@ export async function assessCandidates(
   // metadata. Suppliers that omit them stay legacy-compatible.
   const identityHash = (v: unknown): string | null =>
     typeof v === "string" && HASH_64.test(v) ? v : null;
+  // Success observations use the same owned allowlist projection as
+  // rejections. resolvedModel is an INTERNAL sanitizer key only: the
+  // public success envelope retains model and its six legacy keys.
+  const safeMetadata = sanitizeCandidateObservation({
+    requestSha256: response.requestSha256,
+    resolvedModel: response.model,
+    usage,
+    // Do not let nonnumeric latency reach the sanitizer's generic
+    // string fallback; invalid optional observations normalize to null.
+    elapsedMs: typeof response.elapsedMs === "number" ? response.elapsedMs : undefined,
+    contextSha256: identityHash((response as { contextSha256?: unknown }).contextSha256),
+    policySha256: identityHash((response as { policySha256?: unknown }).policySha256),
+  }) ?? {};
   return {
     judgements,
     metadata: {
-      requestSha256: response.requestSha256,
-      model: response.model,
-      usage,
-      elapsedMs: response.elapsedMs,
-      contextSha256: identityHash((response as { contextSha256?: unknown }).contextSha256),
-      policySha256: identityHash((response as { policySha256?: unknown }).policySha256),
+      requestSha256: safeMetadata.requestSha256 ?? null,
+      model: safeMetadata.resolvedModel ?? null,
+      usage: safeMetadata.usage ?? null,
+      elapsedMs: safeMetadata.elapsedMs ?? null,
+      contextSha256: safeMetadata.contextSha256 ?? null,
+      policySha256: safeMetadata.policySha256 ?? null,
     },
   };
 }

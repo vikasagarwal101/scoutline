@@ -104,6 +104,15 @@ const CALLER_LIMIT_KEYS: ReadonlySet<string> = new Set([
   "deadlineMs",
 ]);
 
+// Only the declared caller-control bags are closed. Evidence extras,
+// arbitrary scope entries and field IDs retain their existing policy.
+const CONTRACT_KEYS: ReadonlySet<string> = new Set([
+  "schemaVersion", "question", "scope", "requirements", "evidence", "limits",
+]);
+const REQUIREMENT_KEYS: ReadonlySet<string> = new Set([
+  "question", "schema", "criteria", "required", "dependsOn",
+]);
+
 // ---------------------------------------------------------------------------
 // Caller contract (input)
 // ---------------------------------------------------------------------------
@@ -497,6 +506,12 @@ export function compileLeanContract(input: unknown): LeanCompiledContract {
   if (!isNonEmptyString(input.question)) {
     throw new ValidationError("question must be a non-empty string.");
   }
+  const contractExtras = Object.keys(input).filter((key) => !CONTRACT_KEYS.has(key));
+  if (contractExtras.length > 0) {
+    throw new ValidationError(
+      `Lean investigation contract carries unsupported keys (${contractExtras.join(", ")}).`,
+    );
+  }
 
   let scope: Record<string, string> = {};
   if (input.scope !== undefined) {
@@ -623,7 +638,7 @@ export function compileLeanContract(input: unknown): LeanCompiledContract {
         }
       }
       // Supported-descriptor preflight: run the SAME policy the
-      // extractor-time validator enforces (min<=max, max<=4096,
+      // extractor-time validator enforces (min<=max, min/max<=4096,
       // screened pattern subset) here at compile, so an unsupported
       // declaration is rejected BEFORE any acquisition rather than
       // surfacing mid-run. One implementation, no restated rules.
@@ -643,6 +658,14 @@ export function compileLeanContract(input: unknown): LeanCompiledContract {
     if (raw.scope !== undefined) {
       throw new ValidationError(
         `requirements.${id}.scope per-field overrides are not supported; declare scope at the contract level.`,
+      );
+    }
+    // Keep the explicit per-field-scope diagnostic above; other unknown
+    // own enumerable controls must not silently disappear from the plan.
+    const requirementExtras = Object.keys(raw).filter((key) => !REQUIREMENT_KEYS.has(key));
+    if (requirementExtras.length > 0) {
+      throw new ValidationError(
+        `requirements.${id} carries unsupported keys (${requirementExtras.join(", ")}).`,
       );
     }
     if (compiledSchema.mode === "classification") {

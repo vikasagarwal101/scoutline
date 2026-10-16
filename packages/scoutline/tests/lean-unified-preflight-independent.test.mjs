@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { validateCandidates } from "../dist/lib/lean-candidates.js";
+import { assertCandidateFieldSchema, validateCandidates } from "../dist/lib/lean-candidates.js";
 const root =
   new URL("..", import.meta.url).pathname;
 const { compileLeanContract } = await import(
@@ -12,7 +12,86 @@ const input = (schema) => ({
   requirements: { value: { question: "Literal value?", schema } },
 });
 test("classification duplicate enum values remain fail-loud compiler error", () => {
-  assert.throws(() => compileLeanContract(input({ enum: ["supported", "supported"] })));
+  assert.throws(
+    () => compileLeanContract(input({ enum: ["supported", "supported"] })),
+    (e) => e.code === "VALIDATION_ERROR" && /duplicate value "supported"/.test(e.message),
+  );
+});
+test("minimum above the value ceiling rejects preflight even without a maximum", () => {
+  const invalidMinimum = (e) => e.code === "VALIDATION_ERROR" && /minLength.*4096/.test(e.message);
+  assert.throws(() => assertCandidateFieldSchema("value", { minLength: 4097 }), invalidMinimum);
+  assert.throws(() => compileLeanContract(input({ type: "string", minLength: 4097 })), invalidMinimum);
+  assert.doesNotThrow(() => assertCandidateFieldSchema("value", { minLength: 4096 }));
+  assert.doesNotThrow(() => compileLeanContract(input({ type: "string", minLength: 4096 })));
+  const value = "x".repeat(4096);
+  const source = {
+    evidenceId: "minimum-control", url: "https://fixture.invalid/minimum", title: "Fixture",
+    content: value, byteLength: value.length, origins: [],
+  };
+  const validated = validateCandidates(source, {
+    finishReason: "stop", rawOutput: JSON.stringify({ value: { value, quote: value } }),
+  }, { value: { minLength: 4096 } });
+  assert.equal(validated.fields[0].status, "candidate", "the existing ceiling is a valid minimum");
+});
+test("unknown own enumerable contract keys reject instead of dropping caller controls", () => {
+  for (const [key, value] of [["limit", { deadlineMs: 1 }], ["require", {}], ["annotation", "BENIGN_EXTRA"]]) {
+    assert.throws(
+      () => compileLeanContract({ ...input({ type: "string" }), [key]: value }),
+      (e) => e.code === "VALIDATION_ERROR" && /contract.*unsupported/.test(e.message) && e.message.includes(key),
+      `unsupported contract key ${key} must reject`,
+    );
+  }
+});
+test("unknown own enumerable requirement keys reject instead of dropping prerequisites or criteria", () => {
+  for (const [key, value] of [
+    ["depends_on", ["absent"]], ["criterion", ["Declared value"]],
+    ["require", false], ["annotation", "BENIGN_EXTRA"],
+  ]) {
+    const contract = input({ type: "string" });
+    contract.requirements.value[key] = value;
+    assert.throws(
+      () => compileLeanContract(contract),
+      (e) => e.code === "VALIDATION_ERROR" && /requirements.value.*unsupported/.test(e.message) && e.message.includes(key),
+      `unsupported requirement key ${key} must reject`,
+    );
+  }
+});
+test("declared caller keys, open evidence extras and arbitrary maps retain their existing meaning", () => {
+  const contract = {
+    schemaVersion: 1, question: "Q", scope: { "arbitrary-scope-key": "public" },
+    requirements: {
+      "version-id": {
+        question: "Version?", schema: { type: "string" }, criteria: ["Version criterion"],
+        required: true, dependsOn: [],
+      },
+      "license-note": {
+        question: "License?", schema: { type: "string", pattern: "^[A-Z]+$", minLength: 1, maxLength: 16 },
+        criteria: ["License criterion"], required: false, dependsOn: ["version-id"],
+      },
+    },
+    // Evidence-bag closure was withheld: these extras remain accepted and ignored.
+    evidence: { criteria: ["Public evidence"], annotation: "BENIGN_EXTRA", criterion: ["Not consumed"] },
+    limits: { readBatchSize: 1, maxUniqueReads: 1, maxSearchAttempts: 1, maxJudgeAttempts: 1, deadlineMs: 1 },
+  };
+  Object.defineProperty(contract, "hiddenAnnotation", { value: "BENIGN_EXTRA", enumerable: false });
+  Object.defineProperty(contract.requirements["license-note"], "hiddenAnnotation", { value: "BENIGN_EXTRA", enumerable: false });
+  const compiled = compileLeanContract(contract);
+  assert.equal(compiled.question, contract.question);
+  assert.deepEqual(compiled.scope, contract.scope);
+  assert.deepEqual(compiled.fields.map((f) => f.id), ["version-id", "license-note"]);
+  assert.equal(compiled.fields[0].required, true);
+  assert.equal(compiled.fields[1].required, false);
+  assert.deepEqual(compiled.fields.map((f) => f.criteria), [["Version criterion"], ["License criterion"]]);
+  assert.deepEqual(compiled.fields[1].dependsOn, ["version-id"]);
+  assert.deepEqual(compiled.fields[1].schema, { mode: "value", pattern: "^[A-Z]+$", minLength: 1, maxLength: 16 });
+  assert.deepEqual(compiled.evidenceCriteria, ["Public evidence"]);
+  for (const key of Object.keys(contract.limits)) assert.equal(compiled.limits[key], 1);
+  const perFieldScope = structuredClone(contract);
+  perFieldScope.requirements["license-note"].scope = { release: "other" };
+  assert.throws(
+    () => compileLeanContract(perFieldScope),
+    (e) => e.code === "VALIDATION_ERROR" && e.message === "requirements.license-note.scope per-field overrides are not supported; declare scope at the contract level.",
+  );
 });
 test("quantified-group patterns reject at compileLeanContract preflight", () => {
   for (const pattern of ["^(a{1,})+$", "^(a{1,3}){2,}$", "^(a?)+$"]) {

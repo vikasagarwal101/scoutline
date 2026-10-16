@@ -414,77 +414,71 @@ for (const descriptor of [
 ]) {
   test(`unsupported length descriptor ${String(Object.entries(descriptor))} rejects preflight`, () => {
     // null extraction cannot hide an invalid caller descriptor.
-    let result;
-    let error;
-    try {
-      result = validateCandidates(
+    assert.throws(
+      () => validateCandidates(
         SOURCE,
         { ...RAW, rawOutput: '{"license":{"value":null,"quote":null}}' },
         { license: descriptor },
-      );
-    } catch (caught) {
-      error = caught;
-    }
-    assert.ok(
-      error?.code || result.fields[0].status === "invalid",
+      ),
+      (e) => e.code === "VALIDATION_ERROR" && /Field "license".*(?:minLength|maxLength)/.test(e.message),
       "invalid descriptor silently bypassed when source abstains",
     );
   });
 }
 test("unsupported ambiguous alternation quantifier is rejected without timing probe", () => {
   const source = { ...SOURCE, content: "a" };
-  let result;
-  let error;
-  try {
-    result = validateCandidates(
+  assert.throws(
+    () => validateCandidates(
       source,
       { finishReason: "stop", rawOutput: '{"license":{"value":"a","quote":"a"}}' },
       { license: { pattern: "(a|aa)+$" } },
-    );
-  } catch (caught) {
-    error = caught;
-  }
-  assert.ok(error?.code || result.fields[0].status === "invalid");
+    ),
+    (e) => e.code === "VALIDATION_ERROR" && /pattern uses forbidden constructs/.test(e.message),
+  );
 });
 
-const cappedInvalid = (source, raw, descriptor = {}) => {
-  let result;
-  let error;
-  try {
-    result = validateCandidates(source, raw, { license: descriptor });
-  } catch (caught) {
-    error = caught;
-  }
-  assert.ok(
-    error?.code || result.fields[0].status === "invalid",
-    "independent proof ceiling silently bypassed",
-  );
-};
 test("source UTF8 bytes above approved64KiB ceiling reject independently of schemas", () => {
-  cappedInvalid({ ...SOURCE, content: "x".repeat(65_536) + " License MIT" }, RAW);
+  assert.throws(
+    () => validateCandidates({ ...SOURCE, content: "x".repeat(65_536) + " License MIT" }, RAW, { license: {} }),
+    (e) => e.code === "VALIDATION_ERROR" && /Retained source exceeds.*65536-byte/.test(e.message),
+  );
 });
 test("raw extraction JSON above approved64KiB ceiling rejects even if abstaining", () => {
-  cappedInvalid(SOURCE, {
-    finishReason: "stop",
-    rawOutput: " ".repeat(65_536) + '{"license":{"value":null,"quote":null}}',
-  });
+  assert.throws(
+    () => validateCandidates(SOURCE, {
+      finishReason: "stop",
+      rawOutput: " ".repeat(65_536) + '{"license":{"value":null,"quote":null}}',
+    }, { license: {} }),
+    (e) => e.code === "VALIDATION_ERROR" && /Extractor raw output exceeds.*65536-byte/.test(e.message),
+  );
 });
 test("value above4096UTF16 ceiling rejects even without maxLength descriptor", () => {
   const value = "x".repeat(4097);
-  cappedInvalid(
+  const result = validateCandidates(
     { ...SOURCE, content: value },
     { finishReason: "stop", rawOutput: JSON.stringify({ license: { value, quote: value } }) },
+    { license: {} },
   );
+  assert.equal(result.parsed, true);
+  assert.equal(result.fields[0].status, "invalid");
+  assert.equal(result.fields[0].reason, "value_exceeds_ceiling");
 });
 test("quote above16KiBUTF8 ceiling rejects independently of source cap", () => {
   const quote = "界".repeat(5500) + " MIT";
-  cappedInvalid(
+  const result = validateCandidates(
     { ...SOURCE, content: quote },
     { finishReason: "stop", rawOutput: JSON.stringify({ license: { value: "MIT", quote } }) },
+    { license: {} },
   );
+  assert.equal(result.parsed, true);
+  assert.equal(result.fields[0].status, "invalid");
+  assert.equal(result.fields[0].reason, "quote_exceeds_ceiling");
 });
 test("caller descriptor cannot raise hard value ceiling", () => {
-  cappedInvalid(SOURCE, RAW, { maxLength: 4097 });
+  assert.throws(
+    () => validateCandidates(SOURCE, RAW, { license: { maxLength: 4097 } }),
+    (e) => e.code === "VALIDATION_ERROR" && /maxLength.*4096/.test(e.message),
+  );
 });
 test("control: modest source/raw/value/quote with lower valid descriptor remains candidate", () => {
   assert.equal(

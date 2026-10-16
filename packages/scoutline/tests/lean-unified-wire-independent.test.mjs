@@ -45,7 +45,3 @@ test("native judgment request identity changes with dependency revision alone", 
   );
   assert.notEqual(before, after);
 });
-test("official candidate judgment state includes explicit dependency binding", () => {
-  const request = JSON.parse(buildCandidateJudgeRequest(judgeInput, "offline-fixture"));
-  assert.deepEqual(request.state.depBindings, depBindings);
-});

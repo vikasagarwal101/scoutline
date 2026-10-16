@@ -69,6 +69,28 @@ function noCandidates(result) {
   assert.ok(result.fields.every((row) => row.status !== "candidate"));
 }
 
+test("expected native answers must be own properties, including on null-prototype maps", async () => {
+  const s = source();
+  const validated = validate(s);
+  const input = judgeInput(s, validated.fields);
+  const base = native(input);
+  for (const [answers, missing] of [
+    [Object.create(base.answers), "q0s"],
+    [Object.assign(Object.create(base.answers), { q0s: base.answers.q0s }), "q0c"],
+  ]) {
+    const assessed = await assessCandidates(input, { judge: async () => ({ ...base, answers }) });
+    assert.deepEqual(assessed, { judgements: [], error: `JEV_DEV_PROTOCOL:missing_question_${missing}` });
+  }
+  const control = await assessCandidates(input, { judge: async () => base });
+  const nullPrototype = await assessCandidates(input, { judge: async () => ({
+    ...base, answers: Object.assign(Object.create(null), base.answers),
+  }) });
+  assert.deepEqual(nullPrototype.judgements, control.judgements);
+  for (let i = 0; i < validated.fields.length; i++) {
+    assert.equal(acceptCandidate(validated.fields[i], nullPrototype.judgements[i], s, validated.sourceDigest, input).status, "accepted");
+  }
+});
+
 test("successful assessment metadata owns only supported usage counters", async () => {
   const s = source();
   const validated = validate(s);
@@ -350,82 +372,53 @@ test("normalized flags cannot contradict raw probabilities at acceptance", async
   );
 });
 
-for (const malformed of [null, undefined, { model: "fixture", answers: {}, usage: undefined }]) {
+for (const [malformed, expectedError] of [
+  [null, "JEV_DEV_MALFORMED:response_not_object"],
+  [undefined, "JEV_DEV_MALFORMED:response_not_object"],
+  [{ model: "fixture", answers: {}, usage: undefined }, "JEV_DEV_PROTOCOL:missing_question_q0s"],
+]) {
   test(`malformed native response ${String(malformed)} is typed or unresolved without raw crash`, async () => {
     const s = source();
     const input = judgeInput(s, validate(s).fields);
-    let result;
-    let error;
-    try {
-      result = await assessCandidates(input, { judge: async () => malformed });
-    } catch (caught) {
-      error = caught;
-    }
-    if (error)
-      assert.equal(typeof error.code, "string", "native malformed response escaped raw error");
-    else {
-      assert.equal(result.judgements.length, 0);
-      assert.equal(typeof result.error, "string");
-    }
+    const result = await assessCandidates(input, { judge: async () => malformed });
+    assert.deepEqual(result, { judgements: [], error: expectedError });
   });
 }
 
 test("native missing usage counters is not fabricated zero or raw crash", async () => {
   const s = source();
   const input = judgeInput(s, validate(s).fields);
-  let result;
-  let error;
-  try {
-    result = await assessCandidates(input, {
-      judge: async () => ({ ...native(input), usage: undefined }),
-    });
-  } catch (caught) {
-    error = caught;
-  }
-  if (error) assert.equal(typeof error.code, "string");
-  else {
-    assert.equal(result.judgements.length, 0);
-    assert.match(result.error, /usage/);
-  }
+  const result = await assessCandidates(input, {
+    judge: async () => ({ ...native(input), usage: undefined }),
+  });
+  assert.deepEqual(result, { judgements: [], error: "JEV_DEV_MALFORMED:usage_invalid" });
 });
 
 test("candidate assessment threshold overrides cannot invert policy", async () => {
   const s = source();
   const input = judgeInput(s, validate(s).fields);
-  let result;
-  let error;
-  try {
-    result = await assessCandidates(
-      input,
-      { judge: async () => native(input, 0.2, 0.2) },
-      0.1,
-      0.9,
-    );
-  } catch (caught) {
-    error = caught;
-  }
-  assert.ok(error?.code || result?.error, "reversed thresholds yielded authoritative decisions");
+  const result = await assessCandidates(
+    input,
+    { judge: async () => native(input, 0.2, 0.2) },
+    0.1,
+    0.9,
+  );
+  assert.deepEqual(result, { judgements: [], error: "JEV_DEV_PROTOCOL:threshold_overrides_unsupported" });
 });
 
 test("unsupported nested-quantifier pattern cannot claim bounded safe validation", () => {
   // Short matching input avoids executing a catastrophic near-miss. This
   // verifies preflight restriction, not a timing benchmark or source mutation.
-  let result;
-  let error;
-  try {
-    result = validate(
+  assert.throws(
+    () => validate(
       source("a"),
       {
         finishReason: "stop",
         rawOutput: JSON.stringify({ invoiceId: { value: "a", quote: "a" } }),
       },
       { invoiceId: { pattern: "(a+)+$" } },
-    );
-  } catch (caught) {
-    error = caught;
-  }
-  assert.ok(
-    error?.code || result?.fields[0].status === "invalid",
+    ),
+    (e) => e.code === "VALIDATION_ERROR" && /pattern uses forbidden constructs/.test(e.message),
     "256-character cap does not make nested backtracking safe",
   );
 });
@@ -481,20 +474,12 @@ test("safe quantified atoms, paren classes and escaped groups still validate", (
 test("null native answer entry rejects without raw dereference failure", async () => {
   const s = source();
   const input = judgeInput(s, validate(s).fields);
-  let result;
-  let error;
-  try {
-    result = await assessCandidates(input, {
+  await assert.rejects(
+    () => assessCandidates(input, {
       judge: async () => ({ ...native(input), answers: { ...native(input).answers, q0s: null } }),
-    });
-  } catch (caught) {
-    error = caught;
-  }
-  if (error) assert.equal(typeof error.code, "string");
-  else {
-    assert.equal(result.judgements.length, 0);
-    assert.equal(typeof result.error, "string");
-  }
+    }),
+    (e) => e.code === "VALIDATION_ERROR" && /q0.*finite noul probability/.test(e.message),
+  );
 });
 
 test("control: wire questions bind candidate paths/full source/opposing text without interpolation", () => {
@@ -557,19 +542,22 @@ test("control: unknown/extra native IDs and bad type/probability never accepted"
   const input = judgeInput(s, validate(s).fields);
   const base = native(input);
   const answers = [
-    { ...base.answers, unknown: { type: "noul", noul: 1 } },
-    { q0s: base.answers.q0s },
-    { ...base.answers, q0s: { type: "choice", noul: 1 } },
-    { ...base.answers, q0c: { type: "noul", noul: NaN } },
+    [{ ...base.answers, unknown: { type: "noul", noul: 1 } }, "JEV_DEV_PROTOCOL:unknown_question_unknown"],
+    [{ q0s: base.answers.q0s }, "JEV_DEV_PROTOCOL:missing_question_q0c"],
+    [{ ...base.answers, q0s: { type: "choice", noul: 1 } }, null],
+    [{ ...base.answers, q0c: { type: "noul", noul: NaN } }, null],
+    [{ ...base.answers, q0s: { type: "noul", noul: 1.1 } }, null],
+    [{ ...base.answers, q0c: { type: "noul", noul: -0.1 } }, null],
   ];
-  for (const map of answers) {
-    let result;
-    let error;
-    try {
-      result = await assessCandidates(input, { judge: async () => ({ ...base, answers: map }) });
-    } catch (caught) {
-      error = caught;
+  for (const [map, expectedError] of answers) {
+    const run = () => assessCandidates(input, { judge: async () => ({ ...base, answers: map }) });
+    if (expectedError !== null) {
+      assert.deepEqual(await run(), { judgements: [], error: expectedError });
+    } else {
+      await assert.rejects(
+        run,
+        (e) => e.code === "VALIDATION_ERROR" && /q0.*finite noul probability/.test(e.message),
+      );
     }
-    assert.ok(error?.code || result?.error);
   }
 });

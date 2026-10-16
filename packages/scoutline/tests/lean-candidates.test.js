@@ -136,7 +136,7 @@ describe("assessment + acceptance", () => {
     opposingContext: [],
   });
 
-  it("strict validation: unknown/missing questions, bad usage, non-noul reject", async () => {
+  it("strict validation: unknown/missing questions and bad usage", async () => {
     const base = { model: "m", usage: { inputTokens: 1, outputTokens: 1 }, requestSha256: "x", elapsedMs: 1 };
     const mk = (answers, usage = base.usage) => async () => ({ ...base, answers, usage });
     const cands = [{ fieldId: "license", value: "MIT", quote: "MIT licensed", charRange: [20, 32] }];

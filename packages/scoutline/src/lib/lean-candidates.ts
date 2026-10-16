@@ -377,7 +377,7 @@ export function candidateSourceDigest(source: LeanEvidenceRecord): string {
  */
 /**
  * Descriptor preflight: the EXACT supported-descriptor policy
- * (min<=max, max<=4096, screened pattern subset) that validateCandidates
+ * (min<=max, min/max<=4096, screened pattern subset) that validateCandidates
  * enforces at extraction time, exported so the unified compiler can
  * reject the same declarations BEFORE any acquisition instead of
  * discovering them mid-run. One policy, one implementation — the
@@ -399,6 +399,11 @@ export function assertCandidateFieldSchema(fieldId: string, schema: CandidateFie
   ) {
     throw new ValidationError(`Field "${fieldId}" minLength exceeds maxLength.`);
   }
+  if (schema.minLength !== undefined && schema.minLength > CANDIDATE_MAX_VALUE_UTF16) {
+    throw new ValidationError(
+      `Field "${fieldId}" minLength exceeds the ${CANDIDATE_MAX_VALUE_UTF16} value ceiling.`,
+    );
+  }
   if (schema.maxLength !== undefined && schema.maxLength > CANDIDATE_MAX_VALUE_UTF16) {
     throw new ValidationError(
       `Field "${fieldId}" maxLength exceeds the ${CANDIDATE_MAX_VALUE_UTF16} value ceiling.`,
@@ -417,7 +422,7 @@ export function validateCandidates(
   const sourceDigest = candidateSourceDigest(source);
   // ---- upfront descriptor + source/output ceiling validation ----------
   // Descriptors must be finite safe non-negative ints with min<=max and
-  // max<=4096 (caller bounds LOWER the ceilings, never raise); patterns
+  // min/max<=4096 (caller bounds LOWER the ceilings, never raise); patterns
   // pre-screened (supported subset). Source and rawOutput capped.
   // Validation happens BEFORE abstention — bad descriptors are rejected
   // even when the extractor abstained.
@@ -839,7 +844,7 @@ export async function assessCandidates(
       return { judgements: [], error: `JEV_DEV_PROTOCOL:unknown_question_${id}` };
   }
   for (const id of expected) {
-    if (!(id in (answers as Record<string, unknown>)))
+    if (!Object.hasOwn(answers, id))
       return { judgements: [], error: `JEV_DEV_PROTOCOL:missing_question_${id}` };
   }
   const usage = (response as { usage?: unknown }).usage;

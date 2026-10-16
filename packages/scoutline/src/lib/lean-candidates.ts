@@ -106,7 +106,10 @@ export const CANDIDATE_MAX_QUOTE_BYTES = 16 * 1024; // UTF-8 (source-bound)
  * universal ReDoS-safety claim): any QUANTIFIED GROUP — nested
  * quantifiers like (a+)+ AND alternation-bearing groups like (a|aa)+ —
  * backreferences and lookarounds are rejected UPFRONT; a short source
- * cap alone bounds nothing. Single quantifiers on plain atoms remain.
+ * cap alone bounds nothing. At most ONE choice site is supported: one
+ * alternation scope OR one variable-count atom quantifier. Fixed atom
+ * counts remain supported. This conservative syntax policy is not a
+ * universal JavaScript-regexp execution-time guarantee.
  */
 /** Sanitized measured-observation allowlist (mirrors the engine's
  *  SAFE_FAILED_OBSERVATION_KEYS): only known safe fields survive the
@@ -171,6 +174,25 @@ function sanitizeCandidateObservation(
 const FORBIDDEN_PATTERN =
   /\\[1-9]|\(\?<[=!]|\(\?<=|\(\?=|\(\?!|\(\?[Pp]|[{}]{2,}|\*{3,}/;
 
+/** Named references are excluded along with numeric references. Scan
+ *  actual syntax so escaped backslashes and class literals remain data;
+ *  reference-free named captures remain supported. */
+function hasNamedReference(pattern: string): boolean {
+  let inClass = false;
+  for (let i = 0; i < pattern.length; i += 1) {
+    const ch = pattern[i]!;
+    if (ch === "\\") {
+      if (!inClass && pattern[i + 1] === "k" && pattern[i + 2] === "<") return true;
+      i += 1;
+    } else if (ch === "[") {
+      inClass = true;
+    } else if (ch === "]") {
+      inClass = false;
+    }
+  }
+  return false;
+}
+
 /**
  * True when a REAL group-closing paren is directly followed by a group
  * quantifier (`*`, `+`, `?` or a `{m[,n]}` brace quantifier). Tracks
@@ -210,13 +232,85 @@ function hasQuantifiedGroup(pattern: string): boolean {
   return false;
 }
 
+/**
+ * Independent choices can multiply even without quantified groups:
+ * `(a|aa)(a|aa)...` and `a?a?...` both backtrack exponentially.
+ * Admit one alternation scope OR one variable-count atom quantifier.
+ * Deliberately rejects even safe combinations such as `^a+b+$`,
+ * `^a?b?$`, `^(cat|dog)-(red|blue)$` and `^(MIT|Apache)-[0-9]+$`.
+ * Escapes/classes are literals here; group prefixes and lazy suffixes
+ * are syntax, not extra choices. RegExp still validates the grammar.
+ */
+function hasMultiplePatternChoices(pattern: string): boolean {
+  // One entry per group INSTANCE (plus the root), never per depth:
+  // sibling groups at the same depth introduce distinct choices.
+  const alternatives = [false];
+  let choices = 0;
+  let inClass = false;
+  for (let i = 0; i < pattern.length; i += 1) {
+    const ch = pattern[i]!;
+    if (ch === "\\") {
+      // A braced Unicode/property escape is ONE atom, not a fixed-count
+      // quantifier. Leave its following '?' visible as an optional site.
+      if (/[upP]/.test(pattern[i + 1] ?? "") && pattern[i + 2] === "{") {
+        const end = pattern.indexOf("}", i + 3);
+        if (end !== -1) i = end - 1;
+      }
+      i += 1;
+      continue;
+    }
+    if (inClass) {
+      if (ch === "]") inClass = false;
+      continue;
+    }
+    if (ch === "[") {
+      inClass = true;
+    } else if (ch === "(") {
+      alternatives.push(false);
+      if (pattern[i + 1] === "?") {
+        // Noncapturing/modifier prefixes end at ':', named captures at
+        // '>'. Existing forbidden-construct screening excludes assertions.
+        const end = pattern.indexOf(pattern[i + 2] === "<" ? ">" : ":", i + 2);
+        if (end !== -1) i = end;
+      }
+    } else if (ch === ")") {
+      if (alternatives.length > 1) alternatives.pop();
+    } else if (ch === "|") {
+      const scope = alternatives.length - 1;
+      if (!alternatives[scope]) {
+        alternatives[scope] = true;
+        choices += 1;
+      }
+    } else if (ch === "*" || ch === "+" || ch === "?") {
+      choices += 1;
+      if (pattern[i + 1] === "?") i += 1; // lazy modifier of THIS site
+    } else if (ch === "{") {
+      const count = /^\{(\d+)(?:,(\d*))?\}/.exec(pattern.slice(i));
+      if (count !== null) {
+        if (count[2] !== undefined && (count[2] === "" || BigInt(count[1]!) !== BigInt(count[2]))) {
+          choices += 1;
+        }
+        i += count[0].length - 1;
+        if (pattern[i + 1] === "?") i += 1;
+      }
+    }
+    if (choices > 1) return true;
+  }
+  return false;
+}
+
 function compilePattern(fieldId: string, pattern: string): RegExp {
   if (pattern.length > PATTERN_MAX_SOURCE) {
     throw new ValidationError(
       `Field "${fieldId}" pattern exceeds the ${PATTERN_MAX_SOURCE}-character bound.`,
     );
   }
-  if (FORBIDDEN_PATTERN.test(pattern) || hasQuantifiedGroup(pattern)) {
+  if (
+    FORBIDDEN_PATTERN.test(pattern) ||
+    hasNamedReference(pattern) ||
+    hasQuantifiedGroup(pattern) ||
+    hasMultiplePatternChoices(pattern)
+  ) {
     throw new ValidationError(`Field "${fieldId}" pattern uses forbidden constructs.`);
   }
   try {
@@ -595,8 +689,8 @@ export const CANDIDATE_THRESHOLD_FALSE = 0.1 as const;
  *  - payload identity (validation outcome): source id+digest, fieldId,
  *    value, quote, range.
  *  - assessment identity (judgement): payload identity PLUS the judged
- *    context — field meaning, scope, and the opposing-context set — so a
- *    judgement rendered under one meaning/scope/opposition never
+ *    context — field meaning, scope, and primary/opposing wire URLs and
+ *    content — so a judgement rendered under one meaning/scope/opposition never
  *    authorizes acceptance under a different one.
  */
 /** Assessment-context identity inputs (unified proof): dependency
@@ -655,7 +749,11 @@ export function candidateIdentity(
   const ctx = [
     context.fieldMeaning,
     context.scope,
-    context.opposingContext.map((e) => [e.evidenceId, candidateSourceDigest(e)] as const),
+    // URLs are visible to the judge alongside ids/text. Bind them only
+    // in assessment context; validation/payload identity stays byte-stable.
+    // Titles are not on this wire and do not enter the assessed identity.
+    source.url,
+    context.opposingContext.map((e) => [e.evidenceId, candidateSourceDigest(e), e.url] as const),
     // Dependency revision is part of what the judgment judged: a
     // digest-only change yields a different assessment identity, so a
     // stale judgment can never re-authorize acceptance.

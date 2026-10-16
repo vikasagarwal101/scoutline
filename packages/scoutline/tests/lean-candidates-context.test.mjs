@@ -187,6 +187,92 @@ function deferredNative() {
     },
   };
 }
+for (const timing of ["completed", "pending"]) {
+  for (const target of ["primary", "opposing"]) {
+    test(`${timing} assessment binds the ${target} source URL on the real judge wire`, async () => {
+      const source = structuredClone(SOURCE);
+      const validated = validateCandidates(source, RAW, { license: { minLength: 1, maxLength: 64 } });
+      assert.equal(validated.fields[0].status, "candidate");
+      // Golden payload ID captured from exact published L1 before this fix.
+      assert.equal(validated.fields[0].candidateId, "534b638d1465b6f8d39d395d66dc1fdbe271a0f4bfd9ba83d537f18d8a71bf28");
+      const opposing = {
+        ...structuredClone(source), evidenceId: "s2", url: "https://fixture.invalid/opposition",
+        content: "Release 1.0 license is MIT, confirmed.",
+      };
+      opposing.byteLength = Buffer.byteLength(opposing.content);
+      const input = {
+        source, fieldMeanings: { license: "License of scoped release" }, scope: { release: "1.0" },
+        opposingContext: [opposing], candidates: structuredClone(validated.fields),
+        depBindings: { version: { value: "1.0", evidenceId: "s3", sourceDigest: "a".repeat(64) } },
+      };
+      const preserved = structuredClone(input);
+      let release;
+      const gate = new Promise((resolve) => { release = resolve; });
+      let wire;
+      const pending = assessCandidates(input, {
+        judge: async (judged) => {
+          await gate; // Serialize AFTER a pending caller mutation, when applicable.
+          wire = JSON.parse(buildCandidateJudgeRequest(judged, "fixture"));
+          return {
+            model: "fixture",
+            answers: { q0s: { type: "noul", noul: 0.97 }, q0c: { type: "noul", noul: 0.01 } },
+            usage: { inputTokens: 1, outputTokens: 1 },
+            requestSha256: "a".repeat(64), elapsedMs: 1,
+          };
+        },
+      });
+      let assessed;
+      if (timing === "completed") {
+        release();
+        assessed = await pending;
+      }
+      // Mutate the SAME caller-owned record, not an array replacement.
+      if (target === "primary") input.source.url = "https://fixture.invalid/changed-primary";
+      else input.opposingContext[0].url = "https://fixture.invalid/changed-opposition";
+      if (timing === "pending") {
+        release();
+        assessed = await pending;
+      }
+      assert.deepEqual(wire, JSON.parse(buildCandidateJudgeRequest(preserved, "fixture")));
+      assert.equal(wire.state.source.url, preserved.source.url);
+      assert.equal(wire.state.opposingContext[0].url, preserved.opposingContext[0].url);
+      const changedWire = JSON.parse(buildCandidateJudgeRequest(input, "fixture"));
+      assert.notDeepEqual(changedWire, wire, "URL mutation really changes the judged wire context");
+      const urlOnly = structuredClone(preserved);
+      if (target === "primary") urlOnly.source.url = input.source.url;
+      else urlOnly.opposingContext[0].url = input.opposingContext[0].url;
+      assert.deepEqual(input, urlOnly, "scope/meaning/deps/content/id/value/quote/range are unchanged");
+      const revalidated = validateCandidates(input.source, RAW, { license: { minLength: 1, maxLength: 64 } });
+      assert.deepEqual(revalidated, validated, "URL changes preserve the validation/payload identity");
+      assert.equal(
+        acceptCandidate(validated.fields[0], assessed.judgements[0], preserved.source, validated.sourceDigest, preserved).status,
+        "accepted", "the original dispatch-time basis still accepts",
+      );
+      const refused = acceptCandidate(validated.fields[0], assessed.judgements[0], input.source, validated.sourceDigest, input);
+      assert.equal(refused.status, "unresolved", "a changed wire URL requires reassessment");
+      assert.equal(refused.reason, "judgement_context_mismatch");
+    });
+  }
+}
+test("titles remain outside the judged wire context and its assessment identity", async () => {
+  const { validated, input } = ownedFixture();
+  const preserved = structuredClone(input);
+  const native = deferredNative();
+  const pending = assessCandidates(input, { judge: native.judge });
+  native.release();
+  const assessed = await pending;
+  input.source.title = "Changed primary title";
+  input.opposingContext[0].title = "Changed opposing title";
+  assert.deepEqual(
+    JSON.parse(buildCandidateJudgeRequest(input, "fixture")),
+    JSON.parse(buildCandidateJudgeRequest(preserved, "fixture")),
+    "neither title travels on the wire",
+  );
+  assert.equal(
+    acceptCandidate(validated.fields[0], assessed.judgements[0], input.source, validated.sourceDigest, input).status,
+    "accepted", "metadata absent from the judge wire does not invalidate its assessment",
+  );
+});
 for (const [name, mutateInput, changedBasis] of [
   ["nested field meaning",
     (i) => { i.fieldMeanings.license = "License of OTHER release"; },

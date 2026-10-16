@@ -41,18 +41,19 @@ const response = (body = payload()) => new Response(JSON.stringify(body), { stat
 
 // Ported: the official judge over a fake fetch. `code` names the typed
 // rejection the production lifecycle raises.
-async function judgeWith(fetchLike, options = {}) {
+async function judgeWith(fetchLike, options = {}, now) {
   const profile = tsr.createTypesafeJudge({
     apiKey: config.apiKey,
     reserveAttempt: () => {},
     timeoutMs: config.timeoutMs,
+    now,
     fetchLike,
   });
   return profile.judge(input, options);
 }
-async function rejectWith(fetchLike, options = {}) {
+async function rejectWith(fetchLike, options = {}, now) {
   try {
-    await judgeWith(fetchLike, options);
+    await judgeWith(fetchLike, options, now);
     return undefined;
   } catch (error) {
     return error;
@@ -89,7 +90,8 @@ for (const [name, usage] of [
   ["partial", { input_tokens: 12 }],
 ]) {
   test(`${name} usage cannot become invented zero usage`, async () => {
-    const error = await rejectWith(async () => response(payload({ usage })));
+    // Payload validation has its own clock; deadline behavior is tested separately.
+    const error = await rejectWith(async () => response(payload({ usage })), {}, () => 0);
     assert(error, "native usage counters must be present and validated");
     assert.equal(error.code, "TYPESAFE_MALFORMED");
   });

@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import * as tsr from "../dist/lib/lean-typesafe-judge.js";
 
 // Offline native construction and mapping proof; no semantic-quality claim.
@@ -37,6 +38,65 @@ const config = {
   apiKey: "fixture-key",
   timeoutMs: 50,
 };
+
+for (const mutation of ["unchanged", "reverse", "record ID", "append"]) {
+  test(`pending classification preserves dispatch attribution after ${mutation}`, async () => {
+    const owned = structuredClone(documents);
+    const requestInput = input(owned);
+    const originalWire = tsr.buildTypesafeNoulRequest(requestInput);
+    let release;
+    let calls = 0;
+    let wire;
+    const events = [];
+    const profile = tsr.createTypesafeJudge({
+      apiKey: config.apiKey,
+      now: () => 0,
+      reserveAttempt: () => {},
+      onAttempt: (event) => events.push(event),
+      fetchLike: (_url, init) => {
+        calls++;
+        wire = init.body;
+        const request = JSON.parse(wire);
+        // Native probabilities come only from the actual serialized sources.
+        const answers = Object.fromEntries(request.state.sources.flatMap((source, i) => [
+          [`q${i}r`, { type: "noul", noul: source.text.includes("keywords") ? 0 : 1 }],
+          [`q${i}s`, { type: "noul", noul: source.text.includes("supports CSV") ? 1 : 0 }],
+          [`q${i}f`, { type: "noul", noul: source.text.includes("does not support") ? 1 : 0 }],
+        ]));
+        return new Promise((resolve) => {
+          release = () => resolve(new Response(JSON.stringify({
+            model: tsr.TYPESAFE_PINNED_MODEL,
+            usage: { input_tokens: 1, output_tokens: 1 },
+            answers,
+          })));
+        });
+      },
+    });
+    const pending = profile.judge(requestInput);
+    assert.equal(calls, 1, "mutation occurs after the actual dispatch");
+    if (mutation === "reverse") owned.reverse();
+    if (mutation === "record ID") owned[0].evidenceId = "never-dispatched";
+    if (mutation === "append") owned.push({ ...owned[0], evidenceId: "appended" });
+    release();
+    const result = await pending;
+    assert.deepEqual(result.documents, [
+      { evidenceId: "support-record", relevant: true, supportsClaim: true, refutesClaim: false },
+      { evidenceId: "refute-record", relevant: true, supportsClaim: false, refutesClaim: true },
+      { evidenceId: "junk-record", relevant: false, supportsClaim: false, refutesClaim: false },
+    ]);
+    assert.equal(wire, originalWire);
+    assert.equal(calls, 1);
+    assert.equal(events.length, 1);
+    const metadata = result[Symbol.for("leanJevAttemptMeta")];
+    assert.equal(metadata.attemptSha256, createHash("sha256").update(originalWire).digest("hex"));
+    assert.equal(metadata.contextSha256, events[0].contextSha256);
+    assert.equal(metadata.policySha256, events[0].policySha256);
+    assert.deepEqual(metadata.usage, { inputTokens: 1, outputTokens: 1 });
+    assert.deepEqual(metadata.probabilities, {
+      q0r: 1, q0s: 1, q0f: 0, q1r: 1, q1s: 0, q1f: 1, q2r: 0, q2s: 0, q2f: 0,
+    });
+  });
+}
 
 function requirePaths(request, docs) {
   assert.deepEqual(

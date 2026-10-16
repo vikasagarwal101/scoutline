@@ -30,6 +30,91 @@ const payload = {
   },
 };
 
+const candidateInput = {
+  source: { ...INPUT.documents[0], byteLength: 12, origins: [] },
+  fieldMeanings: { csv: "CSV?" },
+  scope: {},
+  candidates: [{ fieldId: "csv", value: "supported", quote: "Supports CSV", charRange: [0, 12] }],
+  opposingContext: [],
+  depBindings: {},
+};
+
+async function controlledDeadline(method, budget, configured, expire, expectedDelay) {
+  const originalSet = globalThis.setTimeout;
+  const originalClear = globalThis.clearTimeout;
+  const active = new Set();
+  const scheduled = [];
+  const caller = new AbortController();
+  let ownedSignal;
+  let calls = 0;
+  let admissions = 0;
+  let settled;
+  const events = [];
+  globalThis.setTimeout = (callback, delay) => {
+    const timer = { callback, delay };
+    active.add(timer);
+    scheduled.push(timer);
+    return timer;
+  };
+  globalThis.clearTimeout = (timer) => active.delete(timer);
+  try {
+    const profile = tsr.createTypesafeJudge({
+      apiKey: CONFIG.apiKey,
+      now: () => 0,
+      timeoutMs: configured,
+      reserveAttempt: () => { admissions++; },
+      onAttempt: (event) => events.push(event),
+      fetchLike: (_url, init) => {
+        calls++;
+        ownedSignal = init.signal;
+        return new Promise(() => {});
+      },
+    });
+    const options = { signal: caller.signal, ...(budget === undefined ? {} : { timeoutMs: budget }) };
+    settled = profile[method](method === "judge" ? INPUT : candidateInput, options).catch((error) => error);
+    assert.equal(calls, 1);
+    assert.equal(admissions, 1);
+    assert.equal(scheduled[0].delay, expectedDelay, `actual owned delay for ${String(budget)}`);
+    if (expire) {
+      const timer = scheduled[0];
+      active.delete(timer);
+      timer.callback();
+    } else {
+      caller.abort();
+    }
+    const error = await settled;
+    assert.equal(error.code, expire ? "TYPESAFE_TIMEOUT" : "TYPESAFE_CANCELLED");
+    assert.equal(error.remoteWorkUncertain, true);
+    assert.equal(ownedSignal.aborted, true);
+    assert.equal(caller.signal.aborted, !expire);
+    assert.equal(calls, 1);
+    assert.equal(events.length, 1);
+    assert.equal(events[0].outcome, error.code);
+    assert.equal(active.size, 0, "every owned timer is disposed");
+  } finally {
+    caller.abort();
+    await settled;
+    globalThis.setTimeout = originalSet;
+    globalThis.clearTimeout = originalClear;
+  }
+}
+
+for (const method of ["judge", "candidateJudge"]) {
+  test(`${method}: fractional remaining budget owns timeout and abort`, async () => {
+    await controlledDeadline(method, 10.5, 80, true, 10.5);
+    await controlledDeadline(method, 0.5, 80, true, 1);
+  });
+  test(`${method}: integer, shorter attempt and invalid budget controls`, async () => {
+    for (const [budget, configured, expected] of [
+      [10, 80, 10], [10.5, 6, 6],
+      [undefined, 80, 80], [0, 80, 80], [-1, 80, 80],
+      [NaN, 80, 80], [Infinity, 80, 80], ["10.5", 80, 80],
+    ]) {
+      await controlledDeadline(method, budget, configured, false, expected);
+    }
+  });
+}
+
 test("successful header/body races dispose every owned timer", async () => {
   const originalSet = globalThis.setTimeout;
   const originalClear = globalThis.clearTimeout;
@@ -157,9 +242,33 @@ test("control: ordinary finite successful native response is accepted", async ()
     apiKey: CONFIG.apiKey,
     reserveAttempt: () => {},
     timeoutMs: 5,
+    now: () => 0, // This control pins payload acceptance, independent of host pauses.
     fetchLike: async () => new Response(JSON.stringify(payload)),
   });
   const result = await profile.judge(INPUT);
   const metadata = result[Symbol.for("leanJevAttemptMeta")];
   assert.deepEqual(metadata.usage, { inputTokens: 1, outputTokens: 1 });
+});
+
+test("expired dispatch clock preempts both valid payload and malformed usage", async () => {
+  for (const [budget, usage] of [[5, payload.usage], [10, undefined], [10, {}]]) {
+    let clock = 0;
+    let calls = 0;
+    let ownedSignal;
+    const profile = tsr.createTypesafeJudge({
+      apiKey: CONFIG.apiKey,
+      reserveAttempt: () => {},
+      timeoutMs: budget,
+      now: () => clock,
+      fetchLike: async (_url, init) => {
+        calls++;
+        ownedSignal = init.signal;
+        clock = budget + 1;
+        return new Response(JSON.stringify({ ...payload, usage }));
+      },
+    });
+    await assert.rejects(profile.judge(INPUT), (error) => error.code === "TYPESAFE_TIMEOUT");
+    assert.equal(calls, 1);
+    assert.equal(ownedSignal.aborted, true);
+  }
 });

@@ -876,7 +876,7 @@ async function runLifecycle(
   const startedAt = now();
   // One absolute run deadline spans every attempt and all backoff.
   const runDeadline =
-    options?.timeoutMs !== undefined && Number.isSafeInteger(options.timeoutMs) && options.timeoutMs > 0
+    options?.timeoutMs !== undefined && Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
       ? startedAt + options.timeoutMs
       : startedAt + (timeoutMs + retry.maxDelayMs + retry.baseDelayMs) * maxAttempts + retry.maxRetryAfterMs;
   const signal = options?.signal ?? new AbortController().signal;
@@ -1167,6 +1167,7 @@ function assertRequestCeiling(requestBody: string, deps: TypesafeJudgeDeps): voi
 export function createTypesafeJudge(deps: TypesafeJudgeDeps): TypesafeJudgeProfile {
   validateDeps(deps, true);
   const judge: TypesafeClassificationJudge = async (input, options) => {
+    const evidenceIds = input.documents.map((doc) => doc.evidenceId);
     const requestBody = buildTypesafeNoulRequest(input);
     assertRequestCeiling(requestBody, deps);
     const contextSha256 = contextIdentityOf(requestBody);
@@ -1184,8 +1185,8 @@ export function createTypesafeJudge(deps: TypesafeJudgeDeps): TypesafeJudgeProfi
     const answers = validated.answers;
     const translate = (p: number): boolean | null =>
       p >= TYPESAFE_TRIAL_TRUE_BOUND ? true : p <= TYPESAFE_TRIAL_FALSE_BOUND ? false : null;
-    const documents = input.documents.map((doc, i) => ({
-      evidenceId: doc.evidenceId,
+    const documents = evidenceIds.map((evidenceId, i) => ({
+      evidenceId,
       relevant: translate((answers[`q${i}r`] as { noul: number }).noul),
       supportsClaim: translate((answers[`q${i}s`] as { noul: number }).noul),
       refutesClaim: translate((answers[`q${i}f`] as { noul: number }).noul),

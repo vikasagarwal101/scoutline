@@ -56,6 +56,20 @@ test("PR287 R2: abort during consume emission refuses before external reservatio
 
 test("PR287 R3: retry above local ceiling cannot spend an external reservation", async () => {
   let reservations = 0, calls = 0;
+  for (const maxPhysicalAttempts of [NaN, Infinity, -1]) {
+    assert.throws(() => setup(async () => { calls++; return json({ results: [] }); }, {
+      maxPhysicalAttempts,
+      reservePhysicalAttempt() { reservations++; },
+    }), (error) => error.code === "VALIDATION_ERROR");
+  }
+  for (const maxPhysicalAttempts of [0, 0.5, Number.MAX_VALUE, undefined]) {
+    assert.doesNotThrow(() => setup(async () => { calls++; return json({ results: [] }); }, {
+      maxPhysicalAttempts,
+      reservePhysicalAttempt() { reservations++; },
+    }));
+  }
+  assert.equal(reservations, 0);
+  assert.equal(calls, 0);
   const { deps } = setup(async () => { calls++; return json({}, 429); }, {
     retryPolicy: { ...noRetry, maxRetries: 1 },
     maxPhysicalAttempts: 1,

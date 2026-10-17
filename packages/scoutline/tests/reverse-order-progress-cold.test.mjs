@@ -1,11 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 for (const mode of ["unchanged", "revise"]) {
   test(`no eligible field terminates boundedly under frozen clock: ${mode}`, async () => {
     const child = spawn(
       process.execPath,
-      [new URL("./reverse-order-progress-child.mjs", import.meta.url).pathname, mode],
+      [fileURLToPath(new URL("./reverse-order-progress-child.mjs", import.meta.url)), mode],
       { env: { PATH: "/usr/bin:/bin" }, stdio: ["ignore", "pipe", "pipe"] },
     );
     let output = "",
@@ -18,7 +19,7 @@ for (const mode of ["unchanged", "revise"]) {
       child.kill("SIGKILL");
     }, 1000);
     const exit = await new Promise((resolve) =>
-      child.on("exit", (code, signal) => resolve({ code, signal })),
+      child.on("close", (code, signal) => resolve({ code, signal })),
     );
     clearTimeout(timer);
     assert(

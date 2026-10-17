@@ -1,9 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { runLeanInvestigation } from "../dist/lib/lean-investigation.js";
 import { inputs } from "./unified-review-corpus.mjs";
 import { offlineDeps } from "./unified-review-offline-deps.mjs";
-test("post-adverse dependent actually rejudges against revised accepted prerequisite", async () => {
+test("post-adverse dependent dispatch binds the accepted prerequisite and exact retained provenance", async () => {
   const c = structuredClone(inputs.find((x) => x.id === "dune-late-adverse"));
   c.contract.requirements.version.dependsOn = ["csv"];
   c.contract.requirements = {
@@ -22,7 +23,7 @@ test("post-adverse dependent actually rejudges against revised accepted prerequi
           })),
         )
       : search(query);
-  await runLeanInvestigation(c.contract, deps);
+  const result = await runLeanInvestigation(c.contract, deps);
   const postAdverse = calls.candidateJudge.filter(
     (x) =>
       x.candidates.some((c) => c.fieldId === "version") &&
@@ -36,5 +37,17 @@ test("post-adverse dependent actually rejudges against revised accepted prerequi
     assert.equal(input.depBindings.csv.value, "disputed");
     assert.match(input.depBindings.csv.sourceDigest, /^[a-f0-9]{64}$/);
     assert.equal(typeof input.depBindings.csv.evidenceId, "string");
+    const presented = [input.source, ...input.opposingContext].find(
+      (source) => source.evidenceId === input.depBindings.csv.evidenceId,
+    );
+    assert(presented, "dependency provenance names an actually presented retained source");
+    const retained = result.evidence.find((source) => source.evidenceId === presented.evidenceId);
+    assert(retained, "the presented dependency source belongs to the retained result");
+    assert.equal(presented.content, retained.content);
+    assert.equal(
+      input.depBindings.csv.sourceDigest,
+      createHash("sha256").update(retained.content).digest("hex"),
+      "dependency sourceDigest matches that retained record's exact content",
+    );
   }
 });

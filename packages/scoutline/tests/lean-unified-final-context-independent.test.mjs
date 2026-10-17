@@ -94,11 +94,13 @@ test("later field evidence revokes already satisfied earlier enum and dependent 
     calls.judge.some((x) => x.documents.some((s) => s.content.includes("GPL"))),
     "earlier enum actually reassessed",
   );
-  for (const input of calls.candidate.filter(
+  const postAdverse = calls.candidate.filter(
     (x) =>
       x.opposingContext.some((s) => s.content.includes("GPL")) &&
       x.candidates.some((c) => c.fieldId === "version"),
-  ))
+  );
+  assert(postAdverse.length > 0, "dependent actually dispatches with final adverse opposing context");
+  for (const input of postAdverse)
     assert.equal(input.depBindings.csv.value, "disputed");
   assert(!("license" in result.data));
 });

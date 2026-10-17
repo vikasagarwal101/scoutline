@@ -265,6 +265,8 @@ test("unsupported numeric schema fails before physical calls", async () => {
       contract({ count: { question: "Count?", schema: { type: "number" } } }),
       deps,
     ),
+    (error) => error?.code === "VALIDATION_ERROR" &&
+      /requirements\.count\.schema must discriminate/.test(error.message),
   );
   assert.equal(
     calls.reads.length +
@@ -279,5 +281,9 @@ test("compiler rejects prototype field keys as invalid intent", () => {
   const input = JSON.parse(
     '{"schemaVersion":1,"question":"q","requirements":{"__proto__":{"question":"q","schema":{"enum":["supported"]}}}}',
   );
-  assert.throws(() => compileLeanContract(input));
+  assert.throws(
+    () => compileLeanContract(input),
+    (error) => error?.code === "VALIDATION_ERROR" &&
+      /requirements key "__proto__" is reserved/.test(error.message),
+  );
 });

@@ -101,10 +101,13 @@ test("real scalar conflict survives repeated rejected relevance after unrelated 
   notAccepted(result);
 });
 
-for (const [name, extra] of [
-  ["contradictory schema type", { schema: { type: "number", enum: ["supported"] } }],
-  ["contradictory schema not", { schema: { enum: ["supported"], not: { const: "supported" } } }],
-  ["unsupported per-field scope override", { scope: { release: "1.0" } }],
+for (const [name, extra, diagnostic] of [
+  ["contradictory schema type", { schema: { type: "number", enum: ["supported"] } },
+    /requirements\.csv\.schema carries unsupported keywords \(type\)/],
+  ["contradictory schema not", { schema: { enum: ["supported"], not: { const: "supported" } } },
+    /requirements\.csv\.schema carries unsupported keywords \(not\)/],
+  ["unsupported per-field scope override", { scope: { release: "1.0" } },
+    /requirements\.csv\.scope per-field overrides are not supported/],
 ]) {
   test(`${name} is rejected before any acquisition`, async () => {
     const calls = { search: 0, read: 0, judge: 0 };
@@ -135,6 +138,7 @@ for (const [name, extra] of [
     );
     assert.ok(error, "unsupported caller constraint was silently compiled away");
     assert.equal(error.code, "VALIDATION_ERROR");
+    assert.match(error.message, diagnostic);
   });
 }
 

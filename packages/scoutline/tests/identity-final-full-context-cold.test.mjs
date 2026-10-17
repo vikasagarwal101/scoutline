@@ -1,11 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { inputs } from "./unified-review-corpus.mjs";
 import { offlineDeps } from "./unified-review-offline-deps.mjs";
 import { runLeanInvestigation } from "../dist/lib/lean-investigation.js";
 import { acceptCandidate } from "../dist/lib/lean-candidates.js";
 
-test("history projection rejects acceptance assessed under altered meaning and criteria", async () => {
+test("detached field-meaning mutation causes immediate candidate context mismatch", async () => {
   const c = structuredClone(inputs[0]);
   const { deps } = offlineDeps(c);
   const judge = deps.candidateJudge;
@@ -23,8 +24,18 @@ test("history projection rejects acceptance assessed under altered meaning and c
   const result = await runLeanInvestigation(c.contract, deps);
   assert(changed);
   assert(
+    result.requirements.version.attemptedRecords.some(
+      (attempt) =>
+        attempt.trusted === false &&
+        attempt.metadata?.kind === "candidate-judgment" &&
+        attempt.metadata.sourceId === "e1" &&
+        attempt.reason === "judgement_context_mismatch",
+    ),
+    "detached field-meaning change records the immediate judgment-context mismatch",
+  );
+  assert(
     !("version" in result.data),
-    "history must revalidate judgment against actual compiled meaning and criteria",
+    "a detached changed meaning cannot publish a mismatched candidate judgment",
   );
 });
 
@@ -34,6 +45,51 @@ test("control unchanged full context preserves prerequisite and dependent", asyn
   const result = await runLeanInvestigation(c.contract, deps);
   assert.equal(result.data.version, "2.4");
   assert.equal(result.data.license, "MIT");
+  const prerequisite = result.requirements.version;
+  const dependent = result.requirements.license;
+  assert.equal(prerequisite.status, "satisfied");
+  assert.equal(dependent.status, "satisfied");
+  const prerequisiteSource = result.evidence.find((source) => source.evidenceId === prerequisite.provenance.sourceId);
+  const dependentSource = result.evidence.find((source) => source.evidenceId === dependent.provenance.sourceId);
+  assert(prerequisiteSource);
+  assert(dependentSource);
+  assert.equal(prerequisite.provenance.sourceDigest, createHash("sha256").update(prerequisiteSource.content).digest("hex"));
+  assert.equal(dependent.provenance.sourceDigest, createHash("sha256").update(dependentSource.content).digest("hex"));
+  const audit = dependent.attemptedRecords.find(
+    (attempt) =>
+      attempt.trusted &&
+      attempt.metadata?.kind === "candidate-judgment" &&
+      attempt.assessments.some((assessment) => assessment.candidateId === dependent.judgment.candidateId),
+  );
+  assert(audit, "accepted dependent has a real trusted candidate-judgment audit");
+  assert.equal(audit.metadata.sourceId, dependentSource.evidenceId);
+  assert.equal(
+    audit.metadata.depBindings.version.value,
+    result.data.version,
+    "published dependent was judged under a different accepted prerequisite value",
+  );
+  assert.equal(audit.metadata.depBindings.version.evidenceId, prerequisite.provenance.sourceId);
+  assert.equal(audit.metadata.depBindings.version.sourceDigest, prerequisite.provenance.sourceDigest);
+  const candidate = dependent.candidates.find(
+    (outcome) => outcome.status === "candidate" && outcome.value === dependent.provenance.value && outcome.quote === dependent.provenance.quote,
+  );
+  assert(candidate);
+  assert.equal(
+    acceptCandidate(candidate, dependent.judgment, dependentSource, dependent.provenance.sourceDigest, {
+      fieldMeanings: {
+        license: [
+          c.contract.requirements.license.question,
+          ...c.contract.requirements.license.criteria,
+          ...(c.contract.evidence?.criteria ?? []),
+        ].join("\n"),
+      },
+      scope: c.contract.scope,
+      opposingContext: result.evidence.filter((source) => source.evidenceId !== dependentSource.evidenceId),
+      depBindings: audit.metadata.depBindings,
+    }).status,
+    "accepted",
+    "the published positive has a genuine current source/context/dependency proof",
+  );
 });
 
 test("history projection revalidates full live scope through deterministic acceptance", async () => {
@@ -89,7 +145,7 @@ test("history projection revalidates full live scope through deterministic accep
   );
 });
 
-test("projected dependent acceptance must match final prerequisite value and provenance", async () => {
+test("detached dependency-binding mutation is refused without changing the accepted prerequisite", async () => {
   const c = structuredClone(inputs[0]);
   const { deps } = offlineDeps(c);
   const judge = deps.candidateJudge;
@@ -103,24 +159,28 @@ test("projected dependent acceptance must match final prerequisite value and pro
     return response;
   };
   const result = await runLeanInvestigation(c.contract, deps);
-  assert(changed, "synthetic collaborator exercised shared dependency binding revision");
+  assert(changed, "synthetic collaborator exercised detached dependency binding mutation");
+  assert.equal(result.data.version, "2.4");
+  assert.equal(result.requirements.version.status, "satisfied");
   const row = result.requirements.license;
-  if (row.status === "satisfied") {
-    const audit = row.attemptedRecords.find((x) =>
-      x.assessments.some((a) => a.candidateId === row.judgment.candidateId),
-    );
-    assert.equal(
-      audit.metadata.depBindings.version.value,
-      result.data.version,
-      "published dependent was judged under a different accepted prerequisite value",
-    );
-    assert.equal(
-      audit.metadata.depBindings.version.evidenceId,
-      result.requirements.version.provenance.sourceId,
-    );
-    assert.equal(
-      audit.metadata.depBindings.version.sourceDigest,
-      result.requirements.version.provenance.sourceDigest,
-    );
-  }
+  assert.equal(row.status, "unresolved");
+  assert(!("license" in result.data));
+  const audit = row.attemptedRecords.find(
+    (attempt) =>
+      attempt.trusted === false &&
+      attempt.metadata?.kind === "candidate-judgment" &&
+      attempt.reason === "judgement_context_mismatch",
+  );
+  assert(audit, "detached dependency mutation must record the immediate context mismatch");
+  assert.equal(audit.metadata.depBindings.version.value, "2.4", "the engine audit keeps the authoritative binding snapshot");
+  assert.equal(audit.metadata.depBindings.version.evidenceId, result.requirements.version.provenance.sourceId);
+  assert.equal(audit.metadata.depBindings.version.sourceDigest, result.requirements.version.provenance.sourceDigest);
+  const prerequisiteSource = result.evidence.find(
+    (source) => source.evidenceId === result.requirements.version.provenance.sourceId,
+  );
+  assert(prerequisiteSource);
+  assert.equal(
+    result.requirements.version.provenance.sourceDigest,
+    createHash("sha256").update(prerequisiteSource.content).digest("hex"),
+  );
 });

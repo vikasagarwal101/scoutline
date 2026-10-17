@@ -74,7 +74,12 @@ test("unified malformed raw candidate score remains an audited rejected attempt"
   assert.deepEqual(result.data, {});
   assert.equal(result.usage.candidateJudgeCalls, calls.candidateJudge.length);
   assert(
-    result.requirements.version.reason || result.requirements.version.attemptedRecords?.length,
+    result.requirements.version.attemptedRecords?.some(
+      (record) => record.trusted === false &&
+        record.metadata?.kind === "candidate-judgment" &&
+        record.reason?.startsWith("candidate_judge_failed:"),
+    ),
+    "malformed score must remain an audited rejected candidate judgment",
   );
 });
 test("missing extractor retains acquired evidence with explicit unresolved mode", async () => {

@@ -52,14 +52,15 @@ export function offlineDeps(c, { captureLiveTargets = false, seed } = {}) {
     extract: async (input) => {
       if (live) live.scope = input.scope;
       calls.extract.push(structuredClone(input));
+      const scope = input.scope === undefined ? c.contract.scope : input.scope;
       const text = input.sourceText.replace(/<script>[\s\S]*?<\/script>/g, "");
       const output = {};
       for (const f of input.fields) {
-        const scopeVersion = c.contract.scope.release;
+        const scopeVersion = scope.release;
         let value = null;
         if (f.id === "version") {
           const match = text.match(
-            new RegExp(`${c.contract.scope.entity} release ([^\\s.;]+(?:\\.[^\\s.;]+)*)[.;\\s]`),
+            new RegExp(`${scope.entity} release ([^\\s.;]+(?:\\.[^\\s.;]+)*)[.;\\s]`),
           );
           if (match && match[1] === scopeVersion) value = match[1];
         } else if (f.id === "license") {
@@ -96,9 +97,9 @@ export function offlineDeps(c, { captureLiveTargets = false, seed } = {}) {
         documents: input.documents.map((d) => {
           const text = d.content.replace(/<script>[\s\S]*?<\/script>/g, "");
           const relevant =
-            text.includes(c.contract.scope.entity) &&
-            (text.includes(`release ${c.contract.scope.release}`) ||
-              c.contract.scope.release === "current");
+            text.includes(input.scope.entity) &&
+            (text.includes(`release ${input.scope.release}`) ||
+              input.scope.release === "current");
           const oldOnly = text.includes("These statements do not describe");
           return {
             evidenceId: d.evidenceId,

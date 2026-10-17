@@ -40,23 +40,47 @@ for (const stage of ['extract', 'candidateJudge', 'judge']) for (const kind of [
   test(`L2 non-global errors retain continuation: ${stage}/${kind}`, async () => {
     const c = structuredClone(inputs[0]);
     delete c.contract.requirements.license.dependsOn;
+    if (stage === 'judge') c.contract.requirements = { csv: c.contract.requirements.csv, version: c.contract.requirements.version, license: c.contract.requirements.license };
     c.acquisition.initial = c.sources.map(s => s.id);
     const { deps } = offlineDeps(c);
     let failed = false;
+    let failedFieldIds = [];
     const after = [];
+    const describeCall = (name, input) => ({
+      name,
+      fieldIds: name === 'extract' ? input.fields.map(field => field.id)
+        : name === 'candidateJudge' ? input.candidates.map(candidate => candidate.fieldId)
+        : name === 'judge' ? Object.entries(c.contract.requirements)
+          .filter(([, requirement]) => requirement.question === input.fieldQuestion).map(([id]) => id)
+        : [],
+      sourceIds: name === 'extract' ? [input.sourceId]
+        : name === 'candidateJudge' ? [input.source.evidenceId]
+        : name === 'judge' ? input.documents.map(document => document.evidenceId)
+        : [],
+      sourceUrls: name === 'read' ? [input] : [],
+    });
     for (const name of ['search', 'read', 'extract', 'candidateJudge', 'judge']) {
       const fn = deps[name];
       deps[name] = async (...args) => {
-        if (failed) after.push(name);
+        const call = describeCall(name, args[0]);
+        if (failed) after.push(call);
         if (name === stage && !failed) {
+          failedFieldIds = call.fieldIds;
+          assert(failedFieldIds.length > 0, 'the refused collaborator identifies its actual field');
           failed = true;
           throw Object.assign(Error('ordinary failure'), kind === 'unknown-root' ? { code: 'EVAL_STOPPED', reason: 'not_approved' } : {});
         }
         return fn(...args);
       };
     }
-    await runLeanInvestigation(c.contract, deps);
+    const r = await runLeanInvestigation(c.contract, deps);
     assert(failed);
     assert(after.length > 0, 'ordinary/unknown errors do not stop independent work');
+    const independent = after.find(call => call.sourceIds.length > 0
+      && call.fieldIds.some(id => !failedFieldIds.includes(id)
+        && Object.hasOwn(c.contract.requirements, id)
+        && (c.contract.requirements[id].dependsOn ?? []).length === 0)
+      && call.sourceIds.every(id => r.evidence.some(record => record.evidenceId === id)));
+    assert(independent, `a real independent field must run after refusal: ${JSON.stringify({ failedFieldIds, after })}`);
   });
 }

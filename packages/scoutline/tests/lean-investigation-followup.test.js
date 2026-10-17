@@ -71,15 +71,13 @@ test("flipping unchanged evidence cannot masquerade as a fresh genuine dispute",
     "opposite verdicts on unchanged evidence must register inconsistency");
 });
 
-test("judge rejection yields unresolved retained evidence or typed failure, not raw crash", async () => {
-  let result;
-  try {
-    result = await run({ judge: async () => { throw new Error("fixture judge unavailable"); } });
-  } catch (error) {
-    assert.equal(typeof error.code, "string", "judge rejection must be an inspectable typed failure");
-    return;
-  }
+test("judge rejection yields unresolved retained evidence without facade failure", async () => {
+  const result = await run({ judge: async () => { throw new Error("fixture judge unavailable"); } });
   notAccepted(result);
+  assert.equal(result.status, "partial");
+  assert.equal(result.requirements.csv.reason, "judge_unavailable");
+  assert.equal(result.evidence.length, 2);
+  assert.deepEqual(result.evidence.map((doc) => doc.url), [GUIDE, CONTRARY]);
   assert.ok(result.evidence.some((doc) => doc.content === "supports csv"),
     "usable evidence must survive an unresolved judge outcome");
 });

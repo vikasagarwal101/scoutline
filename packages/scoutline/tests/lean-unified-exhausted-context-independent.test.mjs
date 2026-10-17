@@ -29,6 +29,9 @@ test("budget-exhausted final context cannot retain stale accepted prerequisite o
     "supported",
     "smaller-context support cannot survive unassessed final adverse evidence",
   );
+  if ("csv" in result.data) {
+    assert.equal(result.data.csv, "disputed", "a present final classification must retain both evidenced sides");
+  }
   if ("version" in result.data) {
     assert.equal(result.data.csv, "disputed");
     assert(

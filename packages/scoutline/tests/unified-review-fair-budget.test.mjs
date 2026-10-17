@@ -14,6 +14,23 @@ test("optional value field cannot consume mandatory classification challenge res
   const { deps, calls } = offlineDeps(c);
   const result = await runLeanInvestigation(c.contract, deps);
   assert(calls.judge.length + calls.candidateJudge.length <= 3);
+  assert.equal(calls.candidateJudge.length, 1, "optional work receives exactly one candidate dispatch");
+  assert.equal(calls.judge.length, 2, "mandatory classification receives its initial and final-context dispatches");
+  assert.equal(result.usage.candidateJudgeCalls, calls.candidateJudge.length);
+  assert.equal(result.usage.judgeCalls, calls.judge.length);
+  assert.equal(result.evidence.length, 2);
+  const finalDocuments = calls.judge.at(-1).documents;
+  assert.equal(finalDocuments.length, result.evidence.length, "final classification receives every retained document");
+  assert.deepEqual(
+    finalDocuments.map((document) => document.evidenceId).sort(),
+    result.evidence.map((record) => record.evidenceId).sort(),
+  );
+  for (const document of finalDocuments) {
+    const retained = result.evidence.find((record) => record.evidenceId === document.evidenceId);
+    assert(retained);
+    assert.equal(document.url, retained.url);
+    assert.equal(document.content, retained.content);
+  }
   assert.equal(
     result.data.csv,
     "supported",

@@ -82,9 +82,10 @@ test("rejected measured candidate attempt keeps request hash, model and usage in
       observed: {
         requestSha256: "a".repeat(64),
         resolvedModel: "fixture-unallowed",
-        usage: { inputTokens: 17, outputTokens: 9 },
+        usage: { inputTokens: 17, outputTokens: 9, unapprovedFixtureKey: 41 },
         elapsedMs: 3,
         status: 200,
+        unapprovedFixtureKey: "EXTRA-FIXTURE-OBSERVATION",
       },
     });
   };
@@ -95,15 +96,15 @@ test("rejected measured candidate attempt keeps request hash, model and usage in
   );
   assert.equal(records.length, calls.candidateJudge.length);
   assert(records.every((x) => x.trusted === false));
-  assert(
-    records.every(
-      (x) =>
-        JSON.stringify(x).includes("a".repeat(64)) &&
-        JSON.stringify(x).includes("inputTokens") &&
-        JSON.stringify(x).includes("17"),
-    ),
-    "measured rejected attempt observations discarded",
-  );
+  for (const record of records) {
+    assert.deepEqual(record.metadata?.observed, {
+      requestSha256: "a".repeat(64),
+      resolvedModel: "fixture-unallowed",
+      usage: { inputTokens: 17, outputTokens: 9 },
+      elapsedMs: 3,
+      status: 200,
+    });
+  }
 });
 test("extraction failure remains an attempted audit row with safely measured observations", async () => {
   const c = single();
@@ -116,9 +117,10 @@ test("extraction failure remains an attempted audit row with safely measured obs
       observed: {
         requestSha256: "b".repeat(64),
         resolvedModel: "fixture-unallowed",
-        usage: { inputTokens: 23, outputTokens: 4 },
+        usage: { inputTokens: 23, outputTokens: 4, unapprovedFixtureKey: 41 },
         elapsedMs: 2,
         status: 200,
+        unapprovedFixtureKey: "EXTRA-FIXTURE-OBSERVATION",
       },
     });
   };
@@ -129,5 +131,11 @@ test("extraction failure remains an attempted audit row with safely measured obs
   );
   assert.equal(rows.length, 1, "failed extraction disappeared despite a physical attempt");
   assert.equal(rows[0].trusted, false);
-  assert(JSON.stringify(rows[0]).includes("b".repeat(64)));
+  assert.deepEqual(rows[0].metadata?.observed, {
+    requestSha256: "b".repeat(64),
+    resolvedModel: "fixture-unallowed",
+    usage: { inputTokens: 23, outputTokens: 4 },
+    elapsedMs: 2,
+    status: 200,
+  });
 });

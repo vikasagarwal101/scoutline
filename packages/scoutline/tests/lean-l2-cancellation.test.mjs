@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 for (const mode of ['frozen', 'real-clock', 'unknown', 'uncancelled', 'owned-timer']) {
   test(`L2 cancellation exits independently of acquisition/projection progress: ${mode}`, async () => {
     // Deliberately inherit the parent's hermetic whitelist and refusal preload.
     // A subprocess wall is required: node:test timeouts cannot interrupt a synchronous spin.
-    const child = spawn(process.execPath, [new URL('./helpers/lean-l2-cancel-child.mjs', import.meta.url).pathname, mode], { env: { ...process.env }, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, [fileURLToPath(new URL('./helpers/lean-l2-cancel-child.mjs', import.meta.url)), mode], { env: { ...process.env }, stdio: ['ignore', 'pipe', 'pipe'] });
     let output = '', error = '', killed = false;
     child.stdout.on('data', x => output += x);
     child.stderr.on('data', x => error += x);

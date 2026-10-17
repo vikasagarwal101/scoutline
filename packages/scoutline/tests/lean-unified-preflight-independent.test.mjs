@@ -11,10 +11,10 @@ const input = (schema) => ({
   question: "Read a bounded string.",
   requirements: { value: { question: "Literal value?", schema } },
 });
-for (const schema of [
-  { type: "string", minLength: 5, maxLength: 2 },
-  { type: "string", maxLength: 4097 },
-  { type: "string", pattern: "(a+)+" },
+for (const [schema, diagnostic] of [
+  [{ type: "string", minLength: 5, maxLength: 2 }, /Field "value" minLength exceeds maxLength/],
+  [{ type: "string", maxLength: 4097 }, /Field "value" maxLength exceeds the 4096 value ceiling/],
+  [{ type: "string", pattern: "(a+)+" }, /Field "value" pattern uses forbidden constructs/],
 ])
   test(`unsupported string descriptor is rejected before acquisition ${JSON.stringify(schema)}`, async () => {
     let physical = 0;
@@ -30,7 +30,10 @@ for (const schema of [
       },
       judge: null,
     };
-    await assert.rejects(runLeanInvestigation(input(schema), deps));
+    await assert.rejects(
+      runLeanInvestigation(input(schema), deps),
+      (error) => error?.code === "VALIDATION_ERROR" && diagnostic.test(error.message),
+    );
     assert.equal(physical, 0);
   });
 test("classification duplicate enum values remain fail-loud compiler error", () => {

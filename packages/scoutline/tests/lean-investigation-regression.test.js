@@ -1083,6 +1083,20 @@ test("cap-partial continuation resumes useful contrary work without discarding i
     assert(second.calls.every((c, i) => !["judge", "extract", "candidateJudge"].includes(c.op) || i > newRead),
       "unchanged retained context must not buy another judgment or extraction before new evidence");
     assert(second.result.evidence.some((e) => e.url === second.adverse));
+    assert.equal(second.result.status, "complete");
+    assert.deepEqual(second.result.data, { feature: mode === "value" ? "MIT" : "disputed" });
+    if (mode === "value") {
+      const accepted = second.checkpoint.history.at(-1).state.acceptedCandidate;
+      assert(accepted !== null, "the final value retains its actual accepted proof");
+      const proof = second.checkpoint.history.at(-1).state.trustedAccepts.find((entry) =>
+        entry.judgment.candidateId === accepted.judgment.candidateId);
+      assert(proof !== undefined);
+      const source = second.result.evidence.find((entry) => entry.evidenceId === proof.provenance.sourceId);
+      assert(source !== undefined);
+      assert.equal(proof.sourceDigest, candidateSourceDigest(source));
+      assert.deepEqual([...proof.opposingIds].sort(), second.result.evidence
+        .filter((entry) => entry.evidenceId !== source.evidenceId).map((entry) => entry.evidenceId).sort());
+    }
     assert(second.checkpoint.issuedQueries.includes(second.contrary));
     assert.deepEqual(second.checkpoint.history.slice(0, first.checkpoint.history.length), first.checkpoint.history);
     assert.deepEqual(second.checkpoint.history.at(-1).state.attemptedRecords.slice(0, prior.attemptedRecords.length),
@@ -1127,4 +1141,142 @@ test("fully issued stable unresolved continuation invents no acquisition or judg
   assert.deepEqual(second.result.requirements, first.result.requirements);
   assert.deepEqual(second.checkpoint.issuedQueries, first.checkpoint.issuedQueries);
   assert.deepEqual(first, before);
+});
+
+
+// Restored dependency gaps resume only through their actual prerequisite closure.
+async function dependentContinuationEpisode(t, { scene = "empty", maxSearches, seedInput = {}, chain = false, unknown = false }) {
+  const shared = "Assess DependencyCarry 1 features";
+  const urls = { base: "https://fixture.invalid/dependency-carry/base", new: "https://fixture.invalid/dependency-carry/new" };
+  const questions = { prerequisite: "Does DependencyCarry 1 support prerequisite?",
+    dependent: chain ? "License of DependencyCarry 1" : "Does DependencyCarry 1 support dependent?",
+    leaf: "Does DependencyCarry 1 support leaf?" };
+  const ids = chain ? ["leaf", "dependent", "prerequisite"] : ["prerequisite", "dependent"];
+  const input = freezeProvenanceInput(seedInput), before = structuredClone(input), calls = [];
+  let checkpoint;
+  const result = await runLeanInvestigation({ schemaVersion: 1, question: shared,
+    scope: { product: "DependencyCarry", release: "1" },
+    requirements: Object.fromEntries(ids.map((id) => [id, { question: questions[id], required: true,
+      schema: chain && id === "dependent" ? { type: "string" } : { enum: ["supported", "refuted", "disputed"] },
+      ...(id === "dependent" ? { dependsOn: ["prerequisite"] } : id === "leaf" ? { dependsOn: ["dependent"] } : {}) }])),
+    limits: { maxSearchAttempts: maxSearches, maxUniqueReads: 2, maxJudgeAttempts: 12 },
+  }, { now: () => 0,
+    seed: { ...input, identity: "dependency-carry-regression-v1", capture: (state) => { checkpoint = state; } },
+    search: async (query) => { calls.push({ op: "search", query });
+      if (query === shared) return [{ url: urls.base, title: "base specification" }];
+      if (!query.endsWith(" contrary evidence refuted") || scene === "empty") return [];
+      return [{ url: scene === "retained" ? urls.base : urls.new, title: "contrary discovery" }]; },
+    read: async (url) => { calls.push({ op: "read", url });
+      return `DependencyCarry 1 supports prerequisite, dependent and leaf. License MIT. ${url}`; },
+    judge: async (request) => { calls.push({ op: "judge", request: structuredClone(request) });
+      return { documents: request.documents.map((doc) => ({ evidenceId: doc.evidenceId, relevant: true,
+        supportsClaim: unknown && request.fieldId === "prerequisite" ? null : true,
+        refutesClaim: unknown && request.fieldId === "prerequisite" ? null : false })) }; },
+    extractorRevision: "dependency-carry-extractor-v1",
+    extract: async (request) => { calls.push({ op: "extract", request: structuredClone(request) });
+      return { finishReason: "stop", rawOutput: JSON.stringify({ dependent: { value: "MIT", quote: "License MIT" } }),
+        usage: null, observedCost: null }; },
+    candidateJudge: async (request) => { calls.push({ op: "candidateJudge", request: structuredClone(request) });
+      return { model: "fixture", answers: { q0s: { type: "noul", noul: 0.97 }, q0c: { type: "noul", noul: 0.01 } },
+        usage: { inputTokens: 1, outputTokens: 1 }, requestSha256: "d".repeat(64), elapsedMs: 1 }; },
+  });
+  const packet = { scene, chain, unknown, result, checkpoint, calls, inputBefore: before, inputAfter: input };
+  t.diagnostic(`dependent-continuation ${JSON.stringify(packet)}`); // Full result/capture BEFORE assertions.
+  assert.deepEqual(input, before);
+  for (const [counter, op] of [["searches", "search"], ["readAttempts", "read"], ["judgeCalls", "judge"],
+    ["extractorCalls", "extract"], ["candidateJudgeCalls", "candidateJudge"]]) {
+    assert.equal(result.usage[counter], calls.filter((c) => c.op === op).length);
+  }
+  return packet;
+}
+
+const carriedDependencySeed = (first) => ({ evidence: first.result.evidence, history: first.checkpoint.history,
+  issuedQueries: first.checkpoint.issuedQueries, leads: first.checkpoint.leads });
+
+test("saved dependent resumes after empty or retained-only contrary continuation", async (t) => {
+  for (const scene of ["empty", "retained"]) {
+    const first = await dependentContinuationEpisode(t, { scene, maxSearches: 1 });
+    assert.equal(first.result.status, "partial");
+    assert.equal(first.result.requirements.prerequisite.reason, "counterevidence_not_acquired");
+    assert.equal(first.result.requirements.dependent.reason, "prerequisite_unresolved:prerequisite");
+    const before = structuredClone(first); freezeProvenanceInput(first);
+    const second = await dependentContinuationEpisode(t, { scene, maxSearches: 5, seedInput: carriedDependencySeed(first) });
+    assert.equal(second.result.status, "complete");
+    assert.deepEqual(second.result.data, { prerequisite: "supported", dependent: "supported" });
+    assert.deepEqual(second.result.usage, { searches: 4, readAttempts: 0, readsRetained: 0, judgeCalls: 1,
+      extractorCalls: 0, extractorCacheHits: 0, candidateJudgeCalls: 0 });
+    assert.deepEqual(second.calls.filter((c) => c.op === "judge").map((c) => c.request.fieldId), ["dependent"]);
+    assert(second.result.plan.queries.every((entry) => second.checkpoint.issuedQueries.includes(entry.query)));
+    assert.deepEqual(second.checkpoint.history.slice(0, first.checkpoint.history.length), first.checkpoint.history);
+    const oldBasis = first.checkpoint.history.findLast((h) => h.state.id === "prerequisite").state;
+    const newBasis = second.checkpoint.history.findLast((h) => h.state.id === "prerequisite").state;
+    for (const key of ["lastJudgedKey", "pendingAccept", "pendingSinceKey", "attemptedRecords", "assessmentHistory"])
+      assert.deepEqual(newBasis[key], oldBasis[key], `stable prerequisite ${key} is preserved`);
+    assert.deepEqual(first, before);
+  }
+});
+
+
+test("saved transitive dependents resume in reverse declaration order on retained context", async (t) => {
+  const first = await dependentContinuationEpisode(t, { chain: true, maxSearches: 1 });
+  assert.equal(first.result.status, "partial");
+  assert.equal(first.result.requirements.prerequisite.reason, "counterevidence_not_acquired");
+  assert.equal(first.result.requirements.dependent.reason, "prerequisite_unresolved:prerequisite");
+  assert.equal(first.result.requirements.leaf.reason, "prerequisite_unresolved:dependent");
+  const before = structuredClone(first); freezeProvenanceInput(first);
+  const second = await dependentContinuationEpisode(t, { chain: true, maxSearches: 7, seedInput: carriedDependencySeed(first) });
+  assert.equal(second.result.status, "complete");
+  assert.deepEqual(second.result.data, { leaf: "supported", dependent: "MIT", prerequisite: "supported" });
+  assert.deepEqual(second.result.usage, { searches: 6, readAttempts: 0, readsRetained: 0, judgeCalls: 1,
+    extractorCalls: 1, extractorCacheHits: 0, candidateJudgeCalls: 1 });
+  assert.deepEqual(second.calls.filter((c) => c.op === "judge").map((c) => c.request.fieldId), ["leaf"]);
+  const source = second.result.evidence[0], binding = (value) => ({ value, evidenceId: source.evidenceId,
+    sourceDigest: candidateSourceDigest(source) });
+  const candidateCalls = second.calls.filter((c) => c.op === "candidateJudge");
+  assert.equal(candidateCalls.length, 1);
+  assert.deepEqual(candidateCalls[0].request.depBindings, { prerequisite: binding("supported") });
+  const proof = second.checkpoint.history.findLast((h) => h.state.id === "dependent").state;
+  assert.equal(proof.acceptedCandidate.provenance.value, "MIT");
+  assert(proof.trustedAccepts.length > 0);
+  assert.deepEqual(proof.trustedAccepts.at(-1).judgedContext.depBindings, { prerequisite: binding("supported") });
+  const leafJudgment = second.calls.find((c) => c.op === "judge" && c.request.fieldId === "leaf");
+  assert.deepEqual(leafJudgment.request.depBindings, { dependent: binding("MIT") });
+  assert(second.result.plan.queries.every((entry) => second.checkpoint.issuedQueries.includes(entry.query)));
+  assert.deepEqual(second.checkpoint.history.slice(0, first.checkpoint.history.length), first.checkpoint.history);
+  assert.deepEqual(first, before);
+});
+
+test("saved dependency continuation keeps unknown prerequisites closed and complete results idle", async (t) => {
+  const unknown = await dependentContinuationEpisode(t, { unknown: true, maxSearches: 5 });
+  assert.equal(unknown.result.status, "partial");
+  assert.equal(unknown.result.requirements.prerequisite.status, "unresolved");
+  assert.equal(unknown.result.requirements.dependent.reason, "prerequisite_unresolved:prerequisite");
+  assert(!Object.hasOwn(unknown.result.data, "dependent"));
+  const unknownBefore = structuredClone(unknown); freezeProvenanceInput(unknown);
+  const stillUnknown = await dependentContinuationEpisode(t, { unknown: true, maxSearches: 7, seedInput: carriedDependencySeed(unknown) });
+  assert.deepEqual(stillUnknown.calls, []);
+  assert.deepEqual(stillUnknown.result.requirements, unknown.result.requirements);
+  assert.deepEqual(unknown, unknownBefore);
+  const first = await dependentContinuationEpisode(t, { maxSearches: 5 });
+  assert.equal(first.result.status, "complete");
+  const before = structuredClone(first); freezeProvenanceInput(first);
+  const second = await dependentContinuationEpisode(t, { maxSearches: 7, seedInput: carriedDependencySeed(first) });
+  assert.equal(second.result.status, "complete");
+  assert.deepEqual(second.result.data, first.result.data);
+  assert.deepEqual(second.calls, []);
+  assert.deepEqual(first, before);
+  for (const dep of ["missing", "dependent"]) {
+    const calls = [];
+    let error;
+    try {
+      await runLeanInvestigation({ schemaVersion: 1, question: "Invalid prerequisite control", scope: {}, requirements: {
+        dependent: { question: "Does DependencyCarry 1 support dependent?", schema: { enum: ["supported", "refuted", "disputed"] }, dependsOn: [dep] },
+      } }, { now: () => 0, search: async (query) => { calls.push(query); return []; }, read: async () => "", judge: null });
+    } catch (caught) { error = { code: caught.code, message: caught.message }; }
+    t.diagnostic(`invalid-dependency ${JSON.stringify({ dep, calls, error })}`);
+    assert.equal(error?.code, "VALIDATION_ERROR");
+    assert.equal(error.message, dep === "missing" ? 'requirements.dependent.dependsOn references unknown field "missing".'
+      : "requirements.dependent.dependsOn cannot reference itself.");
+    assert.deepEqual(calls, []);
+  }
 });

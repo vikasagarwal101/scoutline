@@ -1074,6 +1074,8 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
       evidence.map((e) => [e.evidenceId, createHash("sha256").update(e.content).digest("hex")]),
     );
   if (seed?.history !== undefined) {
+    const reopenedContraryFields = new Set<string>();
+    const restoredDependencyGaps = new Map<string, string>();
     for (const f of fields.values()) {
       // Unknown judge/policy identity NEVER restores history: an absent
       // identity token cannot assert the same basis (a swapped judge would
@@ -1111,6 +1113,16 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
         f.terminal?.status === "unresolved" &&
         (f.noExtractor || f.noSemanticJudge || f.judgeUnavailable || f.judgeIndeterminate) &&
         (f.noExtractor !== (udeps.extract == null) || f.noSemanticJudge !== (deps.judge === null));
+      if (
+        exact !== undefined &&
+        f.terminal?.status === "unresolved" &&
+        f.stopReason === null &&
+        typeof f.terminal.reason === "string" &&
+        f.terminal.reason.startsWith("prerequisite_unresolved:")
+      ) {
+        const dep = f.terminal.reason.slice("prerequisite_unresolved:".length);
+        if (f.req.dependsOn.includes(dep)) restoredDependencyGaps.set(f.id, dep);
+      }
       if (exact === undefined || roundLocal || (seed.leads?.length ?? 0) > 0) {
         f.terminal = null;
         f.lastJudgedKey = null;
@@ -1143,7 +1155,27 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
         // Fresh acquisition may finish an unmet contrary round. Keep the
         // exact-context judgment/proof caches; only its local stop reopens.
         f.terminal = null;
+        reopenedContraryFields.add(f.id);
       }
+    }
+    // Reconsider only saved gaps caused by this continuation's reopened
+    // prerequisites. Retaining no new document must not strand their closure.
+    const reopenedDependencies = new Set(reopenedContraryFields);
+    for (let pass = 0; runTypedStop === null && pass < fields.size; pass += 1) {
+      let reopened = false;
+      for (const [id, dep] of restoredDependencyGaps) {
+        const f = fields.get(id)!;
+        if (
+          !reopenedDependencies.has(dep) ||
+          f.stopReason !== null ||
+          f.terminal?.status !== "unresolved" ||
+          f.terminal.reason !== `prerequisite_unresolved:${dep}`
+        ) continue;
+        f.terminal = null;
+        reopenedDependencies.add(id);
+        reopened = true;
+      }
+      if (!reopened) break;
     }
   }
 
@@ -3139,7 +3171,7 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
       const canStillAcquire =
         hasUnread() ||
         (nextUnissuedQuery(queryIdx) < plan.length && searches < limits.maxSearchAttempts);
-      for (const f of eligible) {
+      for (const f of eligibleNow()) {
         if (f.terminal !== null) continue;
         if (f.req.schema.mode === "value") {
           if (f.acceptedCandidate === null) continue;

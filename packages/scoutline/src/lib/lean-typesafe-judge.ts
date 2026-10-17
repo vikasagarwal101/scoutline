@@ -1049,7 +1049,7 @@ async function runLifecycle(
             rejection: typedRejection(
               "TYPESAFE_CANCELLED",
               "Direct TypeSafe retry backoff was cancelled by the caller; remote work from the dispatched attempt may have happened.",
-              { observed, remoteWorkUncertain: true, attempts: attempt + 1 },
+              { observed, stopReason: composedStopRootOf(signal.reason) ?? undefined, remoteWorkUncertain: true, attempts: attempt + 1 },
             ),
             attemptEvents: events,
             attempts: attempt + 1,

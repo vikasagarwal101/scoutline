@@ -475,11 +475,61 @@ test("undefined retry fields use defaults and preserve defined zero", async () =
     });
     assert.deepEqual(actual, { requestedTimers: [25, 25], code: "TYPESAFE_TIMEOUT", attempts: 1, calls: 1, admissions: 1, pending: 0 });
   }
+  // A real transient response distinguishes default backoff from numeric zero.
+  for (const baseDelayMs of [undefined, 0]) {
+    await withManualTimers(async ({ pending, observe }) => {
+      observe((ms) => {
+        if (ms === 0) {
+          const [handle, fire] = [...pending.entries()].at(-1);
+          queueMicrotask(() => { pending.delete(handle); fire(); });
+        }
+      });
+      let admissions = 0;
+      const events = [];
+      const { fetchLike, calls } = makeFetch([statusResponse(429), okResponse(noulAnswersFor(2))]);
+      const profile = tsj.createTypesafeJudge({
+        apiKey: "k", now: () => 0, timeoutMs: 10, maxAttempts: 2,
+        retrySettings: { maxTransientRetries: 1, baseDelayMs, maxDelayMs: 50, maxRetryAfterMs: 1000 },
+        reserveAttempt: () => { admissions++; }, fetchLike,
+        onAttempt: (event) => events.push(event),
+      });
+      if (baseDelayMs === undefined) {
+        await assert.rejects(profile.judge(INPUT, { timeoutMs: 10 }), (error) => {
+          assert.equal(error.code, "TYPESAFE_RETRY_REFUSED");
+          assert.equal(error.attempts, 1);
+          assert.equal(error.observed.status, 429);
+          return true;
+        });
+        assert.equal(calls.length, 1);
+        assert.equal(admissions, 1);
+        assert.deepEqual(events.map((event) => event.outcome), ["TYPESAFE_RATE_LIMIT"]);
+        assert.deepEqual(events.map((event) => event.status), [429]);
+      } else {
+        let response;
+        await assert.doesNotReject(async () => { response = await profile.judge(INPUT, { timeoutMs: 10 }); });
+        assert.equal(response.documents.length, 2);
+        assert.equal(response[Symbol.for("leanJevAttemptMeta")].attempts, 2);
+        assert.equal(calls.length, 2);
+        assert.equal(admissions, 2);
+        assert.deepEqual(events.map((event) => event.outcome), ["TYPESAFE_RATE_LIMIT", "ok"]);
+        assert.deepEqual(events.map((event) => event.status), [429, 200]);
+      }
+      assert.equal(pending.size, 0);
+    });
+  }
+
 });
 
 
 test("retry-wait cancellation retains known response facts without an observer", async () => {
-  for (const status of [429, 529]) {
+  for (const [status, code, reason, expectedStopReason] of [
+    [429], [529],
+    [429, "EVAL_STOPPED", "global_deadline", "global_deadline"],
+    [529, "EVAL_STOPPED", "global_judgment_cap", "global_judgment_cap"],
+    [429, "EVAL_STOPPED", "global_extraction_cap", "global_extraction_cap"],
+    [529, "ORDINARY_ABORT", "global_deadline"],
+    [429, "EVAL_STOPPED", "fixture_unknown_root"],
+  ]) {
     const actual = await withManualTimers(async ({ pending, scheduled, observe }) => {
       const caller = new AbortController();
       const events = [], requests = [];
@@ -500,9 +550,9 @@ test("retry-wait cancellation retains known response facts without an observer",
       work.catch(() => {});
       try {
         await waiting;
-        caller.abort();
+        caller.abort(code === undefined ? undefined : Object.assign(new Error("synthetic composed stop"), { code, reason }));
         const error = await work.catch((error) => error);
-        return { code: error.code, attempts: error.attempts, uncertain: error.remoteWorkUncertain, observed: error.observed,
+        return { code: error.code, stopReason: error.stopReason, ownStopReason: Object.hasOwn(error, "stopReason"), attempts: error.attempts, uncertain: error.remoteWorkUncertain, observed: error.observed,
           admissions, requests, events, bodyCancels, scheduled: [...scheduled], pending: pending.size };
       } finally {
         caller.abort();
@@ -510,6 +560,8 @@ test("retry-wait cancellation retains known response facts without an observer",
       }
     });
     assert.equal(actual.code, "TYPESAFE_CANCELLED");
+    assert.equal(actual.stopReason, expectedStopReason);
+    assert.equal(actual.ownStopReason, expectedStopReason !== undefined);
     assert.equal(actual.attempts, 1);
     assert.equal(actual.uncertain, true);
     assert.deepEqual(actual.observed, {

@@ -37,7 +37,7 @@ test("unknown own enumerable contract keys reject instead of dropping caller con
   for (const [key, value] of [["limit", { deadlineMs: 1 }], ["require", {}], ["annotation", "BENIGN_EXTRA"]]) {
     assert.throws(
       () => compileLeanContract({ ...input({ type: "string" }), [key]: value }),
-      (e) => e.code === "VALIDATION_ERROR" && /contract.*unsupported/.test(e.message) && e.message.includes(key),
+      (e) => e.code === "VALIDATION_ERROR" && /contract.*unsupported/.test(e.message) && e.message.includes(`(${key})`),
       `unsupported contract key ${key} must reject`,
     );
   }
@@ -51,7 +51,7 @@ test("unknown own enumerable requirement keys reject instead of dropping prerequ
     contract.requirements.value[key] = value;
     assert.throws(
       () => compileLeanContract(contract),
-      (e) => e.code === "VALIDATION_ERROR" && /requirements.value.*unsupported/.test(e.message) && e.message.includes(key),
+      (e) => e.code === "VALIDATION_ERROR" && /requirements.value.*unsupported/.test(e.message) && e.message.includes(`(${key})`),
       `unsupported requirement key ${key} must reject`,
     );
   }

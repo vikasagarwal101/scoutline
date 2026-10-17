@@ -208,3 +208,291 @@ test("complete same-scope counterevidence can fulfill disputed classification", 
   assert.equal(result.data.csv, "disputed");
   assert.deepEqual(result.requirements.csv.evidenceIds, result.evidence.map((doc) => doc.evidenceId));
 });
+
+async function repeatedQuestionRun({ failures = 0, searchCap = 7, readCap = 3,
+  opposition = false, sharedQuestion = "Shared", deterministicOnly = false } = {}) {
+  const queries = [], reads = [], judgments = [];
+  let contraryAttempts = 0;
+  let checkpoint;
+  const result = await runLeanInvestigation({
+    schemaVersion: 1, question: sharedQuestion,
+    requirements: Object.fromEntries(["alpha", "beta"].map((id) => [id, {
+      question: "CSV?", schema: { enum: ["supported", "refuted", "disputed"] },
+    }])),
+    limits: { maxSearchAttempts: searchCap, maxUniqueReads: readCap, readBatchSize: 2 },
+  }, {
+    now: () => 0,
+    seed: { identity: "repeated-question-fixture-v1", capture: (state) => { checkpoint = state; } },
+    search: async (query) => {
+      queries.push(query);
+      if (query.endsWith(" contrary evidence refuted")) {
+        contraryAttempts += 1;
+        if (contraryAttempts <= failures) throw new Error("fixture contrary failure");
+        return opposition ? [hit(CONTRARY)] : query === sharedQuestion ? [hit(GUIDE)] : [];
+      }
+      return query === sharedQuestion ? [hit(GUIDE)] : [];
+    },
+    read: async (url) => { reads.push(url); return url === CONTRARY ? "refutes CSV" : "supports CSV"; },
+    judge: deterministicOnly ? null : async (input) => {
+      judgments.push(structuredClone(input));
+      return { documents: input.documents.map((doc) => ({
+        evidenceId: doc.evidenceId, relevant: true,
+        supportsClaim: doc.content.includes("supports CSV"),
+        refutesClaim: doc.content.includes("refutes CSV"),
+      })) };
+    },
+  });
+  const coverage = Object.fromEntries(checkpoint.history.map(({ state }) =>
+    [state.id, { issued: state.ctrvIssued, pendingUrls: state.ctrvSources }]));
+  assert.equal(result.usage.searches, queries.length);
+  assert.equal(result.usage.readAttempts, reads.length);
+  assert.equal(result.usage.judgeCalls, judgments.length);
+  return { result, queries, reads, judgments, coverage };
+}
+
+test("one successful duplicate query covers both fields without phantom future acquisition", async () => {
+  const { result, queries, coverage } = await repeatedQuestionRun();
+  assert.deepEqual(result.data, { alpha: "supported", beta: "supported" });
+  assert.deepEqual(queries, ["Shared", "CSV?", "CSV? contrary evidence refuted"]);
+  assert.deepEqual(coverage, { alpha: { issued: true, pendingUrls: [] }, beta: { issued: true, pendingUrls: [] } });
+});
+
+for (const [name, options, paid, accepted] of [
+  ["later genuine success covers an earlier failed owner", { failures: 1 }, 4, true],
+  ["failed queries never become coverage", { failures: 2 }, 4, false],
+  ["cap before contrary search never becomes coverage", { searchCap: 2 }, 2, false],
+  ["success at the physical search cap covers both owners", { searchCap: 3 }, 3, true],
+  ["shared primary text reuses its paid request", { sharedQuestion: "CSV?" }, 2, true],
+  ["shared contrary text covers every matching owner", { sharedQuestion: "CSV? contrary evidence refuted" }, 2, true],
+]) {
+  test(`duplicate-query coverage: ${name}`, async () => {
+    const { result, queries, coverage } = await repeatedQuestionRun(options);
+    assert.equal(queries.length, paid);
+    assert.deepEqual(result.data, accepted ? { alpha: "supported", beta: "supported" } : {});
+    for (const field of ["alpha", "beta"]) {
+      assert.equal(coverage[field].issued, accepted);
+      if (!accepted) assert.equal(result.requirements[field].reason, "counterevidence_not_acquired");
+    }
+  });
+}
+test("duplicate-query contrary URLs are retained and assessed by both fields", async () => {
+  const { result, reads, judgments, coverage } = await repeatedQuestionRun({ opposition: true });
+  assert.deepEqual(reads, [GUIDE, CONTRARY]);
+  assert.deepEqual(result.data, { alpha: "disputed", beta: "disputed" });
+  for (const field of ["alpha", "beta"]) {
+    assert(judgments.some((input) => input.fieldId === field && input.documents.some((doc) => doc.url === CONTRARY)));
+    assert.deepEqual(coverage[field], { issued: true, pendingUrls: [] });
+  }
+});
+test("duplicate-query unread contrary URLs block both owners under the read cap", async () => {
+  const { result, reads, coverage } = await repeatedQuestionRun({ opposition: true, readCap: 1 });
+  assert.deepEqual(reads, [GUIDE]);
+  assert.deepEqual(result.data, {});
+  for (const field of ["alpha", "beta"])
+    assert.deepEqual(coverage[field], { issued: true, pendingUrls: [CONTRARY] });
+});
+test("deterministic-only duplicate-query coverage persists for every owner", async () => {
+  const { queries, judgments, coverage } = await repeatedQuestionRun({ deterministicOnly: true });
+  assert.equal(queries.length, 3);
+  assert.equal(judgments.length, 0);
+  assert.deepEqual(coverage, { alpha: { issued: true, pendingUrls: [] }, beta: { issued: true, pendingUrls: [] } });
+});
+test("deterministic-only retention settles shared contrary URLs for every owner", async () => {
+  const { reads, judgments, coverage } = await repeatedQuestionRun({ deterministicOnly: true, opposition: true });
+  assert.deepEqual(reads, [GUIDE, CONTRARY]);
+  assert.equal(judgments.length, 0);
+  assert.deepEqual(coverage, { alpha: { issued: true, pendingUrls: [] }, beta: { issued: true, pendingUrls: [] } });
+});
+
+async function rawAcquisitionRun({ phase = "read", deterministicOnly = false,
+  error = Object.assign(new Error("fixture stop"), { code: "EVAL_STOPPED", reason: "global_deadline" }) } = {}) {
+  const events = [];
+  let stopIndex = -1;
+  const record = (kind, options, detail) => {
+    events.push({ kind, detail, aborted: options.signal.aborted });
+    if (kind === phase && stopIndex === -1) {
+      stopIndex = events.length - 1;
+      throw error;
+    }
+  };
+  const result = await runLeanInvestigation({
+    schemaVersion: 1, question: "Shared",
+    requirements: {
+      csv: { question: "CSV?", schema: { enum: ["supported", "refuted", "disputed"] } },
+      version: { question: "Version?", schema: { type: "string" } },
+    },
+    limits: { readBatchSize: 2, maxUniqueReads: 2, maxSearchAttempts: 5, deadlineMs: 1000 },
+  }, {
+    now: () => 0,
+    search: async (query, options) => {
+      record("search", options, query);
+      return query.endsWith(" contrary evidence refuted") ? [] : [hit(GUIDE), hit(CONTRARY)];
+    },
+    read: async (url, options) => { record("read", options, url); return "Release 1.0 supports CSV."; },
+    judge: deterministicOnly ? null : async (input, options) => {
+      record("judge", options, input.fieldId);
+      return { documents: input.documents.map((doc) => verdict(doc.evidenceId)) };
+    },
+    extract: async (input, options) => {
+      record("extract", options, input.sourceId);
+      return { finishReason: "stop", rawOutput: JSON.stringify({
+        version: { value: "1.0", quote: input.sourceText },
+      }), usage: { inputTokens: 1, outputTokens: 1 }, observedCost: null };
+    },
+    candidateJudge: async (_input, options) => {
+      record("candidate", options, "version");
+      return { model: "fixture", answers: { q0s: { type: "noul", noul: 0.97 }, q0c: { type: "noul", noul: 0.01 } },
+        usage: { inputTokens: 1, outputTokens: 1 }, elapsedMs: 1, requestSha256: "a".repeat(64) };
+    },
+  });
+  assert.notEqual(stopIndex, -1);
+  for (const [counter, kind] of [["searches", "search"], ["readAttempts", "read"],
+    ["judgeCalls", "judge"], ["extractorCalls", "extract"], ["candidateJudgeCalls", "candidate"]])
+    assert.equal(result.usage[counter], events.filter((event) => event.kind === kind).length);
+  return { result, events, stopIndex };
+}
+
+test("qualified raw read stop prevents retry, second batch item and later collaborators", async () => {
+  const { result, events, stopIndex } = await rawAcquisitionRun();
+  assert.deepEqual(events.slice(stopIndex + 1), [], "a qualified root forbids every later physical call");
+  assert.deepEqual(result.data, {});
+  for (const row of Object.values(result.requirements)) assert.equal(row.reason, "global_deadline");
+});
+
+for (const root of ["global_deadline", "global_extraction_cap", "global_judgment_cap"])
+  for (const phase of ["read", "search"])
+    for (const deterministicOnly of [false, true]) {
+      if (root === "global_deadline" && phase === "read" && !deterministicOnly) continue;
+      test(`qualified raw ${phase} stop ${root}, deterministic-only=${deterministicOnly}`, async () => {
+        const error = Object.assign(new Error("fixture stop"), { code: "EVAL_STOPPED", reason: root });
+        const { result, events, stopIndex } = await rawAcquisitionRun({ phase, deterministicOnly, error });
+        assert.equal(events[stopIndex].aborted, false, "the local clock/signal did not stop this call");
+        assert.deepEqual(events.slice(stopIndex + 1), []);
+        assert.deepEqual(result.data, {});
+        for (const row of Object.values(result.requirements)) assert.equal(row.reason, root);
+      });
+    }
+for (const [name, makeError] of [
+  ["ordinary", () => new Error("fixture ordinary failure")],
+  ["wrong code", () => Object.assign(new Error("fixture wrong code"), { code: "BENIGN_WRONG_CODE", reason: "global_deadline" })],
+  ["unknown root", () => Object.assign(new Error("fixture unknown root"), { code: "EVAL_STOPPED", reason: "not_a_declared_root" })],
+  ["non-Error carrier", () => ({ code: "EVAL_STOPPED", reason: "global_deadline" })],
+  ["normalized-only carrier", () => Object.assign(new Error("fixture alternate carrier"), { code: "EVAL_STOPPED", stopReason: "global_deadline" })],
+])
+  for (const phase of ["read", "search"])
+    for (const deterministicOnly of [false, true]) {
+      test(`unqualified raw ${phase} ${name}, deterministic-only=${deterministicOnly}`, async () => {
+        const { result, events, stopIndex } = await rawAcquisitionRun({ phase, deterministicOnly, error: makeError() });
+        assert(events.slice(stopIndex + 1).length > 0, "ordinary acquisition recovery stays available");
+        assert(events.every((event) => !event.aborted));
+        if (phase === "read")
+          assert.deepEqual(events.filter((event) => event.kind === "read").map((event) => event.detail), [GUIDE, GUIDE, CONTRARY]);
+        if (deterministicOnly)
+          for (const row of Object.values(result.requirements)) assert.equal(row.reason, "no_semantic_judge");
+        else assert.deepEqual(result.data, { csv: "supported", version: "1.0" });
+      });
+    }
+
+const measuredFailure = {
+  requestSha256: "a".repeat(64), resolvedModel: "fixture", requestedModel: "requested-fixture",
+  usage: { inputTokens: 7, outputTokens: 3, reasoningTokens: 2, extra: "BENIGN_NESTED_EXTRA" },
+  elapsedMs: 2.5, status: 503, headers: { fixture: "BENIGN_RAW_HEADER" },
+  endpoint: "https://synthetic.invalid/not-sent", raw: "BENIGN_RAW_BODY",
+};
+const safeFailure = {
+  requestSha256: "a".repeat(64), resolvedModel: "fixture", requestedModel: "requested-fixture",
+  usage: { inputTokens: 7, outputTokens: 3, reasoningTokens: 2 }, elapsedMs: 2.5, status: 503,
+};
+async function classificationAttemptRun({ mode = "ordinary", recover = false,
+  preflightFailure = false, observations = true } = {}) {
+  let calls = 0;
+  const code = mode === "indeterminate" ? "JEV_DEV_INDETERMINATE"
+    : mode === "stop" ? "EVAL_STOPPED" : mode === "normalized-carrier" ? "BENIGN_WRONG_CODE" : "FIXTURE_NETWORK";
+  const error = Object.assign(new Error("BENIGN_RAW_ERROR_MESSAGE"), {
+    code, observed: observations ? structuredClone(measuredFailure) : undefined,
+    ...(["stop", "normalized-carrier"].includes(mode) ? { reason: "global_judgment_cap" } : {}),
+  });
+  const result = await runLeanInvestigation({
+    schemaVersion: 1, question: "Shared",
+    requirements: { csv: { question: "CSV?", schema: { enum: ["supported", "refuted", "disputed"] } } },
+    limits: { readBatchSize: 1, maxSearchAttempts: 3 },
+  }, {
+    now: () => 0,
+    seed: preflightFailure ? { retainEvidence: async (record) => {
+      // A public retention collaborator fails while its record is copied
+      // into the request, before any judge invocation. Restore the getter
+      // immediately so the returned evidence remains ordinary data.
+      const title = record.title;
+      Object.defineProperty(record, "title", { configurable: true, enumerable: true, get() {
+        Object.defineProperty(record, "title", { value: title, writable: true, configurable: true, enumerable: true });
+        throw error;
+      } });
+    } } : undefined,
+    search: async (query) => query === "Shared" ? [hit(GUIDE)] : recover && query === "CSV?" ? [hit(CONTRARY)] : [],
+    read: async () => "supports CSV",
+    judge: async (input) => {
+      calls += 1;
+      if (mode !== "success" && mode !== "invalid" && !(recover && calls > 1)) throw error;
+      return { documents: mode === "invalid" ? [] : input.documents.map((doc) => verdict(doc.evidenceId)) };
+    },
+  });
+  assert.equal(result.usage.judgeCalls, calls);
+  assert.equal(result.requirements.csv.judgmentCount, calls);
+  assert(!JSON.stringify(result).includes("BENIGN_RAW"));
+  assert(!JSON.stringify(result).includes("BENIGN_NESTED_EXTRA"));
+  assert(!JSON.stringify(result).includes("synthetic.invalid"));
+  return { result, calls, code };
+}
+test("ordinary paid classification rejection keeps one sanitized attempt record", async () => {
+  const { result, calls } = await classificationAttemptRun();
+  assert.equal(calls, 1);
+  assert.equal(result.requirements.csv.reason, "judge_unavailable");
+  assert.deepEqual(result.requirements.csv.attemptedRecords, [{
+    trusted: false, reason: "enum_judge_failed:FIXTURE_NETWORK", assessments: [],
+    metadata: { kind: "classification-judgment", observed: safeFailure },
+  }]);
+});
+
+for (const [mode, reason] of [["indeterminate", "judge_indeterminate"],
+  ["stop", "global_judgment_cap"], ["normalized-carrier", "global_judgment_cap"]]) {
+  test(`failed enum audit preserves existing ${mode} disposition with exactly one row`, async () => {
+    const { result, calls, code } = await classificationAttemptRun({ mode });
+    assert.equal(calls, 1);
+    assert.equal(result.requirements.csv.reason, reason);
+    assert.deepEqual(result.requirements.csv.attemptedRecords, [{
+      trusted: false, reason: `enum_judge_failed:${code}`, assessments: [],
+      metadata: { kind: "classification-judgment", observed: safeFailure },
+    }]);
+  });
+}
+test("indeterminate enum audit does not disable assessment on new retained context", async () => {
+  const { result, calls } = await classificationAttemptRun({ mode: "indeterminate", recover: true });
+  assert.equal(calls, 2);
+  assert.equal(result.data.csv, "supported");
+  const rows = result.requirements.csv.attemptedRecords;
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].reason, "enum_judge_failed:JEV_DEV_INDETERMINATE");
+  assert.equal(rows[0].trusted, false);
+  assert.equal(rows[1].trusted, true);
+  assert.equal(rows[1].assessments.length, 2);
+});
+for (const mode of ["success", "invalid"]) {
+  test(`enum ${mode} response keeps its single existing audit row`, async () => {
+    const { result, calls } = await classificationAttemptRun({ mode });
+    assert.equal(calls, 1);
+    const rows = result.requirements.csv.attemptedRecords;
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].trusted, mode === "success");
+    assert.equal(rows[0].reason, mode === "success" ? undefined : "invalid_response");
+  });
+}
+test("uninvoked enum preflight failure fabricates neither a paid call nor rejection row", async () => {
+  const { result, calls } = await classificationAttemptRun({ preflightFailure: true });
+  assert.equal(calls, 0);
+  assert.deepEqual(result.requirements.csv.attemptedRecords, []);
+  assert.deepEqual(result.data, {});
+});
+test("failed enum audit leaves unmeasured observations absent rather than inventing zeros", async () => {
+  const { result } = await classificationAttemptRun({ observations: false });
+  assert.deepEqual(result.requirements.csv.attemptedRecords[0].metadata, { kind: "classification-judgment" });
+});

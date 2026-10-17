@@ -45,7 +45,7 @@
 
 import { createHash } from "node:crypto";
 import { ValidationError } from "./errors.js";
-import { COMPOSED_STOP_ROOTS } from "./lean-composed-stop.js";
+import { COMPOSED_STOP_ROOTS, composedStopRootOf } from "./lean-composed-stop.js";
 import {
   validateCandidates,
   acceptCandidate,
@@ -1370,13 +1370,33 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
       return readPtr < queue.length;
     };
 
+    const nextUnissuedQuery = (index: number): number => {
+      while (index < plan.length && issuedQueries.has(plan[index]!.query)) index += 1;
+      return index;
+    };
     const noMoreAcquisition = (): boolean =>
-      !canReadMore() && (queryIdx >= plan.length || searches >= limits.maxSearchAttempts);
+      !canReadMore() &&
+      (nextUnissuedQuery(queryIdx) >= plan.length || searches >= limits.maxSearchAttempts);
     // Unread URLs under an exhausted read cap can never be read — they
     // are not future acquisition for progress purposes (the contrary
     // round records them as unassessed coverage, which blocks acceptance
     // honestly instead).
     const canReadMore = (): boolean => hasUnread() && attemptedUrls.size < limits.maxUniqueReads;
+
+    // One paid query may be the contrary round of several fields. Only
+    // genuine success settles coverage; every owner keeps its unread URLs.
+    const recordSearchSuccess = (query: string, results: readonly LeanSearchResult[]): void => {
+      issuedQueries.add(query);
+      const retainedUrls = new Set(evidence.map((e) => e.url));
+      for (const f of fields.values()) {
+        if (query !== `${f.req.question} contrary evidence refuted`) continue;
+        f.ctrvIssued = true;
+        for (const result of results) {
+          if (typeof result.url !== "string" || result.url.length === 0) continue;
+          if (!retainedUrls.has(result.url)) f.ctrvSources.add(result.url);
+        }
+      }
+    };
 
     /** FULL live-identity validation of a trusted accept (final
      *  full-context repair): the recorded source/opposing evidence IDs
@@ -1778,6 +1798,7 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
       let dQueryIdx = queryIdx; // seeded reusable-coverage prefix (caller rounds)
       for (;;) {
         if (expired()) break;
+        dQueryIdx = nextUnissuedQuery(dQueryIdx);
         const eligibleLeft = [...fields.values()].some((f) => f.terminal === null);
         if (!eligibleLeft) break;
         if (canReadMore() && !expired()) {
@@ -1799,9 +1820,19 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
               pushLog(attempt === 0 ? "read" : "read-retry", item.url);
               try {
                 content = await deps.read(item.url, dispatchOptions());
-              } catch {
+              } catch (error) {
+                const root = composedStopRootOf(error);
+                if (root !== null) {
+                  runTypedStop = root;
+                  break;
+                }
                 content = null;
               }
+            }
+            if (runTypedStop !== null) {
+              readPtr -= batch.length - batchIndex - 1;
+              pushLog("read-failed", item.url);
+              break;
             }
             // Batch preparation is not admission: an uninvoked item is
             // still unread, and must not acquire a failed-read audit.
@@ -1838,26 +1869,15 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
             await seed?.retainEvidence?.(retained);
             evidence.push(retained);
             readsRetained += 1;
+            for (const f of fields.values()) f.ctrvSources.delete(item.url);
           }
         } else if (dQueryIdx < plan.length && searches < limits.maxSearchAttempts && !expired()) {
           const entry = plan[dQueryIdx]!;
           dQueryIdx += 1;
-          while (dQueryIdx < plan.length && issuedQueries.has(plan[dQueryIdx]!.query))
-            dQueryIdx += 1;
-          if (issuedQueries.has(entry.query)) continue;
           searches += 1;
           try {
             const results = await deps.search(entry.query, dispatchOptions());
-            issuedQueries.add(entry.query);
-            if (entry.kind === "counterevidence" && entry.fieldId !== null) {
-              fields.get(entry.fieldId)!.ctrvIssued = true;
-              const retainedUrls = new Set(evidence.map((e) => e.url));
-              for (const result of results) {
-                if (typeof result.url !== "string" || result.url.length === 0) continue;
-                if (retainedUrls.has(result.url)) continue;
-                fields.get(entry.fieldId)!.ctrvSources.add(result.url);
-              }
-            }
+            recordSearchSuccess(entry.query, results);
             pushLog("search", entry.query);
             for (const result of results) {
               if (typeof result.url !== "string" || result.url.length === 0) continue;
@@ -1869,7 +1889,9 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
               }
               origins.add(entry.query);
             }
-          } catch {
+          } catch (error) {
+            const root = composedStopRootOf(error);
+            if (root !== null) runTypedStop = root;
             pushLog("search-failed", entry.query);
           }
         } else {
@@ -1892,7 +1914,7 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
         });
         f.terminal = {
           status: "unresolved",
-          reason: overflow ? "assessment_context_overflow" : "no_semantic_judge",
+          reason: runTypedStop ?? (overflow ? "assessment_context_overflow" : "no_semantic_judge"),
         };
         if (overflow) {
           f.attemptedRecords.push({
@@ -1925,6 +1947,7 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
         finalizeWaitingDependants(reason);
         break;
       }
+      queryIdx = nextUnissuedQuery(queryIdx);
 
       // Dependency terminalization: a terminally-unresolved prerequisite
       // blocks only its dependants.
@@ -2056,9 +2079,19 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
             pushLog(attempt === 0 ? "read" : "read-retry", item.url);
             try {
               content = await deps.read(item.url, dispatchOptions());
-            } catch {
+            } catch (error) {
+              const root = composedStopRootOf(error);
+              if (root !== null) {
+                runTypedStop = root;
+                break;
+              }
               content = null;
             }
+          }
+          if (runTypedStop !== null) {
+            readPtr -= batch.length - batchIndex - 1;
+            pushLog("read-failed", item.url);
+            break;
           }
           // Batch preparation is not admission: an uninvoked item is
           // still unread, and must not acquire a failed-read audit.
@@ -2137,35 +2170,21 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
       } else if (queryIdx < plan.length && searches < limits.maxSearchAttempts && !expired()) {
         const entry = plan[queryIdx]!;
         queryIdx += 1;
-        while (queryIdx < plan.length && issuedQueries.has(plan[queryIdx]!.query)) queryIdx += 1;
-        if (issuedQueries.has(entry.query)) continue;
         searches += 1;
         let results: readonly LeanSearchResult[] = [];
         try {
           results = await deps.search(entry.query, dispatchOptions());
-        } catch {
+        } catch (error) {
+          const root = composedStopRootOf(error);
+          if (root !== null) runTypedStop = root;
           pushLog("search-failed", entry.query);
           // A FAILED counterevidence search is not coverage — the round
           // stays unissued (parent finding: failed query ≠ completed
           // contrary evidence).
           continue;
         }
-        issuedQueries.add(entry.query);
+        recordSearchSuccess(entry.query, results);
         pushLog("search", entry.query);
-        if (entry.kind === "counterevidence" && entry.fieldId !== null) {
-          fields.get(entry.fieldId)!.ctrvIssued = true;
-          const retainedUrls = new Set(evidence.map((e) => e.url));
-          for (const result of results) {
-            if (typeof result.url !== "string" || result.url.length === 0) continue;
-            if (retainedUrls.has(result.url)) {
-              // Round-3: an already-retained URL needs no reread — its
-              // representation is in the assessed current context. Only
-              // NOT-yet-retained URLs stay pending on fresh retention.
-              continue;
-            }
-            fields.get(entry.fieldId)!.ctrvSources.add(result.url);
-          }
-        }
         for (const result of results) {
           if (typeof result.url !== "string" || result.url.length === 0) continue;
           let origins = originsByUrl.get(result.url);
@@ -2232,6 +2251,10 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
         // Fall through to the judgment phase below (it lives after the
         // acquisition if/else); `continue` would skip it and spin.
       }
+
+      // A raw acquisition root returns through the existing terminal stop
+      // path before any judgment or provisional finalization can run.
+      if (runTypedStop !== null) continue;
 
       // Judgment phase: every eligible unmet field whose presented
       // evidence identity changed since its last judgment. Identical
@@ -2789,6 +2812,7 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
         // invocations consume the shared slot or emit a dispatch event.
         f.lastJudgedKey = key;
         let response: LeanJudgeResponse;
+        let classificationInvoked = false;
         try {
           const enumRequest = {
             fieldId: f.id,
@@ -2823,7 +2847,9 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
           judgeCalls += 1;
           f.judgmentCount += 1;
           pushLog("judge", `${f.id} over [${key}]`);
-          response = await judge(enumRequest, dispatchOptions());
+          const options = dispatchOptions();
+          classificationInvoked = true;
+          response = await judge(enumRequest, options);
         } catch (error) {
           // Round-2 repair: a rejected judge promise must not escape as a
           // raw crash that discards the run's evidence/usage.
@@ -2836,6 +2862,20 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
           // never reissued), and exhaustion ends with an explicit
           // judge_indeterminate reason.
           const code = (error as { code?: unknown } | null)?.code;
+          if (classificationInvoked) {
+            const observed = sanitizeObservation(
+              (error as { observed?: unknown } | null)?.observed,
+            );
+            f.attemptedRecords.push({
+              trusted: false,
+              reason: `enum_judge_failed:${safeErrorCode(code)}`,
+              assessments: [],
+              metadata: {
+                kind: "classification-judgment",
+                ...(observed !== undefined ? { observed } : {}),
+              },
+            });
+          }
           if (code === "JEV_DEV_INDETERMINATE") {
             pushLog("judge-invalid", `${f.id} indeterminate over [${key}]`);
             f.judgeIndeterminate = true;
@@ -2851,18 +2891,6 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
           f.stopReason = composedRootOf(error);
           if (f.stopReason !== null) {
             runTypedStop = f.stopReason;
-            const observed = sanitizeObservation(
-              (error as { observed?: unknown } | null)?.observed,
-            );
-            f.attemptedRecords.push({
-              trusted: false,
-              reason: `enum_judge_failed:${safeErrorCode(code)}`,
-              assessments: [],
-              metadata: {
-                kind: "classification-judgment",
-                ...(observed !== undefined ? { observed } : {}),
-              },
-            });
           }
           f.judgeUnavailable = true;
           f.pendingAccept = null;
@@ -3076,7 +3104,8 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
       // pre-adverse accept simply because its last acquisition happened
       // after the only finalization pass.
       const canStillAcquire =
-        hasUnread() || (queryIdx < plan.length && searches < limits.maxSearchAttempts);
+        hasUnread() ||
+        (nextUnissuedQuery(queryIdx) < plan.length && searches < limits.maxSearchAttempts);
       for (const f of eligible) {
         if (f.terminal !== null) continue;
         if (f.req.schema.mode === "value") {

@@ -581,3 +581,137 @@ test("retry-wait cancellation retains known response facts without an observer",
     }
   }
 });
+
+test("large native deadlines retain their full wait across bounded timer chunks", { timeout: 1000 }, async (t) => {
+  const maxTimer = 0x7fffffff;
+  const candidateInput = {
+    source: { evidenceId: "e0", url: "https://fixture.invalid/license", title: "License", content: "License MIT.", byteLength: 12, origins: [] },
+    fieldMeanings: { license: "License?" }, scope: { release: "1" },
+    candidates: [{ fieldId: "license", value: "MIT", quote: "License MIT", charRange: [0, 11] }],
+    opposingContext: [], depBindings: {},
+  };
+  for (const [seam, phase] of [["judge", "header"], ["candidateJudge", "body"]]) {
+    await withManualTimers(async ({ pending, scheduled, observe }) => {
+      const caller = new AbortController(), events = [];
+      let admissions = 0, physical = 0, signal, rejectFetch, reading = false, bodyCancels = 0, releases = 0, bodyArmed;
+      const ready = new Promise((resolve) => { bodyArmed = resolve; });
+      observe(() => { if (reading) bodyArmed(); });
+      const profile = tsj.createTypesafeJudge({
+        apiKey: "k", now: () => 0, timeoutMs: maxTimer + 1,
+        reserveAttempt: () => { admissions++; }, onAttempt: (event) => events.push(event),
+        fetchLike: async (_url, init) => {
+          physical++; signal = init.signal;
+          if (phase === "header") return await new Promise((_, reject) => { rejectFetch = reject; });
+          return { status: 200, ok: true, headers: { get: () => null }, body: {
+            getReader: () => ({
+              read: () => { reading = true; return new Promise(() => {}); },
+              cancel: () => { bodyCancels++; return Promise.resolve(); },
+              releaseLock: () => { releases++; },
+            }),
+          } };
+        },
+      });
+      const work = profile[seam](seam === "judge" ? INPUT : candidateInput, { timeoutMs: maxTimer + 1, signal: caller.signal });
+      let settled = false;
+      work.then(() => { settled = true; }, () => { settled = true; });
+      try {
+        if (phase === "body") await ready;
+        t.diagnostic(`large-deadline-before ${JSON.stringify({ seam, phase, scheduled, admissions, physical, events, pending: pending.size })}`);
+        assert(scheduled.every((ms) => ms <= maxTimer), "an admitted finite deadline must never overflow a raw Node timer");
+        assert.equal(pending.size, 2);
+        const [firstHandle, firstFire] = [...pending.entries()].at(-1);
+        pending.delete(firstHandle); firstFire();
+        await Promise.resolve();
+        t.diagnostic(`large-deadline-intermediate ${JSON.stringify({ seam, phase, scheduled, admissions, physical, events, settled, aborted: signal.aborted, pending: pending.size })}`);
+        assert.equal(scheduled.at(-1), 1);
+        assert.equal(settled, false);
+        assert.equal(signal.aborted, false);
+        assert.equal(events.length, 0);
+        assert.equal(admissions, 1);
+        assert.equal(physical, 1);
+        const [lastHandle, lastFire] = [...pending.entries()].at(-1);
+        pending.delete(lastHandle); lastFire();
+        const error = await work.catch((error) => error);
+        t.diagnostic(`large-deadline-after ${JSON.stringify({ seam, phase, code: error.code, attempts: error.attempts, admissions, physical, events, aborted: signal.aborted, bodyCancels, releases, pending: pending.size })}`);
+        assert.equal(error.code, "TYPESAFE_TIMEOUT");
+        assert.equal(error.attempts, 1);
+        assert.equal(signal.aborted, true);
+        assert.equal(events.length, 1);
+        assert.equal(events[0].outcome, "TYPESAFE_TIMEOUT");
+        assert.equal(admissions, 1);
+        assert.equal(physical, 1);
+        assert.equal(pending.size, 0);
+        assert.equal(bodyCancels, phase === "body" ? 1 : 0);
+        assert.equal(releases, phase === "body" ? 1 : 0);
+      } finally {
+        caller.abort(); rejectFetch?.(new Error("owned fake fetch cleanup"));
+        await work.catch(() => {});
+      }
+    });
+  }
+});
+
+test("large retry waits preserve full admission delay and latest-chunk cancellation", { timeout: 1000 }, async (t) => {
+  const maxTimer = 0x7fffffff;
+  for (const outcome of ["complete", "cancel"]) {
+    await withManualTimers(async ({ pending, scheduled, observe }) => {
+      const caller = new AbortController(), events = [];
+      let admissions = 0, bodyCancels = 0, markWaiting;
+      const waiting = new Promise((resolve) => { markWaiting = resolve; });
+      observe((ms) => { if (ms >= maxTimer) markWaiting(); });
+      const transient = statusResponse(429, { "retry-after-ms": String(maxTimer + 1) });
+      transient.body.cancel = () => { bodyCancels++; return Promise.resolve(); };
+      const { fetchLike, calls } = makeFetch([transient, okResponse(noulAnswersFor(2))]);
+      const profile = tsj.createTypesafeJudge({
+        apiKey: "k", now: () => 0, timeoutMs: 25, maxAttempts: 2,
+        retrySettings: { maxTransientRetries: 1, maxRetryAfterMs: maxTimer + 1 },
+        reserveAttempt: () => { admissions++; }, onAttempt: (event) => events.push(event), fetchLike,
+      });
+      const work = profile.judge(INPUT, { signal: caller.signal });
+      work.catch(() => {});
+      try {
+        await waiting;
+        t.diagnostic(`large-retry-before ${JSON.stringify({ outcome, scheduled, admissions, physical: calls.length, events, pending: pending.size })}`);
+        assert.equal(scheduled.at(-1), maxTimer);
+        const [firstHandle, firstFire] = [...pending.entries()].at(-1);
+        pending.delete(firstHandle); firstFire();
+        await Promise.resolve();
+        t.diagnostic(`large-retry-intermediate ${JSON.stringify({ outcome, scheduled, admissions, physical: calls.length, events, pending: pending.size })}`);
+        assert.equal(scheduled.at(-1), 1);
+        assert.equal(admissions, 1);
+        assert.equal(calls.length, 1);
+        assert.deepEqual(events.map((event) => event.outcome), ["TYPESAFE_RATE_LIMIT"]);
+        if (outcome === "cancel") {
+          const [cancelledHandle, cancelledFire] = [...pending.entries()].at(-1);
+          caller.abort(Object.assign(new Error("synthetic composed stop"), { code: "EVAL_STOPPED", reason: "global_deadline" }));
+          const error = await work.catch((error) => error);
+          cancelledFire(); // A disposed chunk cannot re-arm or admit work.
+          t.diagnostic(`large-retry-cancel ${JSON.stringify({ code: error.code, stopReason: error.stopReason, observed: error.observed, attempts: error.attempts, admissions, physical: calls.length, events, pending: pending.size })}`);
+          assert.equal(error.code, "TYPESAFE_CANCELLED");
+          assert.equal(error.stopReason, "global_deadline");
+          assert.equal(error.attempts, 1);
+          assert.equal(error.remoteWorkUncertain, true);
+          assert.deepEqual(error.observed, { requestSha256: createHash("sha256").update(calls[0].init.body).digest("hex"), requestedModel: tsj.TYPESAFE_PINNED_MODEL, resolvedModel: null, status: 429, usage: null, elapsedMs: 0 });
+          assert.equal(pending.has(cancelledHandle), false);
+          assert.equal(admissions, 1);
+          assert.equal(calls.length, 1);
+          assert.equal(events.length, 1);
+        } else {
+          const [lastHandle, lastFire] = [...pending.entries()].at(-1);
+          pending.delete(lastHandle); lastFire();
+          const result = await work;
+          t.diagnostic(`large-retry-complete ${JSON.stringify({ result, admissions, physical: calls.length, events, pending: pending.size })}`);
+          assert.equal(result.documents.length, 2);
+          assert.equal(result[Symbol.for("leanJevAttemptMeta")].attempts, 2);
+          assert.equal(admissions, 2);
+          assert.equal(calls.length, 2);
+          assert.deepEqual(events.map((event) => event.outcome), ["TYPESAFE_RATE_LIMIT", "ok"]);
+        }
+        assert.equal(bodyCancels, 1);
+        assert.equal(pending.size, 0);
+      } finally {
+        caller.abort(); await work.catch(() => {});
+      }
+    });
+  }
+});

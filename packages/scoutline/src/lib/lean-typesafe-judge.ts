@@ -486,6 +486,46 @@ interface DispatchFailure {
   readonly uncertain: boolean;
 }
 
+/** Keep finite long waits out of Node's overflow-to-1ms timer path. */
+function armBoundedDelay(ms: number, onElapsed: () => void): () => void {
+  const maxTimer = 0x7fffffff;
+  let active = true;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const finish = (): void => {
+    if (!active) return;
+    active = false;
+    onElapsed();
+  };
+  if (!Number.isFinite(ms) || ms <= maxTimer) {
+    // Preserve native zero/fraction and existing nonfinite-computed semantics.
+    timer = setTimeout(finish, ms);
+  } else {
+    const integer = Math.trunc(ms);
+    let whole = BigInt(integer);
+    const fraction = ms - integer;
+    const maximum = BigInt(maxTimer);
+    const arm = (): void => {
+      if (!active) return;
+      const more = whole > maximum || (whole === maximum && fraction > 0);
+      timer = setTimeout(() => {
+        if (!active) return;
+        if (more) {
+          whole -= maximum;
+          arm();
+        } else {
+          finish();
+        }
+      }, more ? maxTimer : Number(whole) + fraction);
+    };
+    arm();
+  }
+  return () => {
+    if (!active) return;
+    active = false;
+    clearTimeout(timer);
+  };
+}
+
 interface DispatchInput {
   readonly url: string;
   readonly requestBody: string;
@@ -513,12 +553,12 @@ async function dispatchOnce(input: DispatchInput): Promise<{
   runSignal.addEventListener("abort", abortFromSignal, { once: true });
   let timedOut = false;
   // SINGLE timeout for the whole attempt: headers AND incremental body.
-  const timer = setTimeout(() => {
+  const cancelTimer = armBoundedDelay(Math.max(1, attemptEnd - now()), () => {
     timedOut = true;
     controller.abort();
-  }, Math.max(1, attemptEnd - now()));
+  });
   const dispose = (): void => {
-    clearTimeout(timer);
+    cancelTimer();
     runSignal.removeEventListener("abort", abortFromSignal);
   };
   const remaining = (): number => Math.max(1, attemptEnd - now());
@@ -553,7 +593,7 @@ async function dispatchOnce(input: DispatchInput): Promise<{
     });
     observeFetch(fetchPromise);
     let onHeaderAbort: (() => void) | undefined;
-    let headerTimer: ReturnType<typeof setTimeout> | undefined;
+    let cancelHeaderTimer: (() => void) | undefined;
     try {
       const response = await Promise.race([
         fetchPromise,
@@ -562,11 +602,11 @@ async function dispatchOnce(input: DispatchInput): Promise<{
           // settle the SAME timeout state the whole-attempt timer would have
           // — typed TYPESAFE_TIMEOUT (not a reclassified AbortError) and the
           // owned fetch controller aborted — before rejecting the race.
-          headerTimer = setTimeout(() => {
+          cancelHeaderTimer = armBoundedDelay(remaining(), () => {
             timedOut = true;
             controller.abort();
             reject(abortError());
-          }, remaining());
+          });
           onHeaderAbort = () => reject(abortError());
           runSignal.addEventListener("abort", onHeaderAbort, { once: true });
           controller.signal.addEventListener("abort", onHeaderAbort, { once: true });
@@ -579,7 +619,7 @@ async function dispatchOnce(input: DispatchInput): Promise<{
       // body read (single timeout spans headers and incremental reads).
       return { response, controller, dispose };
     } finally {
-      clearTimeout(headerTimer);
+      cancelHeaderTimer?.();
       if (onHeaderAbort !== undefined) {
         runSignal.removeEventListener("abort", onHeaderAbort);
         controller.signal.removeEventListener("abort", onHeaderAbort);
@@ -630,18 +670,18 @@ async function readBodyBounded(
     const chunks: Buffer[] = [];
     let totalBytes = 0;
     for (;;) {
-      let chunkTimer: ReturnType<typeof setTimeout> | undefined;
+      let cancelChunkTimer: (() => void) | undefined;
       let onChunkAbort: (() => void) | undefined;
       const read = await Promise.race([
         reader.read(),
         new Promise<never>((_, reject) => {
-          chunkTimer = setTimeout(() => reject(abortError()), Math.max(1, attemptEnd - now()));
+          cancelChunkTimer = armBoundedDelay(Math.max(1, attemptEnd - now()), () => reject(abortError()));
           onChunkAbort = () => reject(abortError());
           runSignal.addEventListener("abort", onChunkAbort, { once: true });
           if (runSignal.aborted) onChunkAbort();
         }),
       ]).finally(() => {
-        clearTimeout(chunkTimer);
+        cancelChunkTimer?.();
         if (onChunkAbort !== undefined) runSignal.removeEventListener("abort", onChunkAbort);
       });
       // Clock check BEFORE and AFTER every ready read: a buffered
@@ -840,12 +880,12 @@ function emit(onAttempt: ((event: TypesafeAttemptEvent) => void) | undefined, ev
 /** Sleep racing the caller signal; resolves false when aborted. */
 function sleepContained(ms: number, signal: AbortSignal): Promise<boolean> {
   return new Promise((resolve) => {
-    const timer = setTimeout(() => {
+    const cancelTimer = armBoundedDelay(ms, () => {
       signal.removeEventListener("abort", onAbort);
       resolve(true);
-    }, ms);
+    });
     const onAbort = (): void => {
-      clearTimeout(timer);
+      cancelTimer();
       resolve(false);
     };
     signal.addEventListener("abort", onAbort, { once: true });

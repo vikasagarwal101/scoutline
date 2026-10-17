@@ -1280,3 +1280,83 @@ test("saved dependency continuation keeps unknown prerequisites closed and compl
     assert.deepEqual(calls, []);
   }
 });
+
+
+test("round-local extractor availability resumes the actual saved dependent gap", async (t) => {
+  const shared = "Assess AvailabilityCarry 1";
+  const url = "https://fixture.invalid/availability-carry/spec";
+  const contract = { schemaVersion: 1, question: shared, scope: { product: "AvailabilityCarry", release: "1" }, requirements: {
+    license: { question: "License of AvailabilityCarry 1", required: true, schema: { type: "string" } },
+    feature: { question: "Does AvailabilityCarry 1 support export?", required: true,
+      schema: { enum: ["supported", "refuted", "disputed"] }, dependsOn: ["license"] },
+  }, limits: { maxSearchAttempts: 5, maxUniqueReads: 1, maxJudgeAttempts: 12 } };
+  async function availabilityEpisode(available, seedInput = {}) {
+    const input = freezeProvenanceInput(seedInput), before = structuredClone(input), calls = [];
+    let checkpoint;
+    const result = await runLeanInvestigation(contract, { now: () => 0,
+      seed: { ...input, identity: "availability-carry-fixed-policy-v1", capture: (state) => { checkpoint = state; } },
+      search: async (query) => { calls.push({ op: "search", query }); return query === shared ? [{ url, title: "specification" }] : []; },
+      read: async (target) => { calls.push({ op: "read", url: target }); return "AvailabilityCarry 1 License MIT. AvailabilityCarry 1 supports export."; },
+      judge: async (request) => { calls.push({ op: "judge", request: structuredClone(request) });
+        return { documents: request.documents.map((doc) => ({ evidenceId: doc.evidenceId, relevant: true, supportsClaim: true, refutesClaim: false })) }; },
+      extractorRevision: "availability-carry-extractor-v1",
+      extract: available ? async (request) => { calls.push({ op: "extract", request: structuredClone(request) });
+        return { finishReason: "stop", rawOutput: JSON.stringify({ license: { value: "MIT", quote: "License MIT" } }), usage: null, observedCost: null }; } : undefined,
+      candidateJudge: async (request) => { calls.push({ op: "candidateJudge", request: structuredClone(request) });
+        return { model: "fixture", answers: { q0s: { type: "noul", noul: 0.97 }, q0c: { type: "noul", noul: 0.01 } },
+          usage: { inputTokens: 1, outputTokens: 1 }, requestSha256: "e".repeat(64), elapsedMs: 1 }; },
+    });
+    const packet = { available, result, checkpoint, calls, inputBefore: before, inputAfter: input };
+    t.diagnostic(`roundlocal-availability ${JSON.stringify(packet)}`); // Full capture before every expectation.
+    assert.deepEqual(input, before);
+    for (const [counter, op] of [["searches", "search"], ["readAttempts", "read"], ["judgeCalls", "judge"],
+      ["extractorCalls", "extract"], ["candidateJudgeCalls", "candidateJudge"]])
+      assert.equal(result.usage[counter], calls.filter((c) => c.op === op).length);
+    return packet;
+  }
+  const first = await availabilityEpisode(false);
+  assert.equal(first.result.status, "partial");
+  assert.equal(first.result.requirements.license.reason, "no_extractor");
+  assert.equal(first.result.requirements.feature.reason, "prerequisite_unresolved:license");
+  const licenseBefore = first.checkpoint.history.findLast((h) => h.state.id === "license");
+  const featureBefore = first.checkpoint.history.findLast((h) => h.state.id === "feature");
+  assert.equal(licenseBefore.state.noExtractor, true);
+  assert.equal(licenseBefore.state.stopReason, null);
+  assert.deepEqual(featureBefore.state.terminal, { status: "unresolved", reason: "prerequisite_unresolved:license" });
+  assert.deepEqual(["noExtractor", "noSemanticJudge", "judgeUnavailable", "judgeIndeterminate"].map((key) => featureBefore.state[key]),
+    [false, false, false, false]);
+  assert.deepEqual(first.checkpoint.leads, []);
+  assert(first.result.plan.queries.every((entry) => first.checkpoint.issuedQueries.includes(entry.query)));
+  const before = structuredClone(first); freezeProvenanceInput(first);
+  const second = await availabilityEpisode(true, { evidence: first.result.evidence, history: first.checkpoint.history,
+    leads: first.checkpoint.leads, issuedQueries: first.checkpoint.issuedQueries });
+  const assertComplete = (packet) => {
+    assert.equal(packet.result.status, "complete");
+    assert.deepEqual(packet.result.data, { license: "MIT", feature: "supported" });
+  };
+  assertComplete(second);
+  const wrong = structuredClone(second); wrong.result.status = "partial"; wrong.result.data = { license: "MIT" };
+  assert.throws(() => assertComplete(wrong), { code: "ERR_ASSERTION" }, "wrong partial output cannot pass this regression");
+  assert.deepEqual(second.result.usage, { searches: 0, readAttempts: 0, readsRetained: 0, judgeCalls: 1,
+    extractorCalls: 1, extractorCacheHits: 0, candidateJudgeCalls: 1 });
+  const licenseAfter = second.checkpoint.history.findLast((h) => h.state.id === "license");
+  const featureAfter = second.checkpoint.history.findLast((h) => h.state.id === "feature");
+  assert.equal(licenseAfter.context, licenseBefore.context);
+  assert.equal(featureAfter.context, featureBefore.context);
+  const accepted = licenseAfter.state.acceptedCandidate;
+  assert(accepted !== null);
+  const proof = licenseAfter.state.trustedAccepts.find((entry) => entry.judgment.candidateId === accepted.judgment.candidateId);
+  assert(proof !== undefined);
+  const source = second.result.evidence.find((entry) => entry.evidenceId === proof.provenance.sourceId);
+  assert(source !== undefined);
+  assert.equal(proof.sourceDigest, candidateSourceDigest(source));
+  assert.deepEqual(proof.opposingIds, []);
+  const dependentJudges = second.calls.filter((call) => call.op === "judge");
+  assert.equal(dependentJudges.length, 1);
+  assert.equal(dependentJudges[0].request.fieldId, "feature");
+  assert.deepEqual(dependentJudges[0].request.depBindings, { license: { value: "MIT", evidenceId: source.evidenceId,
+    sourceDigest: candidateSourceDigest(source) } });
+  assert.deepEqual(second.checkpoint.history.slice(0, first.checkpoint.history.length), first.checkpoint.history);
+  assert.deepEqual(second.checkpoint.issuedQueries, first.checkpoint.issuedQueries);
+  assert.deepEqual(first, before);
+});

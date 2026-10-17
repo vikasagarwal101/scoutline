@@ -1123,6 +1123,11 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
         const dep = f.terminal.reason.slice("prerequisite_unresolved:".length);
         if (f.req.dependsOn.includes(dep)) restoredDependencyGaps.set(f.id, dep);
       }
+      // Availability recovery also wakes its saved dependency gaps. Capture
+      // the original stop qualification before the existing reset clears it.
+      if (roundLocal && f.stopReason === null && runTypedStop === null) {
+        reopenedContraryFields.add(f.id);
+      }
       if (exact === undefined || roundLocal || (seed.leads?.length ?? 0) > 0) {
         f.terminal = null;
         f.lastJudgedKey = null;

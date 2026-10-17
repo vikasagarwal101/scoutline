@@ -274,6 +274,7 @@ export interface LeanSeed {
   readonly leads?: readonly {
     readonly url: string;
     readonly title: string;
+    readonly origins?: readonly string[];
     readonly priorAttemptUrls?: readonly string[];
   }[];
   readonly issuedQueries?: readonly string[];
@@ -1025,6 +1026,17 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
       originsByUrl.set(rec.url, new Set(rec.origins));
     }
     for (const lead of seed.leads ?? []) {
+      // Carried lineage is metadata, never imported search/proof coverage.
+      const carrier = lead.origins;
+      const carriedOrigins = Array.isArray(carrier) ? [...carrier] : [];
+      if (
+        carriedOrigins.length > 0 &&
+        carriedOrigins.every((origin) => typeof origin === "string")
+      ) {
+        const origins = originsByUrl.get(lead.url) ?? new Set<string>();
+        for (const origin of carriedOrigins) origins.add(origin);
+        originsByUrl.set(lead.url, origins);
+      }
       if (queuedUrls.has(lead.url)) continue;
       queuedUrls.add(lead.url);
       queue.push({ url: lead.url, title: lead.title });
@@ -3546,6 +3558,20 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
             .map((l) => ({ ...l, origins: [...(originsByUrl.get(l.url) ?? [])] })),
         });
       }
+      // Preserve every representation's lineage before adding current URL discoveries.
+      const returnedOriginsByUrl = new Map<string, Set<string>>();
+      for (const record of evidence) {
+        returnedOriginsByUrl.set(
+          record.url,
+          new Set([...(returnedOriginsByUrl.get(record.url) ?? []), ...record.origins]),
+        );
+      }
+      for (const [url, origins] of originsByUrl) {
+        returnedOriginsByUrl.set(
+          url,
+          new Set([...(returnedOriginsByUrl.get(url) ?? []), ...origins]),
+        );
+      }
       return {
         schemaVersion: 1,
         // Unified completion (Rev3): complete iff the MANDATORY set is
@@ -3563,7 +3589,7 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
         // judgments and early retention hooks saw unchanged.
         evidence: evidence.map((record) => ({
           ...record,
-          origins: [...(originsByUrl.get(record.url) ?? record.origins)],
+          origins: [...(returnedOriginsByUrl.get(record.url) ?? record.origins)],
         })),
         acquisitionLog: log,
         usage: {

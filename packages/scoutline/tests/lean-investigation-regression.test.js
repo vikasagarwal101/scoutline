@@ -557,7 +557,10 @@ async function assertUniqueSeedContinuation(semantic, reuseIssued) {
   assert.equal(second.result.usage.searches, second.calls.search.length);
   for (const url of [ROUND_LEAD_A, ROUND_LEAD_C]) {
     assert.deepEqual(second.checkpoint.leads.find((lead) => lead.url === url).origins,
-      second.calls.search, "deduplication must preserve every successful query origin");
+      [...new Set([
+        ...(first.checkpoint.leads.find((lead) => lead.url === url)?.origins ?? []),
+        ...second.calls.search,
+      ])], "deduplication must preserve every successful query origin");
   }
   assert.deepEqual(second.result.data, {});
   assert.equal(second.result.requirements.csv.status, "unresolved");
@@ -772,4 +775,228 @@ test("returned provenance preserves the actually judged custom descriptor and na
     judgeCalls: 0, extractorCalls: 1, extractorCacheHits: 0, candidateJudgeCalls: 1 });
   assert.deepEqual(calls.filter(([kind]) => kind === "search").map(([, query]) => query),
     [shared, question, `${question} contrary evidence refuted`]);
+});
+
+// Round5: carried discovery metadata is separate from query/proof authority.
+const LINEAGE_SHARED = "Trace LineageApp 5 evidence";
+const LINEAGE_QUESTION = "Does LineageApp 5 support CSV?";
+const LINEAGE_A = "https://fixture.invalid/round5/unread-a";
+const LINEAGE_B = "https://fixture.invalid/round5/spent-b";
+async function runSeedLineage({ semantic = true, value = false, seedInput = {}, discover = () => [] } = {}) {
+  const input = freezeProvenanceInput(seedInput), before = structuredClone(input);
+  const calls = { search: [], read: [], enum: [], extract: [], candidate: [] };
+  const hooks = [], hookSnapshots = [], judged = [], wires = [], hitInputs = [];
+  let checkpoint;
+  const question = value ? "License of LineageApp 5" : LINEAGE_QUESTION;
+  const result = await runLeanInvestigation({
+    schemaVersion: 1, question: LINEAGE_SHARED, scope: { release: "5" },
+    requirements: value ? { license: { question, schema: { type: "string" } } }
+      : { csv: { question, schema: { enum: ["supported", "refuted", "disputed"] } } },
+    limits: { maxUniqueReads: 1, maxSearchAttempts: 3, readBatchSize: 1 },
+  }, {
+    now: () => 0,
+    seed: { ...input, capture: (state) => { checkpoint = state; }, retainEvidence: async (record) => {
+      hooks.push(record); hookSnapshots.push(structuredClone(record)); freezeProvenanceInput(record);
+    } },
+    search: async (query) => {
+      calls.search.push(query);
+      const hits = freezeProvenanceInput(discover(query));
+      hitInputs.push({ hits, before: structuredClone(hits) });
+      return hits;
+    },
+    read: async (url) => { calls.read.push(url); return `LineageApp 5 supports CSV. License MIT. ${url}`; },
+    judge: semantic ? async (request) => {
+      calls.enum.push(structuredClone(request));
+      return { documents: request.documents.map((doc) => verdict(doc.evidenceId)) };
+    } : null,
+    extract: async (request) => {
+      calls.extract.push(structuredClone(request));
+      return { finishReason: "stop", rawOutput: JSON.stringify({ license: { value: "MIT", quote: "License MIT" } }), usage: null, observedCost: null };
+    },
+    candidateJudge: async (request) => {
+      calls.candidate.push(request.source.evidenceId); judged.push(structuredClone(request));
+      wires.push(buildCandidateJudgeRequest(request, "fixture"));
+      return { model: "fixture", answers: { q0s: { type: "noul", noul: 0.97 }, q0c: { type: "noul", noul: 0.01 } },
+        usage: { inputTokens: 1, outputTokens: 1 }, requestSha256: "a".repeat(64), elapsedMs: 1 };
+    },
+  });
+  assert.deepEqual(input, before, "caller seed records and arrays remain unchanged");
+  hitInputs.forEach(({ hits, before }) => assert.deepEqual(hits, before));
+  hooks.forEach((record, i) => assert.deepEqual(record, hookSnapshots[i], "initial hook snapshots remain unchanged"));
+  assert.equal(result.usage.searches, calls.search.length);
+  assert.equal(result.usage.readAttempts, calls.read.length);
+  assert.equal(result.usage.judgeCalls, calls.enum.length);
+  assert.equal(result.usage.extractorCalls, calls.extract.length);
+  assert.equal(result.usage.candidateJudgeCalls, calls.candidate.length);
+  return { result, checkpoint, calls, hooks, hookSnapshots, judged, wires, input, question };
+}
+async function assertUnreadSeedRoundtrip(semantic) {
+  const first = await runSeedLineage({ semantic,
+    seedInput: { leads: [{ url: LINEAGE_B, title: "Spend one read" }] },
+    discover: () => [{ url: LINEAGE_A, title: "Actual unread lead" }],
+  });
+  const queries = [LINEAGE_SHARED, LINEAGE_QUESTION, `${LINEAGE_QUESTION} contrary evidence refuted`];
+  assert.deepEqual(first.calls.read, [LINEAGE_B]);
+  assert.deepEqual(first.calls.search, queries);
+  assert.equal(first.checkpoint.leads.length, 1);
+  assert.deepEqual(first.checkpoint.leads[0].origins, queries);
+  assert.deepEqual(first.checkpoint.history, []);
+  const firstBefore = structuredClone(first);
+  freezeProvenanceInput(first);
+  const seed = { evidence: first.result.evidence, leads: first.checkpoint.leads, issuedQueries: first.checkpoint.issuedQueries };
+  assert.equal(Object.hasOwn(seed, "history"), false);
+  assert.equal(Object.hasOwn(seed, "proofs"), false);
+  const second = await runSeedLineage({ semantic, seedInput: seed });
+  assert.deepEqual(second.calls.read, [LINEAGE_A]);
+  assert.deepEqual(second.calls.search, []);
+  assert.equal(second.result.usage.readsRetained, 1);
+  assert.deepEqual(second.result.evidence.map((record) => record.url), [LINEAGE_B, LINEAGE_A]);
+  assert.deepEqual(second.result.evidence[1].origins, queries);
+  assert.deepEqual(second.hookSnapshots[0].origins, queries, "carried metadata belongs to the newly read record from admission");
+  assert.deepEqual(second.result.evidence[0], first.result.evidence[0]);
+  assert.deepEqual(first, firstBefore, "the whole earlier result/checkpoint stays immutable");
+  assert.notEqual(second.result.evidence[1], second.hooks[0]);
+  assert.notEqual(second.result.evidence[1].origins, second.hooks[0].origins);
+}
+test("round5 unread seed checkpoint semantic", async () => {
+  await assertUnreadSeedRoundtrip(true);
+});
+
+function lineageSeedRecord(id, url, origins) {
+  const content = `${id}: LineageApp 5 supports CSV. License MIT.`;
+  return { evidenceId: id, url, title: `Title ${id}`, content,
+    byteLength: Buffer.byteLength(content), origins };
+}
+async function assertSeededURLLineage(semantic) {
+  for (const kind of ["same", "unique", "rediscovered"]) {
+    const records = [lineageSeedRecord("seed-a", LINEAGE_A, ["caller-A", "common"]),
+      lineageSeedRecord("seed-b", kind === "unique" ? LINEAGE_B : LINEAGE_A, ["common", "caller-B"])];
+    const original = structuredClone(records);
+    const run = await runSeedLineage({ semantic, seedInput: { evidence: records },
+      discover: () => kind === "rediscovered" ? [{ url: LINEAGE_A, title: "Rediscovered" }] : [],
+    });
+    const queries = [LINEAGE_SHARED, LINEAGE_QUESTION, `${LINEAGE_QUESTION} contrary evidence refuted`];
+    const expected = kind === "unique" ? original.map((record) => record.origins)
+      : [0, 1].map(() => ["caller-A", "common", "caller-B", ...(kind === "rediscovered" ? queries : [])]);
+    assert.deepEqual(run.result.evidence.map((record) => record.origins), expected);
+    assert.deepEqual(records, original);
+    assert.equal(run.result.evidence.length, 2);
+    run.result.evidence.forEach((record, i) => {
+      const { origins: _returned, ...stable } = record;
+      const { origins: _supplied, ...supplied } = original[i];
+      assert.deepEqual(stable, supplied, "every representation and stable field is retained in order");
+      assert.notEqual(record, records[i]);
+      assert.notEqual(record.origins, records[i].origins);
+    });
+    assert.notEqual(run.result.evidence[0].origins, run.result.evidence[1].origins);
+    assert.deepEqual(run.calls.read, []);
+    assert.deepEqual(run.calls.search, queries);
+    assert.deepEqual(run.hooks, []);
+    assert.equal(run.result.usage.readsRetained, 0);
+    assert.equal(run.result.usage.extractorCalls, 0);
+    assert.equal(run.result.usage.candidateJudgeCalls, 0);
+    assert.equal(run.calls.enum.length, semantic ? 1 : 0);
+    if (semantic) assert.deepEqual(run.calls.enum[0].documents, original.map(({ origins, byteLength, ...doc }) => doc));
+  }
+}
+test("round5 same URL seed lineage semantic", async () => {
+  await assertSeededURLLineage(true);
+});
+
+test("round5 unread seed checkpoint deterministic-only", async () => {
+  await assertUnreadSeedRoundtrip(false);
+});
+test("round5 same URL seed lineage deterministic-only", async () => {
+  await assertSeededURLLineage(false);
+});
+test("round5 optional lead metadata stays separate from coverage and preserves ownership", async () => {
+  const cases = [{ name: "omitted" }, { name: "empty", origins: [] },
+    { name: "string", origins: "not an array" }, { name: "null", origins: null },
+    { name: "mixed", origins: ["discard the whole carrier", 7] },
+    { name: "sparse", origins: new Array(1) }];
+  for (const semantic of [true, false]) {
+    for (const row of cases) {
+      const lead = { url: LINEAGE_A, title: row.name,
+        ...(Object.hasOwn(row, "origins") ? { origins: row.origins } : {}) };
+      const run = await runSeedLineage({ semantic, seedInput: { leads: [lead] } });
+      assert.deepEqual(run.result.evidence[0].origins, [], row.name);
+      assert.deepEqual(run.hookSnapshots[0].origins, [], row.name);
+      assert.deepEqual(run.calls.read, [LINEAGE_A]);
+      assert.equal(run.result.usage.readsRetained, 1);
+      assert.equal(run.calls.search.length, 3, "metadata cannot settle or skip a query");
+      assert.notEqual(run.result.evidence[0], run.hooks[0]);
+      assert.notEqual(run.result.evidence[0].origins, run.hooks[0].origins);
+    }
+    const contrary = `${LINEAGE_QUESTION} contrary evidence refuted`;
+    const leads = [{ url: LINEAGE_A, title: "first title", origins: ["caller-A", LINEAGE_SHARED] },
+      { url: LINEAGE_A, title: "ignored later title", origins: [LINEAGE_SHARED, "caller-B", contrary] }];
+    const run = await runSeedLineage({ semantic, seedInput: { leads } });
+    const expected = ["caller-A", LINEAGE_SHARED, "caller-B", contrary];
+    assert.deepEqual(run.result.evidence[0].origins, expected);
+    assert.deepEqual(run.hookSnapshots[0].origins, expected, "duplicate lead metadata merges before its queue skip");
+    assert.equal(run.result.evidence[0].title, "first title");
+    assert.deepEqual(run.calls.read, [LINEAGE_A]);
+    assert.equal(run.hooks.length, 1);
+    assert.deepEqual(run.calls.search, [LINEAGE_SHARED, LINEAGE_QUESTION, contrary]);
+    assert.deepEqual(run.checkpoint.issuedQueries, run.calls.search, "only actual successful calls establish coverage");
+    assert.notEqual(run.result.evidence[0].origins, leads[0].origins);
+    assert.notEqual(run.result.evidence[0].origins, leads[1].origins);
+  }
+});
+test("round5 custom descriptors retain their actual metadata and native acceptance basis", async () => {
+  const carried = ["prior discovery"];
+  const newlyRead = await runSeedLineage({ value: true,
+    seedInput: { leads: [{ url: LINEAGE_A, title: "Carried license", origins: carried }], identity: "round5-new-record" },
+    discover: () => [{ url: LINEAGE_A, title: "Rediscovered license" }],
+  });
+  const queries = [LINEAGE_SHARED, newlyRead.question, `${newlyRead.question} contrary evidence refuted`];
+  assert.equal(newlyRead.result.status, "complete");
+  assert.deepEqual(newlyRead.result.data, { license: "MIT" });
+  assert.deepEqual(newlyRead.calls.read, [LINEAGE_A]);
+  assert.deepEqual(newlyRead.calls.search, queries);
+  assert.equal(newlyRead.calls.extract.length, 1);
+  assert.equal(newlyRead.judged.length, 1);
+  assert.deepEqual(newlyRead.hookSnapshots[0].origins, carried);
+  assert.deepEqual(newlyRead.judged[0].source, newlyRead.hookSnapshots[0], "the first custom assessment receives the carried metadata");
+  assert.deepEqual(newlyRead.result.evidence[0].origins, [...carried, ...queries]);
+  assert.notEqual(newlyRead.hooks[0].origins, carried);
+  assert.notEqual(newlyRead.result.evidence[0].origins, newlyRead.hooks[0].origins);
+  assert.deepEqual(newlyRead.checkpoint.history.map((row) => row.context),
+    [JSON.stringify([["e1", candidateSourceDigest(newlyRead.hookSnapshots[0])]])]);
+  const records = [lineageSeedRecord("value-a", LINEAGE_A, ["caller-A", "common"]),
+    lineageSeedRecord("value-b", LINEAGE_A, ["common", "caller-B"])];
+  const original = structuredClone(records);
+  const seeded = await runSeedLineage({ value: true, seedInput: { evidence: records },
+    discover: () => [{ url: LINEAGE_A, title: "Rediscovered" }],
+  });
+  assert.equal(seeded.result.status, "complete");
+  assert.deepEqual(seeded.result.data, { license: "MIT" });
+  assert.deepEqual(seeded.calls.read, []);
+  assert.deepEqual(seeded.hooks, []);
+  assert.equal(seeded.calls.extract.length, 2);
+  assert.equal(seeded.judged.length, 2);
+  assert.equal(seeded.calls.enum.length, 0);
+  assert.deepEqual(records, original);
+  assert.deepEqual(seeded.result.evidence.map((record) => record.origins),
+    [0, 1].map(() => ["caller-A", "common", "caller-B", ...queries]));
+  for (const run of [newlyRead, seeded]) {
+    const ids = [];
+    run.judged.forEach((request, i) => {
+      const source = run === seeded ? original.find((row) => row.evidenceId === request.source.evidenceId) : run.hookSnapshots[0];
+      const opposing = run === seeded ? original.filter((row) => row.evidenceId !== source.evidenceId) : [];
+      const quote = "License MIT", start = source.content.indexOf(quote);
+      assert.deepEqual(request, { source, fieldMeanings: { license: run.question }, scope: { release: "5" },
+        candidates: [{ fieldId: "license", value: "MIT", quote, charRange: [start, start + quote.length] }],
+        opposingContext: opposing, depBindings: {} }, "the full actual descriptor is never relabeled by final aggregation");
+      const finalRequest = { ...request,
+        source: run.result.evidence.find((row) => row.evidenceId === source.evidenceId),
+        opposingContext: run.result.evidence.filter((row) => row.evidenceId !== source.evidenceId) };
+      assert.notDeepEqual(finalRequest, request);
+      assert.equal(buildCandidateJudgeRequest(finalRequest, "fixture"), run.wires[i]);
+      ids.push(candidateIdentity(source, candidateSourceDigest(source), "license", "MIT", quote,
+        [start, start + quote.length], { fieldMeaning: run.question, scope: { release: "5" }, opposingContext: opposing, depBindings: {} }));
+    });
+    assert.ok(ids.includes(run.result.requirements.license.judgment.candidateId));
+    assert.equal(run.result.usage.extractorCacheHits, 0);
+  }
 });

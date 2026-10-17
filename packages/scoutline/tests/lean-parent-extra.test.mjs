@@ -24,6 +24,99 @@ function setup(fetch, extra = {}) {
   return { o, deps: createLeanAcquisitionDeps(o) };
 }
 
+test("PR287 R1: body cap rejects nonfinite and negative configuration before acquisition", () => {
+  let calls = 0, reservations = 0;
+  const fetch = async () => { calls++; return json({ results: [] }); };
+  for (const maxResponseBytes of [NaN, Infinity, -1]) {
+    assert.throws(() => setup(fetch, { maxResponseBytes, reservePhysicalAttempt() { reservations++; } }),
+      (error) => error.code === "VALIDATION_ERROR");
+  }
+  for (const maxResponseBytes of [0, 0.5, Number.MAX_VALUE]) {
+    assert.doesNotThrow(() => setup(fetch, { maxResponseBytes }));
+  }
+  assert.equal(calls, 0);
+  assert.equal(reservations, 0);
+});
+
+test("PR287 R2: abort during consume emission refuses before external reservation", async () => {
+  const controller = new AbortController();
+  let consumed = 0, reservations = 0, calls = 0;
+  const { deps } = setup(async () => { calls++; return json({ results: [] }); }, {
+    consume: { record: async () => { consumed++; controller.abort(); } },
+    reservePhysicalAttempt() { reservations++; },
+  });
+  await assert.rejects(() => deps.search("q", { signal: controller.signal, timeoutMs: 1000 }),
+    (error) => error.code === "TIMEOUT_ERROR" && error.durationMs === 0);
+  assert.equal(consumed, 1);
+  assert.equal(reservations, 0);
+  assert.equal(calls, 0);
+  assert.equal(deps.physicalLedger.attempts, 0);
+  assert.deepEqual(deps.physicalLedger.perAttempt.map((row) => row.outcome), ["not-started"]);
+});
+
+test("PR287 R3: retry above local ceiling cannot spend an external reservation", async () => {
+  let reservations = 0, calls = 0;
+  const { deps } = setup(async () => { calls++; return json({}, 429); }, {
+    retryPolicy: { ...noRetry, maxRetries: 1 },
+    maxPhysicalAttempts: 1,
+    reservePhysicalAttempt() { reservations++; },
+  });
+  await assert.rejects(() => deps.search("q"), (error) => error.code === "TIMEOUT_ERROR" && error.durationMs === 0);
+  assert.equal(reservations, 1);
+  assert.equal(calls, 1);
+  assert.equal(deps.physicalLedger.attempts, 1);
+  assert.equal(deps.physicalLedger.reservationsRefused, 1);
+  assert.deepEqual(deps.physicalLedger.perAttempt.map((row) => row.outcome), ["failed", "refused"]);
+});
+
+test("PR287 R4: cancellation uncertainty belongs only to the failed physical attempt", async () => {
+  let calls = 0, reservations = 0, cancels = 0, writes = 0;
+  const { deps } = setup(async () => {
+    calls++;
+    if (calls > 1) return json({ results: [] });
+    return new Response(new ReadableStream({
+      start(c) { c.enqueue(new TextEncoder().encode(" ".repeat(65))); },
+      cancel() { cancels++; return Promise.reject(new Error("synthetic cancellation unconfirmed")); },
+    }));
+  }, {
+    maxResponseBytes: 64,
+    retryPolicy: { ...noRetry, maxRetries: 1 },
+    reservePhysicalAttempt() { reservations++; },
+    cache: { get: async () => null, set: async () => { writes++; } },
+  });
+  assert.deepEqual(await deps.search("q"), []);
+  assert.equal(calls, 2);
+  assert.equal(reservations, 2);
+  assert.equal(cancels, 1);
+  assert.equal(writes, 1);
+  assert.equal(deps.physicalLedger.attempts, 2);
+  assert.deepEqual(deps.physicalLedger.perAttempt.map((row) => row.outcome), ["unknown", "complete"]);
+});
+
+test("PR287 R5: actual reader validation precedes identity and optional cache probing", async () => {
+  let identities = 0, gets = 0, calls = 0, reservations = 0;
+  const { deps } = setup(async () => { calls++; return json({}); }, {
+    descriptorFactory: (_id, transport) => {
+      const base = createTavilyDescriptor({ transport });
+      return { ...base, create(ctx) {
+        const adapter = base.create(ctx);
+        return { ...adapter, reader: { ...adapter.reader, cacheIdentity(request) {
+          identities++;
+          return adapter.reader.cacheIdentity(request);
+        } } };
+      } };
+    },
+    cache: { get: async () => { gets++; return null; }, set: async () => {} },
+    reservePhysicalAttempt() { reservations++; },
+  });
+  await assert.rejects(() => deps.read("not-a-url"), (error) => error.code === "VALIDATION_ERROR");
+  assert.equal(identities, 0);
+  assert.equal(gets, 0);
+  assert.equal(calls, 0);
+  assert.equal(reservations, 0);
+  assert.equal(deps.physicalLedger.attempts, 0);
+});
+
 test("missing factory rejects before any native dispatch with explicit bounded-stage error", async () => {
   let calls = 0;
   const { o } = setup(async () => {

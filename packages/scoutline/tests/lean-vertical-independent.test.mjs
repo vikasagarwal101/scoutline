@@ -304,6 +304,8 @@ test('read provenance is from actual normalized Reader serve, never search disco
 test('fallback shares physical reservation with failed preferred Provider and cannot reset budget', async () => {
   let calls = 0;
   let reservations = 0;
+  let reservationChecks = 0;
+  const requestedIds = [];
   const env = { TAVILY_API_KEY: 'offline-independent-key', EXA_API_KEY: 'offline-independent-exa', TAVILY_TIMEOUT: '1000', EXA_TIMEOUT: '1000' };
   const transports = {
     tavily: { env, fetch: async () => { calls++; return json({}, 401); } },
@@ -311,14 +313,21 @@ test('fallback shares physical reservation with failed preferred Provider and ca
   };
   const descriptors = [createTavilyDescriptor({ transport: transports.tavily }), createExaDescriptor({ transport: transports.exa })];
   const reservePhysicalAttempt = () => {
+    reservationChecks++;
     if (reservations >= 1) throw Object.assign(new Error('physical limit'), { code: 'ACQUISITION_LIMIT' });
     reservations++;
   };
   await assert.rejects(() => executeWithFallback({ capabilityId: 'search', commandLabel: 'search', effectiveProvider: 'tavily', descriptors, env, fallbackEnabled: true, writeStderr: () => {} }, async descriptor => {
-    const deps = acquisition({ ...options(transports.tavily.fetch), transports, env, searchDescriptor: descriptor, readerDescriptor: descriptors[0], reservePhysicalAttempt });
+    const deps = acquisition({ ...options(transports.tavily.fetch), transports, env, descriptorFactory: (id, transport) => {
+      requestedIds.push(id);
+      return id === 'tavily' ? createTavilyDescriptor({ transport }) : createExaDescriptor({ transport });
+    }, searchDescriptor: descriptor, readerDescriptor: descriptors[0], reservePhysicalAttempt });
     return deps.search('ExampleApp', { signal: new AbortController().signal, timeoutMs: 1000 });
   }));
   assert.equal(calls, 1, 'failed preferred HTTP consumes slot; fallback cannot reset it');
+  assert.deepEqual(requestedIds, ['tavily', 'exa']);
+  assert.equal(reservationChecks, 2);
+  assert.equal(reservations, 1);
 });
 
 test('engine resource stop is partial with explicit reasons and no out-of-cap acquisition', async () => {

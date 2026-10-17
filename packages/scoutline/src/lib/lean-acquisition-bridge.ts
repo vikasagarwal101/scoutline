@@ -55,7 +55,7 @@ import {
 } from "./execution.js";
 import { buildProviderCacheKey, type ResponseCache } from "./cache.js";
 import type { ConsumptionSink } from "./consumption.js";
-import { TimeoutError } from "./errors.js";
+import { TimeoutError, ValidationError } from "./errors.js";
 
 /** Per-read serve provenance, recorded from the serve itself. */
 export interface LeanReadProvenance {
@@ -400,6 +400,15 @@ function wrapFetchForOperation(original: OriginalFetch, state: OperationState, n
       throw new TimeoutError(0, "Acquisition remaining operation deadline expired before native dispatch");
     }
 
+    const runSignal = state.runSignal;
+    const callerAborted = (): boolean =>
+      (runSignal as { aborted?: boolean } | undefined)?.aborted === true;
+    const clientSignal = init?.signal;
+    if (callerAborted() || (isAbortSignal(clientSignal) && clientSignal.aborted)) {
+      state.recordNotStarted(path);
+      throw new TimeoutError(0, "Tavily request was aborted before dispatch");
+    }
+
     // Admission first. A refusal is recorded and thrown — never a
     // dispatched attempt, never zero-work certification.
     try {
@@ -409,10 +418,6 @@ function wrapFetchForOperation(original: OriginalFetch, state: OperationState, n
       throw error;
     }
 
-    const runSignal = state.runSignal;
-    const callerAborted = (): boolean =>
-      (runSignal as { aborted?: boolean } | undefined)?.aborted === true;
-    const clientSignal = init?.signal;
     if (runSignal?.aborted === true || (isAbortSignal(clientSignal) && clientSignal.aborted)) {
       // Pre-aborted: the fetch was never started — a refusal-shaped
       // fact, NOT a dispatched attempt (attempts count native fetches).
@@ -634,6 +639,9 @@ export function createLeanAcquisitionDeps(
   let reservationsRefused = 0;
   let physicalAttempts = 0;
   const cap = options.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
+  if (!Number.isFinite(cap) || cap < 0) {
+    throw new ValidationError("maxResponseBytes must be finite and nonnegative");
+  }
   const notify = (): void => {
     options.onPhysicalLedger?.(ledgerSnapshot());
   };
@@ -646,6 +654,17 @@ export function createLeanAcquisitionDeps(
     perAttempt: records.map((r) => Object.freeze({ ...r })),
   });
   const reserve = (): void => {
+    if (
+      options.maxPhysicalAttempts !== undefined &&
+      physicalAttempts + 1 > options.maxPhysicalAttempts
+    ) {
+      reservationsRefused += 1;
+      notify();
+      throw new TimeoutError(
+        0,
+        `Acquisition exceeded the ${options.maxPhysicalAttempts}-attempt physical HTTP ceiling`,
+      );
+    }
     try {
       options.reservePhysicalAttempt?.();
     } catch (error) {
@@ -656,17 +675,6 @@ export function createLeanAcquisitionDeps(
       throw error;
     }
     physicalAttempts += 1;
-    if (
-      options.maxPhysicalAttempts !== undefined &&
-      physicalAttempts > options.maxPhysicalAttempts
-    ) {
-      reservationsRefused += 1;
-      notify();
-      throw new TimeoutError(
-        0,
-        `Acquisition exceeded the ${options.maxPhysicalAttempts}-attempt physical HTTP ceiling`,
-      );
-    }
   };
 
   const buildState = (
@@ -693,6 +701,7 @@ export function createLeanAcquisitionDeps(
         notify();
       },
       begin: (path: string): void => {
+        state.cancellationUnconfirmed = false;
         records.push({ provider: providerId, path, outcome: "unknown" });
         entry = { index: records.length - 1 };
       },
@@ -852,6 +861,7 @@ export function createLeanAcquisitionDeps(
       const operation = staged.capability as Parameters<typeof executeReaderOperation>[0];
       const operationDeps = executionFor(staged.state);
       assertOperationActive(staged.state);
+      operation.validate({ url });
       // Serve-following provenance (property 4, current-mechanism
       // review): the executor's OWN cache reads (normalized key and
       // legacy candidates) are observed through a pass-through wrapper;

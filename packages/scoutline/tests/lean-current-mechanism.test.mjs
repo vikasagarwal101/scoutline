@@ -85,34 +85,85 @@ test("malformed JSON body is a failed physical outcome not complete", async () =
   assert.equal(deps.physicalLedger.perAttempt[0].outcome, "failed");
 });
 
-test("body arriving beyond disposal grace is cancelled eventually after local rejection", async () => {
+test("body arriving beyond disposal grace is cancelled eventually after local rejection", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 1000 });
   let resolveHeaders;
+  let markEntered;
+  let calls = 0;
   let cancelled = false;
-  const deps = createLeanAcquisitionDeps(
-    opts({ env, fetch: () => new Promise((r) => (resolveHeaders = r)) }),
-  );
+  let released = false;
+  const order = [];
+  const entered = new Promise((resolve) => { markEntered = resolve; });
   const signal = new AbortController();
+  const acquisitionOptions = opts({
+    env,
+    fetch: () => {
+      calls++;
+      order.push("fetch-entered");
+      return new Promise((resolve) => {
+        resolveHeaders = resolve;
+        markEntered();
+      });
+    },
+  });
+  const deps = createLeanAcquisitionDeps(acquisitionOptions);
   const pending = deps.search("q", { signal: signal.signal, timeoutMs: 5 });
-  setTimeout(() => signal.abort(), 1);
-  await assert.rejects(() => pending);
-  resolveHeaders(
-    new Response(
-      new ReadableStream({
-        start(c) {
-          c.enqueue(new TextEncoder().encode('{"results":['));
-        },
-        cancel() {
-          cancelled = true;
-        },
-      }),
-    ),
+  const settled = pending.then(
+    (value) => { order.push("fulfilled"); return { status: "fulfilled", value }; },
+    (error) => { order.push("rejected"); return { status: "rejected", error }; },
   );
-  await new Promise((r) => setImmediate(r));
-  assert.equal(
-    cancelled,
-    true,
-    "lost-race promise must retain async late disposal after 25ms grace",
-  );
+  try {
+    const boundary = await Promise.race([
+      entered.then(() => "fetch-entered"),
+      settled.then(() => "operation-settled-before-entry"),
+    ]);
+    const early = boundary === "operation-settled-before-entry" ? await settled : undefined;
+    t.diagnostic(`late-body-entry ${JSON.stringify({
+      boundary, calls, resolverType: typeof resolveHeaders, ledger: deps.physicalLedger, order: [...order],
+      originalError: early?.error && { name: early.error.name, code: early.error.code, message: early.error.message, help: early.error.help },
+    })}`);
+    assert.equal(boundary, "fetch-entered", "dispatched fake fetch must precede cancellation");
+    assert.equal(calls, 1);
+    assert.equal(typeof resolveHeaders, "function");
+    assert.equal(deps.physicalLedger.attempts, 1);
+    order.push("controlled-abort");
+    signal.abort();
+    const outcome = await settled;
+    t.diagnostic(`late-body-rejection ${JSON.stringify({
+      status: outcome.status, calls, ledger: deps.physicalLedger, order: [...order],
+      originalError: outcome.error && { name: outcome.error.name, code: outcome.error.code, message: outcome.error.message, help: outcome.error.help },
+    })}`);
+    assert.equal(outcome.status, "rejected");
+    assert(outcome.error instanceof Error);
+    assert.equal(outcome.error.code, "TIMEOUT_ERROR");
+    assert.equal(deps.physicalLedger.attempts, 1);
+    released = true;
+    order.push("late-headers-released-after-rejection");
+    resolveHeaders(
+      new Response(
+        new ReadableStream({
+          start(c) {
+            c.enqueue(new TextEncoder().encode('{"results":['));
+          },
+          cancel() {
+            cancelled = true;
+            order.push("late-body-cancelled");
+          },
+        }),
+      ),
+    );
+    await new Promise((r) => setImmediate(r));
+    t.diagnostic(`late-body-final ${JSON.stringify({ cancelled, calls, ledger: deps.physicalLedger, order: [...order] })}`);
+    assert.equal(
+      cancelled,
+      true,
+      "lost-race promise must retain async late disposal after 25ms grace",
+    );
+  } finally {
+    signal.abort();
+    if (!released && typeof resolveHeaders === "function") resolveHeaders(json({ results: [] }));
+    await settled;
+  }
 });
 
 test("overlapping no-factory stages fail closed or retain each operation signal and budget", async () => {

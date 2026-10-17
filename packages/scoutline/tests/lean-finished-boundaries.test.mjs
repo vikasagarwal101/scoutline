@@ -105,7 +105,7 @@ test("overlapping no-factory bridge calls cannot run A with B signal or cross-di
   const transport = {
     env,
     fetch: async (_u, i) => {
-      observed.push(i.signal);
+      observed.push({ signal: i.signal, aborted: i.signal.aborted });
       return json({ results: [] });
     },
   };
@@ -172,6 +172,7 @@ test("overlapping no-factory bridge calls cannot run A with B signal or cross-di
   await b;
   assert.equal(aPassed, true, "independent A must not inherit B abort");
   assert.equal(observed.length, 1);
+  assert.equal(observed[0].aborted, false, "native dispatch must receive an active signal");
   assert.equal(first.physicalLedger.attempts, 1);
   assert.equal(second.physicalLedger.attempts, 0);
 });

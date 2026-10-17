@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { runLeanInvestigation, LEAN_LIMIT_CEILINGS } from "../dist/lib/lean-investigation.js";
+import { buildCandidateJudgeRequest, candidateIdentity, candidateSourceDigest } from "../dist/lib/lean-candidates.js";
 
 // Offline normalized proof inputs, not a production Jev wire protocol.
 // The engine is in-memory: every run owns fresh fixtures, with no config/store reads.
@@ -590,6 +591,8 @@ for (const semantic of [true, false]) {
     const first = await runSeedLeadRound({ semantic, first: true, retain: true, maxSearches: 1 });
     assert.deepEqual(first.result.evidence.map((doc) => doc.url), [ROUND_LEAD_A]);
     assert.deepEqual(first.checkpoint.leads.map((lead) => lead.url), [ROUND_LEAD_B]);
+    const firstSnapshot = structuredClone(first.result);
+    freezeProvenanceInput(first.result);
     const second = await runSeedLeadRound({ semantic, retain: true, maxReads: 3, seedInput: {
       evidence: first.result.evidence, leads: first.checkpoint.leads,
       issuedQueries: first.checkpoint.issuedQueries,
@@ -599,10 +602,174 @@ for (const semantic of [true, false]) {
     assert.equal(second.result.usage.readAttempts, 2);
     assert.equal(second.result.usage.readsRetained, 2);
     assert.equal(second.result.evidence.filter((doc) => doc.url === ROUND_LEAD_A).length, 1);
-    assert.deepEqual(second.result.evidence.find((doc) => doc.url === ROUND_LEAD_A),
-      first.result.evidence[0]);
+    const later = second.result.evidence.find((doc) => doc.url === ROUND_LEAD_A);
+    const { origins: _priorOrigins, ...priorStable } = first.result.evidence[0];
+    const { origins: _laterOrigins, ...laterStable } = later;
+    assert.deepEqual(laterStable, priorStable, "every stable retained field is preserved");
+    assert.deepEqual(later.origins,
+      [ROUND_SHARED, ROUND_QUESTION, `${ROUND_QUESTION} contrary evidence refuted`]);
+    assert.deepEqual(first.result, firstSnapshot, "the complete prior result remains unchanged");
+    assert.notEqual(later, first.result.evidence[0]);
+    assert.notEqual(later.origins, first.result.evidence[0].origins);
     assert.deepEqual(second.calls.search,
       [ROUND_QUESTION, `${ROUND_QUESTION} contrary evidence refuted`]);
     assert.deepEqual(second.checkpoint.leads, []);
   });
 }
+
+// Query lineage is final-result metadata, independent of the physical read.
+function freezeProvenanceInput(value) {
+  if (value && typeof value === "object" && !Object.isFrozen(value)) {
+    Object.values(value).forEach(freezeProvenanceInput);
+    Object.freeze(value);
+  }
+  return value;
+}
+async function provenanceRun({ semantic = true, kind = "lead" } = {}) {
+  const url = "https://fixture.invalid/provenance-a";
+  const fieldQuestion = "Does ProvenanceFixture 1.0 support CSV?";
+  const shared = kind === "repeated" ? fieldQuestion : "Assess ProvenanceFixture 1.0 exports.";
+  const content = "ProvenanceFixture 1.0 supports CSV.";
+  const prior = { evidenceId: "prior1", url, title: "caller title", content,
+    byteLength: Buffer.byteLength(content), origins: ["Caller prior query"] };
+  const input = freezeProvenanceInput(kind === "nonseed" ? {}
+    : kind === "retained" ? { evidence: [prior] }
+      : { leads: [{ url, title: "caller title" }] });
+  const before = structuredClone(input), calls = [], hits = [], hooks = [], snapshots = [];
+  const result = await runLeanInvestigation({
+    schemaVersion: 1, question: shared, scope: { release: "1.0" },
+    requirements: { csv: { question: fieldQuestion, schema: { enum: ["supported", "refuted", "disputed"] } } },
+    limits: { maxSearchAttempts: 3, maxUniqueReads: 2, readBatchSize: 1 },
+  }, {
+    now: () => 0,
+    seed: { ...input, retainEvidence: async (record) => {
+      hooks.push(record); snapshots.push(structuredClone(record)); freezeProvenanceInput(record);
+    } },
+    search: async (query) => {
+      calls.push(["search", query]);
+      if (kind === "failed") throw new Error("ordinary fixture search failure");
+      const results = freezeProvenanceInput(kind === "invalid"
+        ? [{ url: "", title: "empty" }, { url: 7, title: "wrong type" }]
+        : [{ url, title: "search title" }, { url, title: "duplicate hit" }]);
+      hits.push({ results, before: structuredClone(results) });
+      return results;
+    },
+    read: async (readUrl) => { calls.push(["read", readUrl]); return content; },
+    judge: semantic ? async ({ documents }) => {
+      calls.push(["judge", "csv"]);
+      return { documents: documents.map((doc) => verdict(doc.evidenceId)) };
+    } : null,
+  });
+  assert.deepEqual(input, before, "caller records and their origin arrays stay unchanged");
+  for (const hit of hits) assert.deepEqual(hit.results, hit.before);
+  hooks.forEach((record, i) => assert.deepEqual(record, snapshots[i], "early hook snapshot is immutable"));
+  assert.equal(result.evidence.length, 1);
+  const record = result.evidence[0];
+  assert.equal(record.url, url);
+  assert.equal(record.content, content);
+  assert.equal(record.byteLength, Buffer.byteLength(content));
+  const reads = kind === "retained" ? 0 : 1;
+  assert.equal(result.usage.readAttempts, reads);
+  assert.equal(result.usage.readsRetained, reads);
+  assert.equal(calls.filter(([kind]) => kind === "read").length, reads);
+  assert.equal(hooks.length, reads, "provenance must not recall the physical retention hook");
+  assert.equal(result.usage.searches, kind === "repeated" ? 2 : 3);
+  assert.equal(result.usage.judgeCalls, semantic ? 1 : 0);
+  const original = kind === "retained" ? input.evidence[0] : hooks[0];
+  const { origins: _oldOrigins, ...oldStable } = original;
+  const { origins: _newOrigins, ...newStable } = record;
+  assert.deepEqual(newStable, oldStable, "all retained stable fields survive rediscovery");
+  return { result, calls, snapshots, shared, fieldQuestion, original };
+}
+
+test("returned provenance includes later queries for a seeded read (semantic)", async () => {
+  const { result, calls, snapshots, shared, fieldQuestion, original } = await provenanceRun();
+  assert.deepEqual(calls[0], ["read", result.evidence[0].url]);
+  assert.deepEqual(snapshots[0].origins, [], "a caller lead invents no search origin");
+  assert.deepEqual(result.evidence[0].origins,
+    [shared, fieldQuestion, `${fieldQuestion} contrary evidence refuted`]);
+  assert.notEqual(result.evidence[0], original, "returned records are owned final snapshots");
+  assert.notEqual(result.evidence[0].origins, original.origins, "returned origin arrays are owned");
+});
+
+for (const semantic of [true, false]) {
+  for (const kind of ["lead", "nonseed", "retained", "failed", "invalid", "repeated"]) {
+    if (semantic && kind === "lead") continue;
+    test(`returned provenance preserves ${kind} lineage and ownership (${semantic ? "semantic" : "deterministic-only"})`, async () => {
+      const { result, calls, snapshots, shared, fieldQuestion, original } = await provenanceRun({ semantic, kind });
+      const queries = kind === "repeated" ? [fieldQuestion, `${fieldQuestion} contrary evidence refuted`]
+        : [shared, fieldQuestion, `${fieldQuestion} contrary evidence refuted`];
+      assert.deepEqual(calls.filter(([kind]) => kind === "search").map(([, query]) => query), queries);
+      const expected = kind === "failed" || kind === "invalid" ? []
+        : kind === "retained" ? ["Caller prior query", ...queries] : queries;
+      assert.deepEqual(result.evidence[0].origins, expected);
+      if (kind === "lead") {
+        assert.deepEqual(calls[0], ["read", result.evidence[0].url]);
+        assert.deepEqual(snapshots[0].origins, []);
+      }
+      if (kind === "failed") assert.equal(result.acquisitionLog.filter((e) => e.kind === "search-failed").length, 3);
+      assert.notEqual(result.evidence[0], original);
+      assert.notEqual(result.evidence[0].origins, original.origins);
+    });
+  }
+}
+
+test("returned provenance preserves the actually judged custom descriptor and native acceptance basis", async () => {
+  const url = "https://fixture.invalid/provenance-license", content = "Release 1.0: License MIT.";
+  const shared = "Assess license", question = "License of scoped release";
+  const calls = [], judged = [], wires = [], hooks = [], hookSnapshots = [];
+  let checkpoint;
+  const lead = freezeProvenanceInput({ url, title: "Caller license" });
+  const result = await runLeanInvestigation({
+    schemaVersion: 1, question: shared, scope: { release: "1.0" },
+    requirements: { license: { question, schema: { type: "string" } } },
+  }, {
+    now: () => 0,
+    seed: { leads: freezeProvenanceInput([lead]), identity: "provenance-native-fixture",
+      retainEvidence: async (record) => {
+        hooks.push(record); hookSnapshots.push(structuredClone(record)); freezeProvenanceInput(record);
+      }, capture: (state) => { checkpoint = structuredClone(state); } },
+    search: async (query) => { calls.push(["search", query]); return freezeProvenanceInput([{ url, title: "Search title" }]); },
+    read: async (readUrl) => { calls.push(["read", readUrl]); return content; },
+    judge: async () => { assert.fail("value-only contract must not dispatch enum judgment"); },
+    extract: async (input) => {
+      calls.push(["extract", input.sourceId]);
+      assert.deepEqual(input, { sourceId: "e1", sourceText: content,
+        fields: [{ id: "license", description: question, depBindings: {} }], scope: { release: "1.0" }, depBindings: {} });
+      return { finishReason: "stop", rawOutput: JSON.stringify({ license: { value: "MIT", quote: "License MIT" } }),
+        usage: null, observedCost: null };
+    },
+    candidateJudge: async (input) => {
+      calls.push(["candidate", input.source.evidenceId]);
+      judged.push(structuredClone(input));
+      wires.push(buildCandidateJudgeRequest(input, "fixture"));
+      return { model: "fixture", answers: { q0s: { type: "noul", noul: 0.97 }, q0c: { type: "noul", noul: 0.01 } },
+        usage: { inputTokens: 1, outputTokens: 1 }, requestSha256: "a".repeat(64), elapsedMs: 1 };
+    },
+  });
+  assert.equal(result.status, "complete");
+  assert.deepEqual(result.data, { license: "MIT" });
+  assert.equal(judged.length, 1);
+  assert.equal(hooks.length, 1);
+  assert.deepEqual(judged[0].source, hookSnapshots[0], "custom assessor keeps the actual pre-query record");
+  assert.deepEqual(judged[0].source.origins, []);
+  assert.deepEqual(hooks[0], hookSnapshots[0], "projection does not mutate the early hook record");
+  assert.deepEqual(result.evidence[0].origins, [shared, question, `${question} contrary evidence refuted`]);
+  assert.notEqual(result.evidence[0], hooks[0]);
+  assert.notEqual(result.evidence[0].origins, hooks[0].origins);
+  const finalDescriptor = { ...judged[0], source: result.evidence[0] };
+  assert.notDeepEqual(finalDescriptor, judged[0], "custom descriptors can observe lineage; they are never relabeled");
+  assert.equal(buildCandidateJudgeRequest(finalDescriptor, "fixture"), wires[0]);
+  assert.deepEqual(JSON.parse(wires[0]).state.source, { id: "e1", url, text: content });
+  const candidate = judged[0].candidates[0];
+  const expectedId = candidateIdentity(hookSnapshots[0], candidateSourceDigest(hookSnapshots[0]), "license",
+    candidate.value, candidate.quote, candidate.charRange, { fieldMeaning: question, scope: { release: "1.0" }, opposingContext: [], depBindings: {} });
+  assert.equal(result.requirements.license.judgment.candidateId, expectedId);
+  assert.equal(candidateSourceDigest(result.evidence[0]), candidateSourceDigest(hookSnapshots[0]));
+  assert.deepEqual(checkpoint.history.map((row) => row.context),
+    [JSON.stringify([["e1", candidateSourceDigest(hookSnapshots[0])]])]);
+  assert.deepEqual(result.usage, { searches: 3, readAttempts: 1, readsRetained: 1,
+    judgeCalls: 0, extractorCalls: 1, extractorCacheHits: 0, candidateJudgeCalls: 1 });
+  assert.deepEqual(calls.filter(([kind]) => kind === "search").map(([, query]) => query),
+    [shared, question, `${question} contrary evidence refuted`]);
+});

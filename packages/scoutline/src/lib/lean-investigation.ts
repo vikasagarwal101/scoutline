@@ -3559,7 +3559,12 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
         data,
         requirements: rows,
         coverageNotes,
-        evidence,
+        // Final query lineage is returned metadata. Keep the records that
+        // judgments and early retention hooks saw unchanged.
+        evidence: evidence.map((record) => ({
+          ...record,
+          origins: [...(originsByUrl.get(record.url) ?? record.origins)],
+        })),
         acquisitionLog: log,
         usage: {
           searches,

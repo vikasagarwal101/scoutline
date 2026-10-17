@@ -1885,7 +1885,10 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
               if (origins === undefined) {
                 origins = new Set<string>();
                 originsByUrl.set(result.url, origins);
-                queue.push({ url: result.url, title: result.title ?? result.url });
+                if (!queuedUrls.has(result.url)) {
+                  queue.push({ url: result.url, title: result.title ?? result.url });
+                  queuedUrls.add(result.url);
+                }
               }
               origins.add(entry.query);
             }
@@ -2191,8 +2194,10 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
           if (origins === undefined) {
             origins = new Set<string>();
             originsByUrl.set(result.url, origins);
-            queue.push({ url: result.url, title: result.title ?? result.url });
-            queuedUrls.add(result.url);
+            if (!queuedUrls.has(result.url)) {
+              queue.push({ url: result.url, title: result.title ?? result.url });
+              queuedUrls.add(result.url);
+            }
           }
           origins.add(entry.query);
         }
@@ -3110,7 +3115,6 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
         if (f.terminal !== null) continue;
         if (f.req.schema.mode === "value") {
           if (f.acceptedCandidate === null) continue;
-          if (f.req.required === false && f.acceptedCandidate === null) continue;
           const stillRetained = evidence.some(
             (e) => e.evidenceId === f.acceptedCandidate!.provenance.sourceId,
           );

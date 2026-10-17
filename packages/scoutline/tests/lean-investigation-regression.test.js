@@ -496,3 +496,113 @@ test("failed enum audit leaves unmeasured observations absent rather than invent
   const { result } = await classificationAttemptRun({ observations: false });
   assert.deepEqual(result.requirements.csv.attemptedRecords[0].metadata, { kind: "classification-judgment" });
 });
+
+
+const ROUND_LEAD_A = "https://fixture.invalid/round-seed-a";
+const ROUND_LEAD_B = "https://fixture.invalid/round-seed-b";
+const ROUND_LEAD_C = "https://fixture.invalid/round-new-c";
+const ROUND_SHARED = "Assess QueueFixture 1.0 CSV exports.";
+const ROUND_QUESTION = "Does QueueFixture 1.0 support csv export?";
+async function runSeedLeadRound({ semantic, seedInput = {}, first = false,
+  retain = false, maxReads = 1, maxSearches = 3 }) {
+  const calls = { search: [], read: [] };
+  let checkpoint;
+  const input = structuredClone(seedInput);
+  const before = structuredClone(input);
+  const result = await runLeanInvestigation({
+    schemaVersion: 1, question: ROUND_SHARED,
+    scope: { entity: "QueueFixture", release: "1.0" },
+    requirements: { csv: { question: ROUND_QUESTION,
+      schema: { enum: ["supported", "refuted", "disputed"] }, required: true } },
+    evidence: { criteria: ["Assess relevant contrary evidence before accepting."] },
+    limits: { maxUniqueReads: maxReads, maxSearchAttempts: maxSearches },
+  }, {
+    now: () => 0,
+    seed: { ...input, capture: (state) => { checkpoint = state; } },
+    search: async (query) => {
+      calls.search.push(query);
+      return first ? [{ url: ROUND_LEAD_A, title: "original seed A" },
+        { url: ROUND_LEAD_B, title: "original seed B" }]
+        : [{ url: ROUND_LEAD_A, title: "later search A" }, { url: ROUND_LEAD_C, title: "new C" }];
+    },
+    read: async (url) => {
+      calls.read.push(url);
+      if (!retain) throw new Error("ordinary fixture read unavailable");
+      return "QueueFixture 1.0 supports csv export.";
+    },
+    judge: semantic ? async ({ documents }) => ({
+      documents: documents.map((doc) => ({ evidenceId: doc.evidenceId,
+        relevant: true, supportsClaim: true, refutesClaim: false })),
+    }) : null,
+  });
+  assert.deepEqual(input, before, "continuation inputs remain caller-owned");
+  return { result, calls, checkpoint };
+}
+async function assertUniqueSeedContinuation(semantic, reuseIssued) {
+  const first = await runSeedLeadRound({ semantic, first: true, maxSearches: 1 });
+  assert.deepEqual(first.checkpoint.leads.map((lead) => lead.url), [ROUND_LEAD_A, ROUND_LEAD_B]);
+  const second = await runSeedLeadRound({ semantic, seedInput: {
+    evidence: first.result.evidence, leads: first.checkpoint.leads,
+    issuedQueries: reuseIssued ? first.checkpoint.issuedQueries : [],
+  } });
+  assert.deepEqual(second.checkpoint.leads.map((lead) => lead.url),
+    [ROUND_LEAD_A, ROUND_LEAD_B, ROUND_LEAD_C], "search must not duplicate a pending seeded URL");
+  assert.deepEqual(second.checkpoint.leads.map((lead) => lead.title),
+    ["original seed A", "original seed B", "new C"]);
+  assert.deepEqual(second.calls.read, [ROUND_LEAD_A, ROUND_LEAD_A]);
+  assert.equal(second.result.usage.readAttempts, 2, "both ordinary physical attempts are counted");
+  assert.equal(second.result.usage.readsRetained, 0);
+  assert.equal(second.calls.search.length, reuseIssued ? 2 : 3);
+  assert.equal(second.result.usage.searches, second.calls.search.length);
+  for (const url of [ROUND_LEAD_A, ROUND_LEAD_C]) {
+    assert.deepEqual(second.checkpoint.leads.find((lead) => lead.url === url).origins,
+      second.calls.search, "deduplication must preserve every successful query origin");
+  }
+  assert.deepEqual(second.result.data, {});
+  assert.equal(second.result.requirements.csv.status, "unresolved");
+  assert.deepEqual(second.checkpoint.issuedQueries,
+    [ROUND_SHARED, ROUND_QUESTION, `${ROUND_QUESTION} contrary evidence refuted`]);
+  const third = await runSeedLeadRound({ semantic, retain: true, maxReads: 3, seedInput: {
+    evidence: second.result.evidence, leads: second.checkpoint.leads,
+    issuedQueries: second.checkpoint.issuedQueries,
+  } });
+  assert.deepEqual(third.calls.read, [ROUND_LEAD_A, ROUND_LEAD_B, ROUND_LEAD_C]);
+  assert.equal(third.result.usage.readAttempts, 3);
+  assert.equal(third.result.usage.readsRetained, 3);
+  assert.deepEqual(third.calls.search, []);
+  assert.deepEqual(third.checkpoint.leads, []);
+  assert.deepEqual(third.result.evidence.map((doc) => doc.title),
+    ["original seed A", "original seed B", "new C"]);
+}
+test("seeded pending leads stay unique in semantic continuation", async () => {
+  await assertUniqueSeedContinuation(true, true);
+});
+
+test("seeded pending leads stay unique in deterministic-only continuation", async () => {
+  await assertUniqueSeedContinuation(false, true);
+});
+
+for (const semantic of [true, false]) {
+  test(`new-basis pending seed leads preserve query origins (${semantic ? "semantic" : "deterministic-only"})`, async () => {
+    await assertUniqueSeedContinuation(semantic, false);
+  });
+  test(`retained seed search results do not trigger another paid read (${semantic ? "semantic" : "deterministic-only"})`, async () => {
+    const first = await runSeedLeadRound({ semantic, first: true, retain: true, maxSearches: 1 });
+    assert.deepEqual(first.result.evidence.map((doc) => doc.url), [ROUND_LEAD_A]);
+    assert.deepEqual(first.checkpoint.leads.map((lead) => lead.url), [ROUND_LEAD_B]);
+    const second = await runSeedLeadRound({ semantic, retain: true, maxReads: 3, seedInput: {
+      evidence: first.result.evidence, leads: first.checkpoint.leads,
+      issuedQueries: first.checkpoint.issuedQueries,
+    } });
+    assert.deepEqual(second.calls.read, [ROUND_LEAD_B, ROUND_LEAD_C],
+      "returning a retained URL must not admit another paid read");
+    assert.equal(second.result.usage.readAttempts, 2);
+    assert.equal(second.result.usage.readsRetained, 2);
+    assert.equal(second.result.evidence.filter((doc) => doc.url === ROUND_LEAD_A).length, 1);
+    assert.deepEqual(second.result.evidence.find((doc) => doc.url === ROUND_LEAD_A),
+      first.result.evidence[0]);
+    assert.deepEqual(second.calls.search,
+      [ROUND_QUESTION, `${ROUND_QUESTION} contrary evidence refuted`]);
+    assert.deepEqual(second.checkpoint.leads, []);
+  });
+}

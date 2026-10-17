@@ -36,3 +36,33 @@ for (const c of inputs)
       );
     }
   });
+
+for (const [entity, otherEntity] of [
+  ["Acme.Tools", "AcmeXTools"],
+  ["Acme+Tools", "AcmeTools"],
+  ["Acme[Tools]", "AcmeT"],
+])
+  test(`offline fixture version matches literal entity ${entity}`, async () => {
+    const scope = { entity, release: "2.0" };
+    const { deps, calls, live } = offlineDeps(inputs[0], { captureLiveTargets: true });
+    for (const [sourceText, value] of [
+      [`${entity} release 2.0.`, "2.0"],
+      [`${otherEntity} release 2.0.`, null],
+      [`${entity} release 3.0.`, null],
+    ]) {
+      const request = {
+        sourceId: "literal-entity",
+        sourceText,
+        fields: [{ id: "version", description: "version" }],
+        scope,
+      };
+      const attempt = await deps.extract(request);
+      assert.deepEqual(JSON.parse(attempt.rawOutput).version, {
+        value,
+        quote: value === null ? null : sourceText,
+      });
+      assert.deepEqual(calls.extract.at(-1), request);
+      assert.equal(live.scope, scope);
+    }
+    assert.equal(calls.extract.length, 3);
+  });

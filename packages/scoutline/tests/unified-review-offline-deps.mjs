@@ -59,8 +59,9 @@ export function offlineDeps(c, { captureLiveTargets = false, seed } = {}) {
         const scopeVersion = scope.release;
         let value = null;
         if (f.id === "version") {
+          const entity = `${scope.entity}`.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
           const match = text.match(
-            new RegExp(`${scope.entity} release ([^\\s.;]+(?:\\.[^\\s.;]+)*)[.;\\s]`),
+            new RegExp(`${entity} release ([^\\s.;]+(?:\\.[^\\s.;]+)*)[.;\\s]`),
           );
           if (match && match[1] === scopeVersion) value = match[1];
         } else if (f.id === "license") {

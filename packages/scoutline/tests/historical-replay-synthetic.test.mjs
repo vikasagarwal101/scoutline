@@ -31,6 +31,7 @@ import assert from "node:assert/strict";
 import { inputs } from "./unified-review-corpus.mjs";
 import { offlineDeps } from "./unified-review-offline-deps.mjs";
 import { runLeanInvestigation } from "../dist/lib/lean-investigation.js";
+import { acceptCandidate } from "../dist/lib/lean-candidates.js";
 
 test("synthetic retention: trusted final-context guide license survives later unknown candidate and re-assessment", async () => {
   const c = structuredClone(inputs.find((x) => x.id === "birch-progressive"));
@@ -267,3 +268,74 @@ test("pending other-field contrary query prevents retrospective final-set shortc
     "a full eventual source-set witness must not qualify while acquisition can still enlarge context",
   );
 });
+
+for (const cap of ["search", "read"]) {
+  test(`cap-aware history reconciliation schedules a dependent after the ${cap} cap binds`, async () => {
+    const contract = {
+      schemaVersion: 1, question: "Inspect release", scope: { release: "1.0" },
+      requirements: {
+        version: { question: "Version?", schema: { type: "string" }, required: true },
+        license: { question: "License?", schema: { type: "string" }, dependsOn: ["version"], required: true },
+        extra: { question: "Extra?", schema: { enum: ["supported", "refuted", "disputed"] }, required: false },
+      },
+      limits: { maxSearchAttempts: cap === "search" ? 6 : 7, maxUniqueReads: cap === "read" ? 2 : 6,
+        readBatchSize: 2, maxJudgeAttempts: 24, deadlineMs: 1000 },
+    };
+    const urls = [1, 2, ...(cap === "read" ? [3] : [])].map((i) => `https://fixture.invalid/history-${i}`);
+    const calls = { search: [], read: [], semantic: [], candidate: [] };
+    const result = await runLeanInvestigation(contract, {
+      now: () => 0,
+      search: async (query) => {
+        calls.search.push(query);
+        return query === contract.question ? urls.map((url) => ({ url, title: url })) : [];
+      },
+      read: async (url) => { calls.read.push(url); return "Version 1.0; License MIT."; },
+      extract: async (input) => {
+        const id = input.fields[0].id;
+        return { finishReason: "stop", rawOutput: JSON.stringify({
+          [id]: { value: id === "version" ? "1.0" : "MIT", quote: input.sourceText },
+        }), usage: { inputTokens: 1, outputTokens: 1 }, observedCost: null };
+      },
+      candidateJudge: async (input) => {
+        calls.candidate.push(structuredClone(input));
+        const id = input.candidates[0].fieldId;
+        calls.semantic.push(`${id}:${input.source.evidenceId}`);
+        return { model: "fixture", answers: {
+          q0s: { type: "noul", noul: id === "version" && input.source.evidenceId === "e2" ? 0.5 : 0.97 },
+          q0c: { type: "noul", noul: 0.01 },
+        }, usage: { inputTokens: 1, outputTokens: 1 }, elapsedMs: 1, requestSha256: "a".repeat(64) };
+      },
+      judge: async (input) => {
+        calls.semantic.push(input.fieldId);
+        return { documents: input.documents.map((doc) => ({
+          evidenceId: doc.evidenceId, relevant: false, supportsClaim: false, refutesClaim: false,
+        })) };
+      },
+    });
+    assert.equal(result.data.version, "1.0");
+    assert.equal(result.data.license, "MIT", "recoverable current-context history must schedule the dependent");
+    assert.equal(calls.search.length, contract.limits.maxSearchAttempts);
+    assert.deepEqual(calls.read, urls.slice(0, 2), "read-cap tail is never dispatched");
+    for (const id of ["version", "license"])
+      assert(calls.search.includes(`${contract.requirements[id].question} contrary evidence refuted`));
+    assert.deepEqual(calls.semantic, ["version:e1", "version:e2", "extra", "license:e1", "license:e2"],
+      "history recovery preserves originally eligible work before the dependent");
+    assert.equal(result.usage.judgeCalls + result.usage.candidateJudgeCalls, 5);
+    assert.equal(result.usage.readAttempts, 2);
+    const version = result.requirements.version;
+    const rows = version.attemptedRecords.filter((row) => row.metadata?.kind === "candidate-judgment");
+    assert(rows.some((row) => row.trusted && row.metadata.sourceId === "e1"));
+    assert(rows.some((row) => !row.trusted && row.metadata.sourceId === "e2" && row.assessments[0].rawSupport === 0.5));
+    const source = result.evidence.find((doc) => doc.evidenceId === version.provenance.sourceId);
+    const proof = acceptCandidate(version.candidates.find((row) => row.status === "candidate"),
+      version.judgment, source, version.provenance.sourceDigest, {
+        fieldMeanings: { version: contract.requirements.version.question }, scope: contract.scope,
+        opposingContext: result.evidence.filter((doc) => doc.evidenceId !== source.evidenceId), depBindings: {},
+      });
+    assert.equal(proof.status, "accepted", "history must pass the real final-context acceptance seam");
+    for (const input of calls.candidate.filter((x) => x.candidates[0].fieldId === "license")) {
+      assert.deepEqual(input.depBindings.version, { value: result.data.version,
+        evidenceId: version.provenance.sourceId, sourceDigest: version.provenance.sourceDigest });
+    }
+  });
+}

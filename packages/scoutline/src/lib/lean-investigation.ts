@@ -1584,7 +1584,7 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
         // preserving the dispatch order the originally-eligible fields
         // established. Revocation machinery reopens dependents if the accept
         // is later revoked.
-        if (hasUnread() || queryIdx < plan.length) return false;
+        if (!noMoreAcquisition()) return false;
         return d.trustedAccepts.some((t) => liveIdentityOf(t));
       };
       for (const f of fields.values()) {

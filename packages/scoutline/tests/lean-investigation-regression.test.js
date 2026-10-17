@@ -45,16 +45,15 @@ function unresolved(result, id = "csv") {
   assert.notEqual(result.status, "complete");
 }
 
-// A bad normalized response may fail typed or return unresolved; a raw crash is not success.
+// These malformed normalized responses return invalid-response audit rows;
+// an unexpected facade exception must fail the test.
 async function rejectsVerdicts(judge, options = {}) {
-  let result;
-  try {
-    result = await run({ ...options, judge });
-  } catch (error) {
-    assert.equal(typeof error.code, "string", "judge rejection must be a typed failure");
-    return;
-  }
+  const result = await run({ ...options, judge });
   unresolved(result);
+  assert.equal(result.requirements.csv.reason, "exhausted");
+  assert.deepEqual(result.requirements.csv.attemptedRecords.map((row) => ({
+    trusted: row.trusted, reason: row.reason, assessments: row.assessments,
+  })), [{ trusted: false, reason: "invalid_response", assessments: [] }]);
 }
 
 test("search cap cannot waive required counterevidence", async () => {

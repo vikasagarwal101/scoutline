@@ -14,79 +14,62 @@ const single = () => {
   c.contract.requirements = { version: c.contract.requirements.version };
   return c;
 };
-test("run deadline bounds an in-flight native extractor rather than only blocking next dispatch", async () => {
+test("run deadline bounds an in-flight native extractor rather than only blocking next dispatch", async (t) => {
   const c = single();
   c.contract.limits = { deadlineMs: 10 };
   const base = offlineDeps(c);
-  base.deps.now = Date.now;
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 0 });
+  base.deps.now = () => Date.now();
+  let entered;
+  const extracting = new Promise((resolve) => { entered = resolve; });
   let observedSignal;
-  let cancelled = false;
-  base.deps.extract = async (request, options) => {
-    observedSignal = options?.signal ?? request.signal;
-    const response = {
-      status: 200,
-      ok: true,
-      headers: { get: () => "application/json" },
-      body: new ReadableStream({
-        start(controller) {
-          controller.enqueue(
-            new TextEncoder().encode(
-              JSON.stringify({
-                model: "fixture",
-                choices: [
-                  {
-                    finish_reason: "stop",
-                    message: {
-                      content: '{"version":{"value":"2.4","quote":"Aster release 2.4."}}',
-                    },
-                  },
-                ],
-                usage: { prompt_tokens: 1, completion_tokens: 1 },
-              }),
-            ),
-          );
-          controller.close();
-        },
-        cancel() {
-          cancelled = true;
-        },
-      }),
-    };
-    // Native-shaped bounded wait: headers land only after 100ms; the
-    // run-owned signal must abort the in-flight wait, not just block
-    // the next dispatch.
-    await new Promise((resolve, reject) => {
-      const timer = setTimeout(resolve, 100);
-      observedSignal?.addEventListener(
-        "abort",
-        () => {
-          clearTimeout(timer);
-          reject(Object.assign(new Error("aborted"), { code: "TYPESAFE_CANCELLED" }));
-        },
-        { once: true },
-      );
+  let aborts = 0;
+  let extractorSettled = false;
+  let naturallySettled = false;
+  let runSettled = false;
+  base.deps.extract = async (_request, options) => {
+    observedSignal = options.signal;
+    assert(observedSignal instanceof AbortSignal);
+    assert.equal(observedSignal.aborted, false);
+    const wait = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { naturallySettled = true; resolve(); }, 100);
+      observedSignal.addEventListener("abort", () => {
+        aborts += 1;
+        clearTimeout(timer);
+        reject(Object.assign(new Error("aborted"), { code: "TYPESAFE_CANCELLED" }));
+      }, { once: true });
     });
-    void response;
+    entered();
+    try { await wait; } finally { extractorSettled = true; }
     return {
       finishReason: "stop",
       rawOutput: '{"version":{"value":"2.4","quote":"Aster release 2.4."}}',
-      usage: { inputTokens: 1, outputTokens: 1 },
-      observedCost: null,
+      usage: { inputTokens: 1, outputTokens: 1 }, observedCost: null,
     };
   };
-  const start = performance.now();
-  const result = await runLeanInvestigation(c.contract, base.deps);
-  const elapsed = performance.now() - start;
-  assert(
-    elapsed < 60,
-    `10ms whole-run deadline returned after ${elapsed.toFixed(1)}ms in-flight extraction`,
-  );
-  assert(
-    observedSignal instanceof AbortSignal,
-    "no run-owned cancellation signal reaches native dependency",
-  );
-  assert(observedSignal.aborted);
+  const pending = runLeanInvestigation(c.contract, base.deps).then((result) => {
+    runSettled = true;
+    return result;
+  });
+  await extracting;
+  t.mock.timers.tick(9);
+  assert.equal(observedSignal.aborted, false);
+  assert.equal(aborts, 0);
+  assert.equal(extractorSettled, false);
+  assert.equal(runSettled, false);
+  t.mock.timers.tick(1);
+  assert.equal(observedSignal.aborted, true, "the run-owned deadline aborts the pending extractor");
+  assert.equal(aborts, 1);
+  const result = await pending;
+  assert.equal(extractorSettled, true);
+  assert.equal(runSettled, true);
+  assert.equal(naturallySettled, false, "abort settles before the dependency's natural wait");
   assert.deepEqual(result.data, {});
+  assert.equal(base.calls.candidateJudge.length, 0);
+  assert.equal(base.calls.judge.length, 0);
+  t.mock.timers.tick(90);
+  assert.equal(naturallySettled, false, "the aborted dependency timer was cleared");
+  assert.equal(aborts, 1);
 });
 test("rejected measured candidate attempt keeps request hash, model and usage in append-only audit", async () => {
   const c = single();

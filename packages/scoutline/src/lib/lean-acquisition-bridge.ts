@@ -642,6 +642,12 @@ export function createLeanAcquisitionDeps(
   if (!Number.isFinite(cap) || cap < 0) {
     throw new ValidationError("maxResponseBytes must be finite and nonnegative");
   }
+  if (
+    options.maxPhysicalAttempts !== undefined &&
+    (!Number.isFinite(options.maxPhysicalAttempts) || options.maxPhysicalAttempts < 0)
+  ) {
+    throw new ValidationError("maxPhysicalAttempts must be finite and nonnegative");
+  }
   const notify = (): void => {
     options.onPhysicalLedger?.(ledgerSnapshot());
   };

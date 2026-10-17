@@ -37,7 +37,8 @@ for (const c of inputs)
     for (const request of requests) {
       if (request.stage === "classification") {
         const field = Object.values(fields).find((f) => f.question === request.state.requirement);
-        for (const dep of field?.dependsOn ?? [])
+        assert(field, "classification requirement must match a contract field");
+        for (const dep of field.dependsOn ?? [])
           assert(request.state.depBindings?.[dep], "dependent enum wire lacks binding");
       }
     }

@@ -235,7 +235,7 @@ test("actual judge identifies uncertainty revision in every completed native att
   );
   assert.equal(tsr.TYPESAFE_UNCERTAINTY_REVISION, "per-source-null-v1");
   const serialized = JSON.stringify({ attempts, judgeAttemptMeta });
-  assert.equal(serialized.includes(CONFIG.endpoint), false);
+  assert.equal(serialized.includes(tsr.TYPESAFE_SYSTEMONE_ENDPOINT), false);
   assert.equal(serialized.includes(CONFIG.apiKey), false);
 });
 

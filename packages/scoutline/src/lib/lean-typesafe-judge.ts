@@ -396,7 +396,7 @@ function policyIdentity(): string {
 }
 
 /** Full ordered judgment-context identity: question, scope, criteria,
- *  dependency bindings and actual source bytes — not evidence ids. */
+ *  dependency bindings, actual source bytes and evidence ids — not ids alone. */
 function contextIdentityOf(requestBody: string): string {
   let state: unknown = null;
   try {
@@ -462,7 +462,7 @@ function abortError(): Error {
 function parseRetryAfterMs(headerGet: (name: string) => string | null, now: () => number): number | null {
   const ms = headerGet("retry-after-ms");
   if (ms !== null) {
-    const value = Number(ms);
+    const value = ms.trim() === "" ? Number.NaN : Number(ms);
     if (Number.isFinite(value) && value >= 0) return value;
   }
   const raw = headerGet("retry-after");
@@ -625,6 +625,7 @@ async function readBodyBounded(
   try {
     const reader = response.body?.getReader();
     ownedReader = reader;
+    if (runSignal.aborted || controller?.signal.aborted || now() >= attemptEnd) throw abortError();
     if (reader === undefined) return { bodyText: "" };
     const chunks: Buffer[] = [];
     let totalBytes = 0;
@@ -865,8 +866,10 @@ async function runLifecycle(
   const timeoutMs = deps.timeoutMs ?? TYPESAFE_DEFAULT_TIMEOUT_MS;
   const maxResponseBytes = deps.maxResponseBytes ?? TYPESAFE_DEFAULT_MAX_RESPONSE_BYTES;
   const retry: TypesafeRetrySettings = Object.freeze({
-    ...TYPESAFE_DEFAULT_RETRY_SETTINGS,
-    ...(deps.retrySettings ?? {}),
+    maxTransientRetries: deps.retrySettings?.maxTransientRetries ?? TYPESAFE_DEFAULT_RETRY_SETTINGS.maxTransientRetries,
+    baseDelayMs: deps.retrySettings?.baseDelayMs ?? TYPESAFE_DEFAULT_RETRY_SETTINGS.baseDelayMs,
+    maxDelayMs: deps.retrySettings?.maxDelayMs ?? TYPESAFE_DEFAULT_RETRY_SETTINGS.maxDelayMs,
+    maxRetryAfterMs: deps.retrySettings?.maxRetryAfterMs ?? TYPESAFE_DEFAULT_RETRY_SETTINGS.maxRetryAfterMs,
   });
   const fetchLike = deps.fetchLike ?? (globalThis.fetch as unknown as LeanJevFetchLike);
   const policySha = policyIdentity();
@@ -1046,7 +1049,7 @@ async function runLifecycle(
             rejection: typedRejection(
               "TYPESAFE_CANCELLED",
               "Direct TypeSafe retry backoff was cancelled by the caller; remote work from the dispatched attempt may have happened.",
-              { remoteWorkUncertain: true, attempts: attempt + 1 },
+              { observed, remoteWorkUncertain: true, attempts: attempt + 1 },
             ),
             attemptEvents: events,
             attempts: attempt + 1,

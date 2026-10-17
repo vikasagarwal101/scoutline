@@ -121,6 +121,7 @@ test("actual native chunked-body timeout cancels owned reader and removes extern
         },
         { timeoutMs: 10, signal: controller.signal },
       ),
+      { code: "TYPESAFE_TIMEOUT" },
     );
     assert(cancelled);
     assert.equal(adds, removes);

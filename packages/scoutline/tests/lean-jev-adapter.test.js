@@ -198,6 +198,14 @@ describe("jev dev adapter: response validation", () => {
     }
   });
 
+  it("non-finite raw numeric probability is a protocol rejection", async () => {
+    const { fetchLike } = makeFetch({
+      bodyOverride: '{"model":"jev-1.13.0","usage":{"input_tokens":100,"output_tokens":20},"answers":{"q0r":{"type":"noul","noul":1e999},"q0s":{"type":"noul","noul":1},"q0f":{"type":"noul","noul":0},"q1r":{"type":"noul","noul":1},"q1s":{"type":"noul","noul":1},"q1f":{"type":"noul","noul":0}}}',
+    });
+    const r = await rejectWith(fetchLike);
+    assert.equal(r.code, "TYPESAFE_PROTOCOL");
+  });
+
   it("missing resolved model identity is rejected", async () => {
     const { fetchLike } = makeFetch({ answers: noulAnswers(base), bodyOverride: JSON.stringify({ answers: noulAnswers(base), usage: {} }) });
     const r = await rejectWith(fetchLike);

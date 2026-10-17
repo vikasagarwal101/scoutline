@@ -300,6 +300,7 @@ test("actual official judge and engine complete mixed clear guide/unknown junk",
     apiKey: config.apiKey,
     reserveAttempt: () => {},
     timeoutMs: config.timeoutMs,
+    now: () => 0,
     fetchLike: async (_endpoint, init) => {
     const request = JSON.parse(init.body);
     const answers = Object.fromEntries(

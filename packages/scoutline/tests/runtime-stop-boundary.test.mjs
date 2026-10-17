@@ -18,12 +18,12 @@ const INPUT = {
 };
 test("only declared finite typed stop roots survive judge sanitization", async () => {
   const sentinel = "global_PRIVATE_FIXTURE_SECRET_NEVER_REPORT";
+  let fetchCalls = 0;
   const profile = createTypesafeJudge({
     apiKey: "synthetic-key",
-    reserveAttempt: () => {
-      throw Object.assign(Error("fake"), { code: "EVAL_STOPPED", reason: "unrelated_root" });
-    },
+    reserveAttempt: () => {},
     fetchLike: async () => {
+      fetchCalls += 1;
       throw Object.assign(Error("fake"), { code: "UNRELATED_NETWORK", reason: sentinel });
     },
   });
@@ -34,6 +34,9 @@ test("only declared finite typed stop roots survive judge sanitization", async (
     rejection = error;
   }
   assert(rejection);
+  assert.equal(fetchCalls, 1);
+  assert.equal(rejection.code, "TYPESAFE_REMOTE_UNCERTAIN");
+  assert.equal(rejection.stopReason, undefined);
   assert(!JSON.stringify(rejection).includes(sentinel));
   assert(![...COMPOSED_STOP_ROOTS].includes("unrelated_root"));
 });

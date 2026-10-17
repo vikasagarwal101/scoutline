@@ -210,4 +210,13 @@ test("failed extraction audit does not persist raw error message or unvalidated 
     "raw secret-bearing dependency error crossed sanitized result boundary",
   );
   assert(result.requirements.version.attemptedRecords.some((x) => x.trusted === false));
+  const failed = result.requirements.version.attemptedRecords.find((record) =>
+    record.trusted === false && record.metadata?.kind === "extraction");
+  assert(failed, "the failed extraction must have an actual untrusted audit record");
+  const observed = failed.metadata.observed;
+  assert(observed && typeof observed === "object", "the supplied measured observation must survive");
+  assert.equal(observed.requestSha256, "a".repeat(64));
+  assert.deepEqual(observed.usage, { inputTokens: 1, outputTokens: 1 });
+  for (const key of ["apiKey", "headers"])
+    assert.equal(Object.hasOwn(observed, key), false, `unvalidated ${key} key survived sanitization`);
 });

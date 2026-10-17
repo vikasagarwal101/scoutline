@@ -286,7 +286,11 @@ describe("candidate transport: shared guards", () => {
   });
 
   it("config validation: non-finite caps/timeouts reject upfront", async () => {
-    for (const bad of [{ maxRequestBytes: 0 }, { maxResponseBytes: -1 }, { timeoutMs: 0 }]) {
+    for (const [bad, field] of [
+      [{ maxRequestBytes: 0 }, "maxRequestBytes"],
+      [{ maxResponseBytes: -1 }, "maxResponseBytes"],
+      [{ timeoutMs: 0 }, "timeoutMs"],
+    ]) {
       let error;
       let constructed = false;
       try {
@@ -306,7 +310,8 @@ describe("candidate transport: shared guards", () => {
       }
       void constructed;
       assert(error, "invalid judge dependency bounds must reject");
-      assert.match(String(error.message), /integer|number|ceiling|at least|positive/i);
+      assert.equal(error.code, "VALIDATION_ERROR");
+      assert.match(error.message, new RegExp(`\\b${field}\\b`));
     }
   });
 });

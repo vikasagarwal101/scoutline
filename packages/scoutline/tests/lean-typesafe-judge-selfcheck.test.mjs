@@ -6,6 +6,7 @@
  * Run: node --test tests/lean-typesafe-judge-selfcheck.test.mjs
  */
 import test from "node:test";
+import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import * as tsj from "../dist/lib/lean-typesafe-judge.js";
 
@@ -112,26 +113,29 @@ test("middle-band probability is unknown, never false", async () => {
   assert.equal(response.documents[0].relevant, null);
 });
 
-test("429 then 200 with retry settings: two admissions, truthful attempts", async () => {
-  const { fetchLike, calls } = makeFetch([
-    statusResponse(429, { "retry-after": "0" }),
-    okResponse(noulAnswersFor(1)),
-  ]);
-  const admissions = [];
-  const events = [];
-  const profile = tsj.createTypesafeJudge({
-    apiKey: "k",
-    fetchLike,
-    reserveAttempt: (_ctx) => admissions.push(_ctx.attempt),
-    retrySettings: { maxTransientRetries: 1, baseDelayMs: 1, maxDelayMs: 5 },
-    maxAttempts: 2,
-    onAttempt: (e) => events.push(e.outcome),
-  });
-  const response = await profile.judge({ ...INPUT, documents: [INPUT.documents[0]] });
-  assert.equal(calls.length, 2);
-  assert.deepEqual(admissions, [0, 1], "admission before EVERY attempt including retry");
-  assert.deepEqual(events, ["TYPESAFE_RATE_LIMIT", "ok"]);
-  assert.ok(response.documents.length === 1);
+test("429/529 then 200 with retry settings: two admissions, truthful attempts", async () => {
+  for (const status of [429, 529]) {
+    const { fetchLike, calls } = makeFetch([
+      statusResponse(status, { "retry-after": "0" }),
+      okResponse(noulAnswersFor(1)),
+    ]);
+    const admissions = [];
+    const events = [];
+    const profile = tsj.createTypesafeJudge({
+      apiKey: "k",
+      fetchLike,
+      reserveAttempt: (_ctx) => admissions.push(_ctx.attempt),
+      retrySettings: { maxTransientRetries: 1, baseDelayMs: 1, maxDelayMs: 5 },
+      maxAttempts: 2,
+      onAttempt: (e) => events.push(e),
+    });
+    const response = await profile.judge({ ...INPUT, documents: [INPUT.documents[0]] });
+    assert.equal(calls.length, 2);
+    assert.deepEqual(admissions, [0, 1], "admission before EVERY attempt including retry");
+    assert.deepEqual(events.map((e) => e.outcome), [status === 429 ? "TYPESAFE_RATE_LIMIT" : "TYPESAFE_OVERLOADED", "ok"]);
+    assert.deepEqual(events.map((e) => e.status), [status, 200]);
+    assert.ok(response.documents.length === 1);
+  }
 });
 
 test("default: no retry on 429 — terminal", async () => {
@@ -164,7 +168,7 @@ test("admission refusal: zero HTTP sent", async () => {
 });
 
 test("terminal statuses: 401/422 do not retry or substitute", async () => {
-  for (const status of [401, 422, 500]) {
+  for (const [status, code] of [[401, "TYPESAFE_AUTH"], [422, "TYPESAFE_REQUEST"], [500, "TYPESAFE_PROTOCOL"]]) {
     const { fetchLike, calls } = makeFetch([statusResponse(status)]);
     const profile = tsj.createTypesafeJudge({
       apiKey: "k",
@@ -175,7 +179,7 @@ test("terminal statuses: 401/422 do not retry or substitute", async () => {
     });
     await assert.rejects(
       () => profile.judge({ ...INPUT, documents: [INPUT.documents[0]] }),
-      (e) => e.code !== undefined,
+      (e) => e.code === code,
       `status ${status}`,
     );
     assert.equal(calls.length, 1, `status ${status} is terminal`);
@@ -342,4 +346,186 @@ test("request ceiling enforced before any dispatch", async () => {
     (e) => e instanceof Error && /input ceiling/.test(e.message),
   );
   assert.equal(calls.length, 0);
+});
+
+
+test("null body preserves dispatched deadline and cancellation outcomes", async () => {
+  for (const [state, code, uncertain] of [
+    ["expired", "TYPESAFE_TIMEOUT", true],
+    ["cancelled", "TYPESAFE_CANCELLED", true],
+    ["live", "TYPESAFE_MALFORMED", false],
+  ]) {
+    let clock = 0, calls = 0, admissions = 0;
+    const caller = new AbortController();
+    const events = [];
+    const profile = tsj.createTypesafeJudge({
+      apiKey: "k", now: () => clock, timeoutMs: 10,
+      reserveAttempt: () => { admissions++; },
+      onAttempt: (event) => events.push(event),
+      fetchLike: async () => {
+        calls++;
+        return {
+          status: 200, ok: true, headers: { get: () => null },
+          get body() {
+            if (state === "expired") clock = 20;
+            if (state === "cancelled") caller.abort();
+            return null;
+          },
+        };
+      },
+    });
+    await assert.rejects(
+      profile.judge(INPUT, { timeoutMs: 10, signal: caller.signal }),
+      (error) => {
+        assert.equal(error.code, code, state);
+        assert.equal(error.attempts, 1);
+        assert.equal(error.remoteWorkUncertain, state === "live" ? undefined : uncertain);
+        assert.equal(Object.hasOwn(error, "remoteWorkUncertain"), state !== "live");
+        return true;
+      },
+    );
+    assert.equal(calls, 1);
+    assert.equal(admissions, 1);
+    assert.equal(events.length, 1);
+    assert.equal(events[0].outcome, code);
+    assert.equal(events[0].remoteWorkUncertain, uncertain);
+  }
+});
+
+
+test("blank retry milliseconds preserve fallback waits and numeric zero", async () => {
+  for (const [ms, seconds, retries] of [["", "0.05", false], ["  ", "0.05", false], [" ", null, false], ["0", "0.05", true]]) {
+    let admissions = 0;
+    const headersRead = [];
+    const events = [];
+    const transient = statusResponse(429);
+    transient.headers.get = (name) => {
+      headersRead.push(name);
+      return name === "retry-after-ms" ? ms : seconds;
+    };
+    const { fetchLike, calls } = makeFetch([transient, okResponse(noulAnswersFor(2))]);
+    const profile = tsj.createTypesafeJudge({
+      apiKey: "k", now: () => 0, timeoutMs: 10, maxAttempts: 2,
+      retrySettings: { maxTransientRetries: 1, baseDelayMs: 50, maxDelayMs: 50, maxRetryAfterMs: 1000 },
+      reserveAttempt: () => { admissions++; }, fetchLike,
+      onAttempt: (event) => events.push(event),
+    });
+    if (retries) {
+      const result = await profile.judge(INPUT, { timeoutMs: 10 });
+      assert.equal(result.documents.length, 2);
+    } else {
+      await assert.rejects(profile.judge(INPUT, { timeoutMs: 10 }), { code: "TYPESAFE_RETRY_REFUSED", attempts: 1 });
+    }
+    assert.equal(calls.length, retries ? 2 : 1);
+    assert.equal(admissions, calls.length);
+    assert.deepEqual(events.map((event) => event.outcome), retries ? ["TYPESAFE_RATE_LIMIT", "ok"] : ["TYPESAFE_RATE_LIMIT"]);
+    assert.deepEqual(headersRead, retries ? ["retry-after-ms"] : ["retry-after-ms", "retry-after"]);
+  }
+});
+
+
+async function withManualTimers(action) {
+  const originalSet = globalThis.setTimeout, originalClear = globalThis.clearTimeout;
+  const pending = new Map(), scheduled = [];
+  let onSchedule;
+  globalThis.setTimeout = (fn, ms, ...args) => {
+    const handle = {};
+    pending.set(handle, () => fn(...args));
+    scheduled.push(ms);
+    onSchedule?.(ms);
+    return handle;
+  };
+  globalThis.clearTimeout = (handle) => { pending.delete(handle); };
+  try {
+    return await action({ pending, scheduled, observe: (callback) => { onSchedule = callback; } });
+  } finally {
+    pending.clear();
+    globalThis.setTimeout = originalSet;
+    globalThis.clearTimeout = originalClear;
+  }
+}
+
+test("undefined retry fields use defaults and preserve defined zero", async () => {
+  const fields = ["maxTransientRetries", "baseDelayMs", "maxDelayMs", "maxRetryAfterMs"];
+  for (const retrySettings of [Object.fromEntries(fields.map((key) => [key, undefined])), undefined, Object.fromEntries(fields.map((key) => [key, 0]))]) {
+    const actual = await withManualTimers(async ({ pending, scheduled }) => {
+      let clock = 0, calls = 0, admissions = 0, rejectFetch;
+      const profile = tsj.createTypesafeJudge({
+        apiKey: "k", now: () => clock, timeoutMs: 25, retrySettings,
+        reserveAttempt: () => { admissions++; },
+        fetchLike: () => {
+          calls++;
+          return new Promise((_, reject) => { rejectFetch = reject; });
+        },
+      });
+      const work = profile.judge(INPUT);
+      work.catch(() => {});
+      try {
+        assert.equal(pending.size, 2);
+        const [handle, fire] = pending.entries().next().value;
+        clock = 25;
+        pending.delete(handle);
+        fire();
+        const error = await work.catch((error) => error);
+        return { requestedTimers: [...scheduled], code: error.code, attempts: error.attempts, calls, admissions, pending: pending.size };
+      } finally {
+        rejectFetch?.(new Error("owned fake fetch cleanup"));
+        await work.catch(() => {});
+      }
+    });
+    assert.deepEqual(actual, { requestedTimers: [25, 25], code: "TYPESAFE_TIMEOUT", attempts: 1, calls: 1, admissions: 1, pending: 0 });
+  }
+});
+
+
+test("retry-wait cancellation retains known response facts without an observer", async () => {
+  for (const status of [429, 529]) {
+    const actual = await withManualTimers(async ({ pending, scheduled, observe }) => {
+      const caller = new AbortController();
+      const events = [], requests = [];
+      let admissions = 0, bodyCancels = 0, markWaiting;
+      const waiting = new Promise((resolve) => { markWaiting = resolve; });
+      observe((ms) => { if (ms === 50) markWaiting(); });
+      const profile = tsj.createTypesafeJudge({
+        apiKey: "k", now: () => 0, timeoutMs: 25, maxAttempts: 2,
+        retrySettings: { maxTransientRetries: 1, baseDelayMs: 50, maxDelayMs: 50, maxRetryAfterMs: 1000 },
+        reserveAttempt: () => { admissions++; },
+        ...(status === 429 ? { onAttempt: (event) => events.push(event) } : {}),
+        fetchLike: async (_url, init) => {
+          requests.push(init.body);
+          return { status, ok: false, headers: { get: () => null }, body: { cancel: () => { bodyCancels++; return Promise.resolve(); } } };
+        },
+      });
+      const work = profile.judge(INPUT, { timeoutMs: 200, signal: caller.signal });
+      work.catch(() => {});
+      try {
+        await waiting;
+        caller.abort();
+        const error = await work.catch((error) => error);
+        return { code: error.code, attempts: error.attempts, uncertain: error.remoteWorkUncertain, observed: error.observed,
+          admissions, requests, events, bodyCancels, scheduled: [...scheduled], pending: pending.size };
+      } finally {
+        caller.abort();
+        await work.catch(() => {});
+      }
+    });
+    assert.equal(actual.code, "TYPESAFE_CANCELLED");
+    assert.equal(actual.attempts, 1);
+    assert.equal(actual.uncertain, true);
+    assert.deepEqual(actual.observed, {
+      requestSha256: createHash("sha256").update(actual.requests[0]).digest("hex"),
+      requestedModel: tsj.TYPESAFE_PINNED_MODEL, resolvedModel: null, status, usage: null, elapsedMs: 0,
+    });
+    assert.equal(actual.admissions, 1);
+    assert.equal(actual.requests.length, 1);
+    assert.equal(actual.bodyCancels, 1);
+    assert.deepEqual(actual.scheduled, [25, 25, 50]);
+    assert.equal(actual.pending, 0);
+    assert.equal(actual.events.length, status === 429 ? 1 : 0);
+    if (status === 429) {
+      assert.equal(actual.events[0].outcome, "TYPESAFE_RATE_LIMIT");
+      assert.equal(actual.events[0].status, 429);
+      assert.equal(actual.events[0].attemptSha256, actual.observed.requestSha256);
+    }
+  }
 });

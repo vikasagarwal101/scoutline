@@ -78,10 +78,7 @@ test("bridge reader cancellation settles via the caller abort, not the deadline"
     `settled in ${elapsed.toFixed(1)}ms — deadline (5s) masked the abort`,
   );
   assert(failure, "an aborted read must reject");
-  assert(
-    failure.code === "TIMEOUT_ERROR" || failure.name === "AbortError" || failure.code === "CANCELLED",
-    `typed cancellation expected, got ${failure.code ?? failure.name}`,
-  );
+  assert.equal(failure.code, "TIMEOUT_ERROR");
   assert(nativeSignal?.aborted, "the bridge must abort the transport's own signal");
 });
 

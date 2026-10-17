@@ -1000,3 +1000,131 @@ test("round5 custom descriptors retain their actual metadata and native acceptan
     assert.equal(run.result.usage.extractorCacheHits, 0);
   }
 });
+
+// A round-local acquisition terminal must not erase reusable semantic history.
+async function continuationGapEpisode({ mode = "enum", scene = "gap", maxSearches, seedInput = {} } = {}) {
+  const shared = "Review CapCarry 1 signed-export evidence";
+  const question = mode === "value" ? "License of CapCarry 1" : "Does CapCarry 1 enable signed export?";
+  const contrary = `${question} contrary evidence refuted`;
+  const positive = "https://fixture.invalid/cap-carry/positive";
+  const adverse = "https://fixture.invalid/cap-carry/contrary";
+  const input = freezeProvenanceInput(seedInput), before = structuredClone(input);
+  const calls = [];
+  let checkpoint;
+  const result = await runLeanInvestigation({
+    schemaVersion: 1, question: shared, scope: { product: "CapCarry", release: "1" },
+    requirements: { feature: { question, required: true, schema: mode === "value"
+      ? { type: "string" } : { enum: ["supported", "refuted", "disputed"] } } },
+    limits: { maxSearchAttempts: maxSearches, maxUniqueReads: 2 },
+  }, {
+    now: () => 0,
+    seed: { ...input, identity: `cap-carry-${mode}-regression-v1`, capture: (state) => { checkpoint = state; } },
+    search: async (query) => {
+      calls.push({ op: "search", query });
+      assert([shared, question, contrary].includes(query), "only the existing frozen query plan is used");
+      return query === shared ? [{ url: positive, title: "positive specification" },
+        ...(scene === "complete" && mode === "enum" ? [{ url: adverse, title: "contrary specification" }] : [])]
+        : query === contrary ? [{ url: adverse, title: "contrary specification" }] : [];
+    },
+    read: async (url) => {
+      calls.push({ op: "read", url });
+      assert([positive, adverse].includes(url));
+      return mode === "value" ? `CapCarry 1 License MIT. ${url}`
+        : url === positive ? "CapCarry 1 enables signed export." : "CapCarry 1 disables signed export.";
+    },
+    judge: async (request) => {
+      calls.push({ op: "judge", request: structuredClone(request) });
+      return { documents: request.documents.map((doc) => ({ evidenceId: doc.evidenceId,
+        relevant: true, supportsClaim: scene === "unresolved" ? null : doc.content.includes("enables"),
+        refutesClaim: scene === "unresolved" ? null : doc.content.includes("disables") })) };
+    },
+    extractorRevision: "cap-carry-extractor-v1",
+    extract: async (request) => {
+      calls.push({ op: "extract", request: structuredClone(request) });
+      return { finishReason: "stop", rawOutput: JSON.stringify({ feature: { value: "MIT", quote: "License MIT" } }),
+        usage: null, observedCost: null };
+    },
+    candidateJudge: async (request) => {
+      calls.push({ op: "candidateJudge", request: structuredClone(request) });
+      return { model: "fixture", answers: { q0s: { type: "noul", noul: 0.97 }, q0c: { type: "noul", noul: 0.01 } },
+        usage: { inputTokens: 1, outputTokens: 1 }, requestSha256: "c".repeat(64), elapsedMs: 1 };
+    },
+  });
+  assert.deepEqual(input, before, "history and retained records remain caller-owned");
+  for (const [counter, op] of [["searches", "search"], ["readAttempts", "read"], ["judgeCalls", "judge"],
+    ["extractorCalls", "extract"], ["candidateJudgeCalls", "candidateJudge"]]) {
+    assert.equal(result.usage[counter], calls.filter((c) => c.op === op).length, `${counter} counts actual calls`);
+  }
+  return { result, checkpoint, calls, positive, adverse, contrary };
+}
+
+test("cap-partial continuation resumes useful contrary work without discarding its judged basis", async (t) => {
+  for (const mode of ["enum", "value"]) {
+    const first = await continuationGapEpisode({ mode, maxSearches: 1 });
+    t.diagnostic(`continuation-first ${JSON.stringify({ mode, ...first })}`);
+    assert.equal(first.result.status, "partial");
+    assert.equal(first.result.requirements.feature.reason, "counterevidence_not_acquired");
+    const prior = first.checkpoint.history.at(-1).state;
+    assert.equal(prior.ctrvIssued, false);
+    if (mode === "enum") assert.equal(prior.pendingAccept, "supported");
+    else assert(prior.acceptedCandidate !== null && prior.trustedAccepts.length > 0, "the actual provisional proof is carried");
+    const before = structuredClone(first);
+    freezeProvenanceInput(first);
+    const second = await continuationGapEpisode({ mode, maxSearches: 3, seedInput: {
+      evidence: first.result.evidence, history: first.checkpoint.history,
+      leads: first.checkpoint.leads, issuedQueries: first.checkpoint.issuedQueries,
+    } });
+    t.diagnostic(`continuation-second ${JSON.stringify({ mode, ...second })}`);
+    assert(second.calls.some((c) => c.op === "search" && c.query === second.contrary),
+      "fresh continuation must perform its useful never-issued contrary acquisition");
+    const newRead = second.calls.findIndex((c) => c.op === "read" && c.url === second.adverse);
+    assert(newRead >= 0, "the newly discovered contrary URL must actually be read");
+    assert(!second.calls.some((c) => c.op === "read" && c.url === first.positive), "retained source is never reread");
+    assert(second.calls.every((c, i) => !["judge", "extract", "candidateJudge"].includes(c.op) || i > newRead),
+      "unchanged retained context must not buy another judgment or extraction before new evidence");
+    assert(second.result.evidence.some((e) => e.url === second.adverse));
+    assert(second.checkpoint.issuedQueries.includes(second.contrary));
+    assert.deepEqual(second.checkpoint.history.slice(0, first.checkpoint.history.length), first.checkpoint.history);
+    assert.deepEqual(second.checkpoint.history.at(-1).state.attemptedRecords.slice(0, prior.attemptedRecords.length),
+      prior.attemptedRecords, "prior semantic attempts remain intact");
+    assert.deepEqual(second.checkpoint.history.at(-1).state.assessmentHistory.slice(0, prior.assessmentHistory.length),
+      prior.assessmentHistory, "prior semantic assessments remain intact");
+    assert.deepEqual(first, before, "the complete prior result and captured packet remain unchanged");
+  }
+});
+
+test("stable complete continuation does not spend a larger allowance on unused plan entries", async () => {
+  for (const mode of ["enum", "value"]) {
+    const first = await continuationGapEpisode({ mode, scene: "complete", maxSearches: mode === "enum" ? 1 : 3 });
+    assert.equal(first.result.status, "complete");
+    if (mode === "enum") assert(!first.checkpoint.issuedQueries.includes(first.contrary), "disputed completion needs no invented contrary search");
+    const before = structuredClone(first);
+    freezeProvenanceInput(first);
+    const second = await continuationGapEpisode({ mode, scene: "complete", maxSearches: 6, seedInput: {
+      evidence: first.result.evidence, history: first.checkpoint.history,
+      leads: first.checkpoint.leads, issuedQueries: first.checkpoint.issuedQueries,
+    } });
+    assert.deepEqual(second.calls, [], "a settled proof cannot score-fish with a larger ceiling");
+    assert.equal(second.result.status, "complete");
+    assert.deepEqual(second.result.data, first.result.data);
+    assert.deepEqual(first, before);
+  }
+});
+
+test("fully issued stable unresolved continuation invents no acquisition or judgment", async () => {
+  const first = await continuationGapEpisode({ scene: "unresolved", maxSearches: 3 });
+  assert.equal(first.result.status, "partial");
+  assert.equal(first.result.requirements.feature.status, "unresolved");
+  assert(first.result.plan.queries.every((entry) => first.checkpoint.issuedQueries.includes(entry.query)));
+  assert.deepEqual(first.checkpoint.leads, []);
+  const before = structuredClone(first);
+  freezeProvenanceInput(first);
+  const second = await continuationGapEpisode({ scene: "unresolved", maxSearches: 6, seedInput: {
+    evidence: first.result.evidence, history: first.checkpoint.history,
+    leads: first.checkpoint.leads, issuedQueries: first.checkpoint.issuedQueries,
+  } });
+  assert.deepEqual(second.calls, [], "no useful remaining route means no paid retry or score fishing");
+  assert.deepEqual(second.result.requirements, first.result.requirements);
+  assert.deepEqual(second.checkpoint.issuedQueries, first.checkpoint.issuedQueries);
+  assert.deepEqual(first, before);
+});

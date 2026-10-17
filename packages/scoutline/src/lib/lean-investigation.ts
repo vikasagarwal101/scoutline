@@ -1127,6 +1127,22 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
         f.pendingAccept = null;
         f.pendingSinceKey = null;
         f.disputedSinceKey = null;
+      } else if (
+        exact !== undefined &&
+        f.terminal?.status === "unresolved" &&
+        f.terminal.reason === "counterevidence_not_acquired" &&
+        f.stopReason === null &&
+        !f.ctrvIssued &&
+        limits.maxSearchAttempts > 0 &&
+        plan.some((entry) =>
+          entry.fieldId === f.id &&
+          entry.kind === "counterevidence" &&
+          !issuedQueries.has(entry.query),
+        )
+      ) {
+        // Fresh acquisition may finish an unmet contrary round. Keep the
+        // exact-context judgment/proof caches; only its local stop reopens.
+        f.terminal = null;
       }
     }
   }

@@ -39,6 +39,7 @@ import { createSpiderDescriptor } from "../dist/providers/spider/adapter.js";
 import { createBochaDescriptor } from "../dist/providers/bocha/adapter.js";
 import { createSearchApiDescriptor } from "../dist/providers/searchapi/adapter.js";
 import { createKagiDescriptor } from "../dist/providers/kagi/adapter.js";
+import { createDeepSeekDescriptor } from "../dist/providers/deepseek/adapter.js";
 import {
   BUILT_IN_PROVIDER_DESCRIPTORS,
   getProviderDescriptor,
@@ -537,6 +538,9 @@ describe("Search Adapter conformance — shared normalized output", () => {
  * (#59).
  */
 const SEARCH_CONFORMANCE_FACTORIES = new Map([
+  ["deepseek", (results) => createDeepSeekDescriptor({ transport: {
+    fetch: async () => Response.json({ results }),
+  } }).create({ env: { DEEPSEEK_API_KEY: "k" } }).search],
   ["zai", makeZaiCapability],
   ["minimax", makeMiniMaxCapability],
   ["tavily", makeTavilyCapability],
@@ -571,6 +575,14 @@ const SEARCH_CONFORMANCE_FACTORIES = new Map([
  * existed (issue #237).
  */
 const SEARCH_CONFORMANCE_RAW = new Map([
+  // DeepSeek rejects malformed rows rather than dropping them. Its separate
+  // negative adapter tests pin that policy; these rows exercise normalization.
+  ["deepseek", [
+    { title: "Conformance result one", url: "https://example.test/one", summary: "Shared normalized summary one.",
+      snippet: "short", content: "", rerank_score: 2, authority: 3, site_name: null, site_icon: null, date: null },
+    { title: "Conformance result two", url: "https://example.test/two", summary: "Shared normalized summary two.",
+      snippet: "short", content: "", rerank_score: 2, authority: 3, site_name: null, site_icon: null, date: null },
+  ]],
   // Z.AI raw response (title/link/content; no media/publish_date so the
   // normalized form carries no source/date — matching MiniMax's shape).
   [
@@ -1204,7 +1216,7 @@ describe("AbortSignal — new research invokes honour pre-aborted signal (2.6)",
 // ---------------------------------------------------------------------------
 
 describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
-  it("contains exactly [zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider, bocha, searchapi, kagi, arxiv, openalex, crossref, pubmed, europepmc] in that order", () => {
+  it("contains the shared providers followed by the five science suppliers in canonical order", () => {
     // GROUND: T2 — the five science ids append in the D2 listing order
     // (openalex-first is the executor arm order, NOT the registry
     // insertion order).
@@ -1226,6 +1238,7 @@ describe("Static provider registry — BUILT_IN_PROVIDER_DESCRIPTORS", () => {
         "bocha",
         "searchapi",
         "kagi",
+        "deepseek",
         "arxiv",
         "openalex",
         "crossref",

@@ -1,10 +1,10 @@
 # Architecture
 
 Scoutline is a Node.js command-line client that presents several shared
-Capabilities through one consistent interface. It supports twenty built-in
-Providers — fifteen shared-capability suppliers (Z.AI, MiniMax, Tavily, Exa,
+Capabilities through one consistent interface. It supports twenty-one built-in
+Providers — sixteen shared-capability suppliers (Z.AI, MiniMax, Tavily, Exa,
 Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, You.com, Linkup,
-Spider.cloud, Bocha AI, SearchApi, and Kagi) plus five keyless science
+Spider.cloud, Bocha AI, SearchApi, Kagi, and DeepSeek) plus five keyless science
 suppliers (arXiv, OpenAlex, Crossref, PubMed, and Europe PMC) — through a
 common Adapter boundary.
 
@@ -15,10 +15,10 @@ scoutline executable
   -> dist/index.js command dispatcher
   -> command handler
   -> Provider selection (--provider / SCOUTLINE_PROVIDER / default "zai")
-  -> Provider Adapter (zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider, bocha, searchapi, kagi, arxiv, openalex, crossref, pubmed, or europepmc)
+  -> Provider Adapter (zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider, bocha, searchapi, kagi, deepseek, arxiv, openalex, crossref, pubmed, or europepmc)
   -> shared execution (cache + retry)
-  -> Provider transport (Z.AI MCP / MiniMax direct HTTP / Tavily direct HTTP / Exa direct HTTP / Brave direct HTTP / Firecrawl direct HTTP / Parallel direct HTTP / Perplexity direct HTTP / Jina direct HTTP / You.com direct HTTP / Linkup direct HTTP / Spider.cloud direct HTTP / Bocha direct HTTP / SearchApi direct HTTP / Kagi direct HTTP / arXiv direct HTTP / OpenAlex direct HTTP / Crossref direct HTTP / PubMed direct HTTP / Europe PMC direct HTTP)
-  -> Provider service (Z.AI, ZRead, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, You.com, Linkup, Spider.cloud, Bocha AI, SearchApi, Kagi, arXiv, OpenAlex, Crossref, PubMed, or Europe PMC)
+  -> Provider transport (Z.AI MCP / MiniMax direct HTTP / Tavily direct HTTP / Exa direct HTTP / Brave direct HTTP / Firecrawl direct HTTP / Parallel direct HTTP / Perplexity direct HTTP / Jina direct HTTP / You.com direct HTTP / Linkup direct HTTP / Spider.cloud direct HTTP / Bocha direct HTTP / SearchApi direct HTTP / Kagi direct HTTP / DeepSeek direct HTTP / arXiv direct HTTP / OpenAlex direct HTTP / Crossref direct HTTP / PubMed direct HTTP / Europe PMC direct HTTP)
+  -> Provider service (Z.AI, ZRead, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, You.com, Linkup, Spider.cloud, Bocha AI, SearchApi, Kagi, DeepSeek, arXiv, OpenAlex, Crossref, PubMed, or Europe PMC)
 ```
 
 `packages/scoutline/bin/scoutline.js` is the published executable. It dynamically loads the compiled `dist/index.js` entry point and emits a structured load error if the package was not built.
@@ -39,8 +39,8 @@ Provider's Adapter.
 
 The production registry at `src/providers/registry.ts` is a static,
 twenty-entry list `[zai, minimax, tavily, exa, brave, firecrawl, parallel,
-perplexity, jina, you, linkup, spider, bocha, searchapi, kagi, arxiv,
-openalex, crossref, pubmed, europepmc]` — the fifteen shared-capability
+perplexity, jina, you, linkup, spider, bocha, searchapi, kagi, deepseek, arxiv,
+openalex, crossref, pubmed, europepmc]` — the sixteen shared-capability
 Providers followed by the five science-supplier seats. There is no dynamic
 loading, no package-name lookup,
 no Adapter file paths, and no externally supplied factories. Tests
@@ -49,7 +49,7 @@ inject descriptor lists explicitly through optional parameters.
 ### Built-in Providers
 
 | ID | Required credential | Region / endpoint | Notes |
-| --- | --- | --- | --- |
+|---| --- |---| --- |
 | `zai` | `Z_AI_API_KEY` | `Z_AI_BASE_URL` / `Z_AI_MODE` | Default Provider; MCP-backed transport |
 | `minimax` | `MINIMAX_API_KEY` | `MINIMAX_REGION` (`global` / `cn`) or `MINIMAX_BASE_URL` | Direct transport for Search, Vision, Quota; SDK removed in 0.6.0 |
 | `tavily` | `TAVILY_API_KEY` | `https://api.tavily.com` | Direct-HTTP transport; Search, Reader, Crawl, Map, Research, Quota, Diagnostics |
@@ -65,6 +65,7 @@ inject descriptor lists explicitly through optional parameters.
 | `bocha` | `BOCHA_API_KEY` | `https://api.bochaai.com` | Direct-HTTP transport (Bearer); Search, Diagnostics. No Reader/Crawl/Map/Research/Vision/Quota |
 | `searchapi` | `SEARCHAPI_API_KEY` (legacy `SERPAPI_API_KEY`) | `https://www.searchapi.io` | Direct-HTTP transport; SearchApi.io Google-SERP search with credit quota (Search, Quota, Diagnostics) |
 | `kagi` | `KAGI_API_KEY` (legacy `KAGI_TOKEN`) | `https://kagi.com` | Direct-HTTP transport (`Authorization: Bot`); Kagi search — v1 `/api/v1/search`, v0 `/api/v0/enrich/news` for `--topic news` (Search, Diagnostics). No Reader/Crawl/Map/Research/Vision/Quota |
+| `deepseek` | `DEEPSEEK_API_KEY` | `https://api.deepseek.com` | Direct HTTP with bearer authentication: `/v1/tools/search` and `/v1/tools/fetch` (Search, Reader, Diagnostics). |
 | `arxiv` | none (keyless) | https://export.arxiv.org/api/query | Science supplier seat — Atom XML; Science search/get, Diagnostics (keyless probe) |
 | `openalex` | `OPENALEX_API_KEY` (optional; keyless supported) | https://api.openalex.org/works | Science supplier seat — JSON; Science search/get, Diagnostics (keyless probe). Keyless 1000 credits/day |
 | `crossref` | none (keyless; `mailto` is politeness) | https://api.crossref.org/works | Science supplier seat — JSON; Science search/get, Diagnostics (keyless probe) |
@@ -100,22 +101,22 @@ single-provider behavior; see
 [`docs/adr/0002-provider-fallback.md`](adr/0002-provider-fallback.md)
 for the rationale and the accepted async double-charge risk.
 
-| Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Parallel | Perplexity | Jina AI | You.com | Linkup | Spider.cloud | Bocha AI | SearchApi | Kagi | arXiv | OpenAlex | Crossref | PubMed | Europe PMC | Command |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| `search` | Yes | Yes | Yes | Yes | Yes (web/news/video; `--content-size high` → LLM Context) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No | No | No | No | No | `scoutline search` |
-| `vision.interpret-image` | Yes | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline vision analyze` |
-| Specialized Vision operations | Yes (extract-text = GLM-OCR `layout_parsing` engine with exhaustion fallback to the vision model; PDF ≤50MB accepted; `--language`/custom prompt warn-and-strip on the OCR arm; content-hash cached 24h) | 4 of 5 (`ui-to-code`, `extract-text`, `diagnose-error`, `diagram` live-attested; `chart` pending) | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline vision ui-to-code`, `extract-text`, `diagnose-error`, `diagram`, `chart` |
-| Image diff / video | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline vision diff`, `vision video` |
-| `quota` | Yes | Yes | Yes | No (deferred) | Yes (rate-limit window, not spend) | Yes (credits) | No | No | Yes (rate-limit telemetry, not spend) | No | Yes (credit balance, not spend) | Yes (credit balance, not spend) | No | Yes | No | No | No | No | No | No | `scoutline quota` |
-| `diagnostics` | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes (keyless probe) | Yes (keyless probe) | Yes (keyless probe) | Yes (keyless probe) | Yes (keyless probe) | `scoutline doctor` |
-| Reader | Yes | Falls back (zai/tavily/exa/firecrawl/parallel/jina/you/linkup/spider) | Yes (Z.AI-only options are rejected) | Yes (rejects Z.AI-only options) | Falls back (zai/tavily/exa/firecrawl/parallel/jina/you/linkup/spider) | Yes (returns page titles) | Yes | Falls back (zai/tavily/exa/firecrawl/parallel/jina/you/linkup/spider) | Yes | Yes (rejects Z.AI-only options plus `--format text`) | Yes (renders JavaScript; rejects Z.AI-only options plus `--format text` and `--no-images`) | Yes (rejects Z.AI-only options) | No | No | No | No | No | No | No | No | `scoutline read` |
-| Repository exploration | Yes | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | No | No | No | No | No | No | No | No | `scoutline repo ...` |
-| Crawl | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Yes | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Yes (async; resumable after Ctrl-C) | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Yes (sync) | No | No | No | No | No | No | No | No | `scoutline crawl` |
-| Map | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Yes | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Yes | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Yes | No | No | No | No | No | No | No | No | `scoutline map` |
-| Research | Falls back (tavily/exa/parallel/perplexity/jina/you/linkup) | Falls back (tavily/exa/parallel/perplexity/jina/you/linkup) | Yes (4-250 credits per request) | Yes | Falls back (tavily/exa/parallel/perplexity/jina/you/linkup) | Falls back (tavily/exa/parallel/perplexity/jina/you/linkup) (`/deep-research` deprecated) | Yes | Yes | Yes | Yes | Yes | Falls back (tavily/exa/parallel/perplexity/jina/you/linkup) | No | No | No | No | No | No | No | No | `scoutline research` |
-| Science (`science.search` / `science.get`) | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | Yes (search/get; controls per wire) | Yes (search/get; controls per wire) | Yes (search/get; controls per wire) | Yes (search/get; controls per wire) | Yes (search/get; controls per wire) | `scoutline science` |
-| Raw tools | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline tools`, `tool`, `call` |
-| Code Mode | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline code ...` |
+| Capability | Z.AI | MiniMax | Tavily | Exa | Brave | Firecrawl | Parallel | Perplexity | Jina AI | You.com | Linkup | Spider.cloud | Bocha AI | SearchApi | Kagi | DeepSeek | arXiv | OpenAlex | Crossref | PubMed | Europe PMC | Command |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `search` | Yes | Yes | Yes | Yes | Yes (web/news/video; `--content-size high` → LLM Context) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No | No | No | No | No | `scoutline search` |
+| `vision.interpret-image` | Yes | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline vision analyze` |
+| Specialized Vision operations | Yes (extract-text = GLM-OCR `layout_parsing` engine with exhaustion fallback to the vision model; PDF ≤50MB accepted; `--language`/custom prompt warn-and-strip on the OCR arm; content-hash cached 24h) | 4 of 5 (`ui-to-code`, `extract-text`, `diagnose-error`, `diagram` live-attested; `chart` pending) | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline vision ui-to-code`, `extract-text`, `diagnose-error`, `diagram`, `chart` |
+| Image diff / video | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline vision diff`, `vision video` |
+| `quota` | Yes | Yes | Yes | No (deferred) | Yes (rate-limit window, not spend) | Yes (credits) | No | No | Yes (rate-limit telemetry, not spend) | No | Yes (credit balance, not spend) | Yes (credit balance, not spend) | No | Yes | No | No | No | No | No | No | No | `scoutline quota` |
+| `diagnostics` | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes (keyless probe) | Yes (keyless probe) | Yes (keyless probe) | Yes (keyless probe) | Yes (keyless probe) | `scoutline doctor` |
+| Reader | Yes | Falls back (zai/tavily/exa/firecrawl/parallel/jina/you/linkup/spider) | Yes (Z.AI-only options are rejected) | Yes (rejects Z.AI-only options) | Falls back (zai/tavily/exa/firecrawl/parallel/jina/you/linkup/spider) | Yes (returns page titles) | Yes | Falls back (zai/tavily/exa/firecrawl/parallel/jina/you/linkup/spider) | Yes | Yes (rejects Z.AI-only options plus `--format text`) | Yes (renders JavaScript; rejects Z.AI-only options plus `--format text` and `--no-images`) | Yes (rejects Z.AI-only options) | No | No | No | Yes | No | No | No | No | No | `scoutline read` |
+| Repository exploration | Yes | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | Falls back (zai) | No | No | No | No | No | No | No | No | No | `scoutline repo ...` |
+| Crawl | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Yes | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Yes (async; resumable after Ctrl-C) | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Yes (sync) | No | No | No | No | No | No | No | No | No | `scoutline crawl` |
+| Map | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Yes | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Yes | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Falls back (tavily/firecrawl/spider) | Yes | No | No | No | No | No | No | No | No | No | `scoutline map` |
+| Research | Falls back (tavily/exa/parallel/perplexity/jina/you/linkup) | Falls back (tavily/exa/parallel/perplexity/jina/you/linkup) | Yes (4-250 credits per request) | Yes | Falls back (tavily/exa/parallel/perplexity/jina/you/linkup) | Falls back (tavily/exa/parallel/perplexity/jina/you/linkup) (`/deep-research` deprecated) | Yes | Yes | Yes | Yes | Yes | Falls back (tavily/exa/parallel/perplexity/jina/you/linkup) | No | No | No | No | No | No | No | No | No | `scoutline research` |
+| Science (`science.search` / `science.get`) | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | Yes (search/get; controls per wire) | Yes (search/get; controls per wire) | Yes (search/get; controls per wire) | Yes (search/get; controls per wire) | Yes (search/get; controls per wire) | `scoutline science` |
+| Raw tools | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline tools`, `tool`, `call` |
+| Code Mode | Yes | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | No | `scoutline code ...` |
 
 Specialized MiniMax Vision mappings remain conformance-gated and only move
 into the shared matrix once their offline and live attestation passes.
@@ -135,9 +136,9 @@ Every search Adapter returns the same normalized `SearchSource[]`
 command meaning — query splitting, parallel scheduling, dedupe, ranking,
 summary truncation, field projection, and presentation — is identical
 for every Provider. Result count is applied locally after normalization;
-for every Provider except Bocha it never enters an Adapter request or
-cache key. Bocha's wire request carries a native `count` parameter, so
-its Adapter forwards the requested count and partitions its cache
+for every Provider except Bocha and DeepSeek it never enters an Adapter request or
+cache key. Their wire requests carry a native `count` parameter, so
+their Adapters forward the requested count and partitions its cache
 entries by it (#211).
 
 `--topic <general|news|finance>` is the only search control every
@@ -238,7 +239,7 @@ Providers. Provider media Modules own every Provider-specific fact: format,
 size limit, existence, and conversion.
 
 | Provider | Formats | Maximum |
-| --- | --- | --- |
+|---| --- |---|
 | Z.AI | JPG, JPEG, PNG | 5 MiB |
 | MiniMax | JPG, JPEG, PNG, WebP | 50 MiB |
 
@@ -405,7 +406,7 @@ Encoded MCP error strings and malformed ZRead wrappers are mapped
 deterministically before success parsing:
 
 | Provider condition | Public code | Status | Retry |
-| --- | --- | --- | --- |
+|---| --- |---| --- |
 | Exhausted quota (`1310` or explicit exhausted limit) | `QUOTA_ERROR` | 429 | terminal |
 | Transient 429 / "rate limited" | `API_ERROR` | 429 | one retry |
 | Auth 401 / 403 | `AUTH_ERROR` | matching | terminal |
@@ -555,7 +556,7 @@ deterministically before success parsing. The taxonomy matches `repo` and
 shares the same factored classifier (`src/providers/zai/encoded-error.ts`):
 
 | Provider condition | Public code | Status | Retry |
-| --- | --- | --- | --- |
+|---| --- |---| --- |
 | Exhausted quota (`1310` or explicit exhausted limit) | `QUOTA_ERROR` | 429 | terminal |
 | Transient 429 / "rate limited" | `API_ERROR` | 429 | one retry |
 | Auth 401 / 403 | `AUTH_ERROR` | matching | terminal |
@@ -763,7 +764,7 @@ Resilience contract:
 ## Command Layer
 
 | Module | Responsibility |
-| --- | --- |
+|---| --- |
 | `commands/vision.ts` | Eight vision operations with shared client lifecycle management. |
 | `commands/search.ts` | Search filtering, formatting, and multi-query result merging. Topic control is part of the shared search controls (`--topic <general\|news\|finance>`). |
 | `commands/read.ts` | Thin read handler: parse-level validation (URL scheme, `--extract`), `executeReaderOperation` invocation, schema-v1 envelope projection (`--max-chars` whole-envelope budget, `--extract` slicing), output-mode presentation. Provider selection lives in `src/index.ts`. No Explorer module — Reader is a single fetch. |
@@ -1028,3 +1029,8 @@ Durable rules distilled from the 2026-08 review-comment audit fixes:
 - **Defensive guards must be reachable.** A throw inside a synchronous `.map()` escapes before `Promise.allSettled` exists — make pipeline callbacks `async` so failures settle per-item. And verify the guarded divergence is constructible; a guard for an impossible input is dead code wearing a seatbelt.
 - **No fabricated values.** When a source (provider, header, config) does not state a fact, publish the exact observation with an explicit unknown representation and omit what would have to be inferred (per ADR-0001: inference changes shared meaning). `QuotaWindow`'s remaining-only shape is the worked example.
 - **Validate-accepts is not wire-carries.** An option a provider's validate() accepts must be observable in the outgoing request (body, params, headers) or in the normalized result — or rejected. `tests/controls-conformance.test.js` enforces this per provider x control; extend it with every capability addition.
+
+DeepSeek supports Search and Markdown Reader through standalone bearer-authenticated
+JSON endpoints. Domain/topic/date operators are compiled before the 128-character
+query limit is checked. The effective query and capped count partition its cache.
+See the [DeepSeek provider guide](deepseek.md) for controls and lifecycle details.

@@ -1364,6 +1364,7 @@ describe("executeWithFallback — production registry carries credential hint en
       // Kagi documents the same-key legacy alias the credentials module
       // resolves: KAGI_TOKEN is accepted when KAGI_API_KEY is absent.
       kagi: ["KAGI_API_KEY", "KAGI_TOKEN"],
+      deepseek: ["DEEPSEEK_API_KEY"],
       // Science seats (T2): keyless trio carries no credential model;
       // openalex/pubmed accept an optional free key.
       arxiv: [],

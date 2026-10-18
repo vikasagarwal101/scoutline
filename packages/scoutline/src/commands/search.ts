@@ -1231,6 +1231,7 @@ Options:
                       (UNSUPPORTED_OPTION).
   --location <l>      Location hint (provider support varies): cn, us
   --count <n>         Limit number of results (applied after normalization)
+                      DeepSeek also forwards count, capped at 50 (wire default 10).
   --max-summary <n>   Truncate each result summary to <n> chars (JSON modes only)
   --max-chars <n>     Fit the whole printed output in ~<n> chars (summaries trim, then
                       source/date drop, then lowest-ranked results drop; urls and titles
@@ -1272,6 +1273,9 @@ Output formats (--output-format / -O):
   refs       "[N] title — url" per line (citation style)
 
 Examples:
+  # DeepSeek: final query including domain/topic/date operators must fit
+  # 128 Unicode characters; location, content-size, and video are unsupported.
+  scoutline search "TypeScript release notes" --provider deepseek --count 5
   scoutline search "React 19 new features"
   scoutline search "Node.js security" --domain nodejs.org
   scoutline --provider minimax search "AI news"

@@ -30,6 +30,7 @@ import { createSpiderDescriptor } from "./spider/adapter.js";
 import { createBochaDescriptor } from "./bocha/adapter.js";
 import { createSearchApiDescriptor } from "./searchapi/adapter.js";
 import { createKagiDescriptor } from "./kagi/adapter.js";
+import { createDeepSeekDescriptor } from "./deepseek/adapter.js";
 // The science verticals ship their real adapters; none of the seats
 // still import the stub factories from types.js.
 import { createArxivDescriptor } from "./arxiv/adapter.js";
@@ -80,6 +81,7 @@ export const BUILT_IN_PROVIDER_DESCRIPTORS: readonly ProviderDescriptor[] = [
   createBochaDescriptor(),
   createSearchApiDescriptor(),
   createKagiDescriptor(),
+  createDeepSeekDescriptor(),
   // Science suppliers (T2 seats) — real adapters ship here; the stub
   // seats live in types.ts's BUILT_IN_PROVIDER_DESCRIPTORS.
   // D2 listing order — openalex-first is the executor fan-out ARM

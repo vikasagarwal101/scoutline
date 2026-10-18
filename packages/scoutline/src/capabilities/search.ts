@@ -101,9 +101,9 @@ export interface LegacySearchCacheCandidate {
  * Identity used to read and write a Provider-partitioned cache entry.
  * `credentialFingerprint` is the full lowercase SHA-256 hex digest of
  * the active credential and is never hashed a second time by cache
- * code. Request identity uses recursively key-sorted JSON of only
- * `query` and Provider controls — plus `count` for the forwarded-count
- * Adapter (Bocha, #211), whose wire request differs per count.
+ * code. Request identity uses recursively key-sorted JSON of the effective
+ * query and Provider controls, plus count for forwarded-count Adapters
+ * (Bocha and DeepSeek), whose wire request differs per count.
  */
 export interface SearchCacheIdentity {
   readonly provider: ProviderId;
@@ -138,7 +138,7 @@ export interface SearchCapability {
    * `validate` succeeds. `compatibility.legacyCount` is the optional
    * command count; it may enter only `legacyCandidates` and never the
    * new request identity. `compatibility.count` is the same command
-   * count for Adapters that forward it to their wire request (Bocha,
+   * count for Adapters that forward it to their wire request (Bocha and DeepSeek,
    * #211): those Adapters MUST include it in their new request
    * identity so entries partition by count, while Adapters that apply
    * count locally (every other Provider) MUST NOT let it near the
@@ -160,7 +160,7 @@ export interface SearchCapability {
    * simply ignore it.
    *
    * `count` is the optional requested result count (#211). An Adapter
-   * whose wire request carries a count parameter (Bocha) forwards it;
+   * whose wire request carries a count parameter (Bocha or DeepSeek) forwards it;
    * every other Adapter applies count locally in shared execution and
    * ignores this argument.
    */

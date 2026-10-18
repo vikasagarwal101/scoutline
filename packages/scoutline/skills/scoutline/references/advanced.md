@@ -8,19 +8,29 @@ gate.
 
 Shared commands (`search`, `vision analyze`, `quota`, `doctor`),
 **`repo`**, **`read`**, **`crawl`**, **`map`**, and **`research`** accept
-the global `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|bocha|searchapi|kagi>` flag. Precedence:
+the global `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|bocha|searchapi|kagi|deepseek>` flag. Precedence:
 
-1. `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|bocha|searchapi|kagi>` on the command line
+1. `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|bocha|searchapi|kagi|deepseek>` on the command line
 2. `SCOUTLINE_PROVIDER` environment variable
-3. Default `zai`
+3. For capability commands, the first configured, capable provider in `routing.<capability>`
+4. Otherwise, quota-ranked configured providers that support the capability
+5. Compatibility default `zai` when no configured provider supports the capability
 
-Unknown or empty values fail with `VALIDATION_ERROR` before any Provider
-invocation. Provider selection is never inferred from credentials.
+Unknown or empty pins fail with `VALIDATION_ERROR` before any Provider
+invocation. Configuration determines eligibility for the unpinned steps.
+Preflight checks capability before credentials. If Z.AI does not advertise
+the capability (crawl, map, research), the compatibility default produces
+`UNSUPPORTED_CAPABILITY`; advertised capabilities without Z.AI credentials
+produce `CONFIGURATION_ERROR`.
+
+`doctor` lists every provider; unpinned `quota` reports all configured
+providers. These observational commands do not use routing or quota
+ranking to choose a supplier.
 
 `tools`, `tool`, `call`, and `code` accept the flag but ignore it; they
 remain Z.AI-only and do not validate the supplied value. `repo` and `read`
 participate in selection: Z.AI, Tavily, Exa, Firecrawl, Parallel, Jina,
-You.com, Linkup, and Spider.cloud supply `reader`; only Z.AI supplies
+You.com, Linkup, Spider.cloud, and DeepSeek supply `reader`; only Z.AI supplies
 `repository-exploration`. `crawl` and `map` participate in selection and
 are supplied by Tavily, Firecrawl, and Spider.cloud. `research` is
 supplied by Tavily, Exa, Parallel, Perplexity, Jina, You.com, and
@@ -41,7 +51,8 @@ scoutline --provider minimax search "React 19 features"
 export SCOUTLINE_PROVIDER=minimax
 scoutline quota
 
-# 3. Default Z.AI when nothing is supplied
+# 3. Routing preference, then quota ranking, when neither pin is supplied
+unset SCOUTLINE_PROVIDER
 scoutline search "TypeScript best practices"
 ```
 
@@ -316,13 +327,17 @@ extract reads share the same cache entries as content reads.
 
 `scoutline quota` returns a schema-version-1 `QuotaDashboard` (ADR-0001).
 Percentages are remaining percentages clamped to `0..100`. Provider-specific
-fields do not cross the Interface. In `--all-providers` mode rows sort
-healthy-first (#96): `ok` rows, then `error` rows, then `no-capability`
-rows, with registry order preserved within each class.
+fields do not cross the Interface. With no provider pin, the dashboard
+reports every configured Provider. Rows sort healthy-first (#96): `ok`
+rows, then `error` rows, then `no-capability` rows, with registry order
+preserved within each class. The command exits 1 if any provider fails.
+A provider pin selects one provider; `--all-providers` forces the
+multi-provider dashboard even under a pin.
 
 ```bash
-scoutline quota                       # effective Provider
-scoutline quota --all-providers       # every configured Provider, healthy-first; exit 1 if any fails
+scoutline quota                       # every configured Provider (default)
+scoutline quota --provider tavily     # Tavily only
+scoutline quota --all-providers       # every configured Provider, even under a pin
 ```
 
 `scoutline doctor` returns a **schema-version-2** `DiagnosticsReport`
@@ -344,7 +359,7 @@ each advertised capability, exactly which built-in Providers supply it.
 derivation silently hid capabilities supplied by a subset of providers.
 The matrix replaces them. `repository-exploration` is reported under
 Z.AI alone; `reader` under Z.AI, Tavily, Exa, Firecrawl, Parallel, Jina,
-You.com, Linkup, and Spider.cloud; `crawl` and `map` under Tavily,
+You.com, Linkup, Spider.cloud, and DeepSeek; `crawl` and `map` under Tavily,
 Firecrawl, and Spider.cloud; `research` under Tavily, Exa, Parallel,
 Perplexity, Jina, You.com, and Linkup. Doctor help derives its
 unsupported lists from the same descriptor metadata for every other
@@ -355,7 +370,8 @@ Provider.
 ```text
 repo argv
   -> parse-level grammar validation
-  -> --provider / SCOUTLINE_PROVIDER / default zai
+  -> --provider / SCOUTLINE_PROVIDER / routing.repository-exploration
+       / quota-ranked configured suppliers / compatibility zai if none eligible
   -> descriptor capability check (repository-exploration)
   -> descriptor.isConfigured (effective Provider)
   -> descriptor.create -> Adapter
@@ -380,7 +396,8 @@ parsing, and best-effort per-attempt close.
 ```text
 read argv
   -> parse-level grammar validation (URL scheme, --extract mode)
-  -> --provider / SCOUTLINE_PROVIDER / default zai
+  -> --provider / SCOUTLINE_PROVIDER / routing.reader
+       / quota-ranked configured suppliers / compatibility zai if none eligible
   -> descriptor capability check (reader)
   -> descriptor.isConfigured (effective Provider)
   -> descriptor.create -> Adapter

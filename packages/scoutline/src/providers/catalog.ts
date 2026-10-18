@@ -57,6 +57,7 @@ export const PROVIDER_LABELS: Record<ProviderId, string> = {
   bocha: "Bocha AI",
   searchapi: "SearchApi",
   kagi: "Kagi",
+  deepseek: "DeepSeek",
   arxiv: "arXiv",
   openalex: "OpenAlex",
   crossref: "Crossref",

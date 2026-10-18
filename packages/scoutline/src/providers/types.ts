@@ -56,6 +56,7 @@ export const PROVIDER_IDS = [
   "bocha",
   "searchapi",
   "kagi",
+  "deepseek",
   "arxiv",
   "openalex",
   "crossref",

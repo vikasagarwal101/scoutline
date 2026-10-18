@@ -14,9 +14,12 @@ the global `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexi
 2. `SCOUTLINE_PROVIDER` environment variable
 3. For capability commands, the first configured, capable provider in `routing.<capability>`
 4. Otherwise, quota-ranked configured providers that support the capability
+5. Compatibility default `zai` when no configured provider supports the capability
 
 Unknown or empty pins fail with `VALIDATION_ERROR` before any Provider
 invocation. Configuration determines eligibility for the unpinned steps.
+The compatibility default produces a configuration error when Z.AI is
+unconfigured.
 
 `doctor` lists every provider; unpinned `quota` reports all configured
 providers. These observational commands do not use routing or quota
@@ -322,13 +325,17 @@ extract reads share the same cache entries as content reads.
 
 `scoutline quota` returns a schema-version-1 `QuotaDashboard` (ADR-0001).
 Percentages are remaining percentages clamped to `0..100`. Provider-specific
-fields do not cross the Interface. In `--all-providers` mode rows sort
-healthy-first (#96): `ok` rows, then `error` rows, then `no-capability`
-rows, with registry order preserved within each class.
+fields do not cross the Interface. With no provider pin, the dashboard
+reports every configured Provider. Rows sort healthy-first (#96): `ok`
+rows, then `error` rows, then `no-capability` rows, with registry order
+preserved within each class. The command exits 1 if any provider fails.
+A provider pin selects one provider; `--all-providers` forces the
+multi-provider dashboard even under a pin.
 
 ```bash
-scoutline quota                       # effective Provider
-scoutline quota --all-providers       # every configured Provider, healthy-first; exit 1 if any fails
+scoutline quota                       # every configured Provider (default)
+scoutline quota --provider tavily     # Tavily only
+scoutline quota --all-providers       # every configured Provider, even under a pin
 ```
 
 `scoutline doctor` returns a **schema-version-2** `DiagnosticsReport`
@@ -361,7 +368,8 @@ Provider.
 ```text
 repo argv
   -> parse-level grammar validation
-  -> --provider / SCOUTLINE_PROVIDER / default zai
+  -> --provider / SCOUTLINE_PROVIDER / routing.repository-exploration
+       / quota-ranked configured suppliers / compatibility zai if none eligible
   -> descriptor capability check (repository-exploration)
   -> descriptor.isConfigured (effective Provider)
   -> descriptor.create -> Adapter
@@ -386,7 +394,8 @@ parsing, and best-effort per-attempt close.
 ```text
 read argv
   -> parse-level grammar validation (URL scheme, --extract mode)
-  -> --provider / SCOUTLINE_PROVIDER / default zai
+  -> --provider / SCOUTLINE_PROVIDER / routing.reader
+       / quota-ranked configured suppliers / compatibility zai if none eligible
   -> descriptor capability check (reader)
   -> descriptor.isConfigured (effective Provider)
   -> descriptor.create -> Adapter

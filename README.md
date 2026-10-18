@@ -264,6 +264,9 @@ Shared commands accept `--provider <zai|minimax|tavily|exa|brave|firecrawl|paral
 2. `SCOUTLINE_PROVIDER` environment variable
 3. For capability commands, the first configured, capable provider in `routing.<capability>`
 4. Otherwise, quota-ranked configured providers that support the capability
+5. Compatibility default `zai` when no configured provider supports the capability
+
+The compatibility default produces a configuration error when Z.AI is unconfigured.
 
 `doctor` lists every provider; unpinned `quota` reports all configured providers.
 These observational commands do not use routing or quota ranking to choose a supplier.

@@ -226,10 +226,12 @@ Resolution precedence (highest first):
 2. `SCOUTLINE_PROVIDER`
 3. First configured, capable provider in `routing.<capability>`
 4. Quota-ranked configured providers that support the capability
+5. Compatibility default `zai` when no configured provider supports the capability
 
-Configuration determines eligibility for the unpinned steps; explicit and
-environment pins take precedence. Unknown or empty pins fail fast with
-`VALIDATION_ERROR` before any Provider invocation.
+If step 5 selects an unconfigured Z.AI provider, execution reports a
+configuration error. Configuration determines eligibility for the unpinned
+steps; explicit and environment pins take precedence. Unknown or empty pins
+fail fast with `VALIDATION_ERROR` before any Provider invocation.
 
 `doctor` lists every provider; unpinned `quota` reports all configured
 providers. These observational commands do not use routing or quota ranking

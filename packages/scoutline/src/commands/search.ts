@@ -757,7 +757,7 @@ export interface FanoutPlan {
  * otherwise walk, giving the dispatcher a single source of truth.
  */
 export interface ResolveFanoutPlanOptions {
-  /** Raw `--provider` value (or undefined). Empty string is treated as absent. */
+  /** Raw `--provider` value (or undefined). A present empty value is invalid. */
   readonly explicitProviderRaw: string | undefined;
   /** The resolved env the handler runs under (env + file-configured keys). */
   readonly env: NodeJS.ProcessEnv;
@@ -814,9 +814,9 @@ export function resolveFanoutPlan(options: ResolveFanoutPlanOptions): FanoutPlan
   // Tier 1: explicit raw. parseProviderIds does the heavy lifting:
   // comma-list → IDs, "all" → sentinel, single id → one-element
   // array, garbage → null. We then translate each result into the
-  // dispatcher-facing mode. Unknown ids are left to the existing
-  // `resolveProviderId` path to surface VALIDATION_ERROR.
-  if (explicitProviderRaw !== undefined && explicitProviderRaw.trim().length > 0) {
+  // dispatcher-facing mode. Present empty or unknown values must fail
+  // before a lower-priority tier can activate billable fan-out.
+  if (explicitProviderRaw !== undefined) {
     const parsed = parseProviderIds(explicitProviderRaw);
     if (parsed === "all") {
       // `"all"` expands NOW so the executor never sees the sentinel.
@@ -834,7 +834,7 @@ export function resolveFanoutPlan(options: ResolveFanoutPlanOptions): FanoutPlan
       }
       return { mode: "single", arms: [arm] };
     }
-    // parsed === null: a non-empty explicit value that names no valid
+    // parsed === null: an explicit value that names no valid
     // id, comma list, or the "all" sentinel. Surface the typed
     // VALIDATION_ERROR HERE (parseProviderId owns the CLI's
     // provider-error wording and throws for every input this parse
@@ -849,8 +849,8 @@ export function resolveFanoutPlan(options: ResolveFanoutPlanOptions): FanoutPlan
 
   // Tier 2: SCOUTLINE_PROVIDER env pin → single.
   const envProvider = env.SCOUTLINE_PROVIDER;
-  if (envProvider !== undefined && envProvider.trim().length > 0) {
-    const arm = envProvider.trim().toLowerCase() as ProviderId;
+  if (envProvider !== undefined) {
+    const arm = parseProviderId(envProvider);
     if (configFanout) {
       return { mode: "single", arms: [arm], suppress: `SCOUTLINE_PROVIDER pin: fan-out ignored` };
     }

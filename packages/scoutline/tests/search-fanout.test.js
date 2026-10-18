@@ -784,16 +784,17 @@ describe("resolveFanoutPlan: explicit --provider tier (D1.1)", () => {
     );
   });
 
-  it("treats a whitespace-only explicit raw as absent (tier evaluation continues)", () => {
-    const plan = resolveFanoutPlan({
-      explicitProviderRaw: "   ",
-      env,
-      configFanout: true,
-      descriptors,
-    });
-    // Absent explicit → tier 3 fan-out over configured∩advertising.
-    assert.strictEqual(plan.mode, "fanout");
-    assert.deepStrictEqual(plan.arms, ["zai", "minimax", "tavily"]);
+  it("rejects a present empty explicit pin before any lower-priority tier", () => {
+    for (const explicitProviderRaw of ["", "   "]) {
+      for (const configFanout of [false, true]) {
+        assert.throws(() => resolveFanoutPlan({
+          explicitProviderRaw,
+          env: { ...env, SCOUTLINE_PROVIDER: "tavily" },
+          configFanout,
+          descriptors,
+        }), { code: "VALIDATION_ERROR" });
+      }
+    }
   });
 });
 

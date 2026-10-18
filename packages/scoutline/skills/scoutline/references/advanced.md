@@ -18,8 +18,10 @@ the global `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexi
 
 Unknown or empty pins fail with `VALIDATION_ERROR` before any Provider
 invocation. Configuration determines eligibility for the unpinned steps.
-The compatibility default produces a configuration error when Z.AI is
-unconfigured.
+Preflight checks capability before credentials. If Z.AI does not advertise
+the capability (crawl, map, research), the compatibility default produces
+`UNSUPPORTED_CAPABILITY`; advertised capabilities without Z.AI credentials
+produce `CONFIGURATION_ERROR`.
 
 `doctor` lists every provider; unpinned `quota` reports all configured
 providers. These observational commands do not use routing or quota

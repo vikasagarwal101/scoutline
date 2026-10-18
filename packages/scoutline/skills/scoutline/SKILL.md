@@ -122,9 +122,11 @@ is the flag, then the `SCOUTLINE_PROVIDER` environment variable. With
 neither pin, capability commands choose the first configured, capable
 provider in `routing.<capability>`, then fall back to quota-ranked
 configured providers that support the capability. If none is eligible,
-selection returns the compatibility default `zai`; execution reports a
-configuration error when Z.AI is unconfigured. Unknown or empty pins fail
-fast with `VALIDATION_ERROR`.
+selection returns the compatibility default `zai`. Preflight checks
+capability before credentials: capabilities Z.AI does not advertise
+(crawl, map, research) produce `UNSUPPORTED_CAPABILITY`; advertised
+capabilities without Z.AI credentials produce `CONFIGURATION_ERROR`.
+Unknown or empty pins fail fast with `VALIDATION_ERROR`.
 
 `doctor` lists every provider; unpinned `quota` reports all configured
 providers. These observational commands do not use routing or quota

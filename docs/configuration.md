@@ -228,10 +228,13 @@ Resolution precedence (highest first):
 4. Quota-ranked configured providers that support the capability
 5. Compatibility default `zai` when no configured provider supports the capability
 
-If step 5 selects an unconfigured Z.AI provider, execution reports a
-configuration error. Configuration determines eligibility for the unpinned
-steps; explicit and environment pins take precedence. Unknown or empty pins
-fail fast with `VALIDATION_ERROR` before any Provider invocation.
+Preflight checks capability before credentials. If Z.AI does not advertise
+the capability (such as crawl, map, or research), step 5 produces
+`UNSUPPORTED_CAPABILITY`. For advertised capabilities, missing Z.AI
+credentials produce `CONFIGURATION_ERROR`. Configuration determines
+eligibility for the unpinned steps; explicit and environment pins take
+precedence. Unknown or empty pins fail fast with `VALIDATION_ERROR` before
+any Provider invocation.
 
 `doctor` lists every provider; unpinned `quota` reports all configured
 providers. These observational commands do not use routing or quota ranking

@@ -94,6 +94,20 @@ describe("DeepSeek provider", () => {
     assert.throws(() => search.validate({ query: "x".repeat(120), controls: { recency: "oneDay" } }), { code: "VALIDATION_ERROR" });
   });
 
+  it("rejects unknown and inherited recency values before credentials or transport", async () => {
+    let calls = 0;
+    const search = createDeepSeekDescriptor({ transport: { fetch: async () => {
+      calls++; throw new Error("must not fetch");
+    } } }).create({ env: {} }).search;
+    for (const recency of ["fortnight", "toString", "__proto__", "", null, false]) {
+      const request = { query: "q", controls: { recency } };
+      assert.throws(() => search.validate(request), { code: "VALIDATION_ERROR" });
+      assert.throws(() => search.cacheIdentity(request), { code: "VALIDATION_ERROR" });
+      await assert.rejects(search.invoke(request), { code: "VALIDATION_ERROR" });
+    }
+    assert.equal(calls, 0);
+  });
+
   it("reads Markdown through Fetch and decodes cached reader envelopes", async () => {
     const calls = [];
     const adapter = createDeepSeekDescriptor({ transport: { fetch: async (url, init) => {
@@ -242,7 +256,7 @@ describe("DeepSeek provider", () => {
       const adapter = createDeepSeekDescriptor({ transport: { fetch: async () => new Response(stream,
         { headers: { "Content-Length": declared ? String(MAX_BUFFERED_RESPONSE_BYTES + 1) : "1" } }) } })
         .create({ env: { DEEPSEEK_API_KEY: "k" } });
-      await assert.rejects(adapter.search.invoke({ query: "q" }), { code: "API_ERROR", statusCode: 502 });
+      await assert.rejects(adapter.search.invoke({ query: "q" }), { code: "API_ERROR", statusCode: undefined });
       await new Promise(setImmediate);
       assert.equal(cancelled, true);
       if (declared) assert.equal(pulls, 0); else assert.ok(pulls <= 3, `read too far: ${pulls} chunks`);

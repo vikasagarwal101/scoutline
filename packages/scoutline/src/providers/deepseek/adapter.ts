@@ -3,7 +3,7 @@ import type { ProviderDescriptor } from "../types.js";
 import type { SearchCapability, SearchRequest, SearchSource } from "../../capabilities/search.js";
 import { decodeReaderFetchResult, type ReaderOperation, type ReaderFetchRequest, type ReaderFetchResult } from "../../capabilities/reader.js";
 import { applySearchTopic } from "../../lib/search-topic.js";
-import { ApiError, UnsupportedOptionError, ValidationError } from "../../lib/errors.js";
+import { ApiError, TimeoutError, UnsupportedOptionError, ValidationError } from "../../lib/errors.js";
 import { isDeepSeekConfigured, requireDeepSeekApiKey } from "./credentials.js";
 import { requestDeepSeek, type DeepSeekTransportDeps } from "./client.js";
 
@@ -31,8 +31,12 @@ function searchBody(request: SearchRequest, count?: number, now: () => Date = ()
   let query = applySearchTopic(request.query.trim(), request.controls?.topic);
   if (request.controls?.domain) query = `site:${request.controls.domain} ${query}`;
   const recency = request.controls?.recency;
-  if (recency && recency !== "noLimit") {
-    const days = { oneDay: 1, oneWeek: 7, oneMonth: 30, oneYear: 365 }[recency];
+  if (recency !== undefined && recency !== "noLimit") {
+    const daysByRecency = { oneDay: 1, oneWeek: 7, oneMonth: 30, oneYear: 365 };
+    if (typeof recency !== "string" || !Object.hasOwn(daysByRecency, recency)) {
+      throw new ValidationError("DeepSeek search recency must be oneDay, oneWeek, oneMonth, oneYear, or noLimit");
+    }
+    const days = daysByRecency[recency];
     const date = new Date(now().getTime() - days * 86_400_000).toISOString().slice(0, 10);
     query += ` after:${date}`;
   }
@@ -120,6 +124,7 @@ export function createDeepSeekDescriptor(deps: DeepSeekAdapterDependencies = {})
             ? cached.body : searchBody(request, count, deps.now);
           const response = await requestDeepSeek("search", requireDeepSeekApiKey(env),
             body, requestTransport(), signal);
+          if (signal?.aborted) throw new TimeoutError(0, "DeepSeek request cancelled");
           return normalizeSearch(response);
         },
       };
@@ -140,6 +145,7 @@ export function createDeepSeekDescriptor(deps: DeepSeekAdapterDependencies = {})
             { url: request.url }, request.timeout === undefined ? transport : {
               ...transport, env: { ...transport.env, DEEPSEEK_TIMEOUT: String(request.timeout * 1000) },
             }, signal);
+          if (signal?.aborted) throw new TimeoutError(0, "DeepSeek request cancelled");
           return normalizeReader(request.url, response);
         },
       };

@@ -63,7 +63,9 @@ export async function requestDeepSeek(
     }
     if (Number(response.headers.get("Content-Length")) > MAX_BUFFERED_RESPONSE_BYTES) {
       await response.body?.cancel().catch(() => {});
-      throw new ApiError("DeepSeek response exceeds the in-memory limit", 502);
+      // A local fixed ceiling cannot improve on retry. Do not attach a
+      // synthetic upstream 5xx status, which shared execution would retry.
+      throw new ScoutlineError("DeepSeek response exceeds the in-memory limit", "API_ERROR");
     }
     // pipeThrough propagates cancellation even when an injected body stream
     // does not observe the fetch signal itself. Never use text()/json() here.
@@ -72,14 +74,17 @@ export async function requestDeepSeek(
     try {
       bytes = await readBoundedResponseBody(stream, MAX_BUFFERED_RESPONSE_BYTES);
     } catch (error) {
-      if (error instanceof ValidationError) throw new ApiError("DeepSeek response exceeds the in-memory limit", 502);
+      if (error instanceof ValidationError) throw new ScoutlineError("DeepSeek response exceeds the in-memory limit", "API_ERROR");
       throw new NetworkError("DeepSeek network error");
     }
+    if (controller.signal.aborted) throw timeoutError();
     try { return JSON.parse(bytes.toString("utf8")); }
     catch { throw new ApiError("DeepSeek returned malformed JSON", 502); }
   };
   try {
-    return await Promise.race([run(), aborted]);
+    const result = await Promise.race([run(), aborted]);
+    if (controller.signal.aborted) throw timeoutError();
+    return result;
   } catch (error) {
     if (controller.signal.aborted) throw timeoutError();
     if (error instanceof ScoutlineError) throw error;

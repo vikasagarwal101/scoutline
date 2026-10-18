@@ -616,10 +616,14 @@ then zai):
     UNSUPPORTED_OPTION (the Linkup /fetch endpoint has no equivalent).
     Spider.cloud sends the locked four-field /scrape body and rejects
     every Z.AI-only reader option.
+  - DeepSeek returns Markdown through its Fetch API. It honors --timeout;
+    text format, image stripping, summaries, GFM toggles, image-data-URL
+    retention, and explicit renderJs controls are unsupported.
+    Fetch reports no resolved URL; finalUrl preserves the requested URL.
   - MiniMax, Brave, and Perplexity do NOT advertise reader. By default (0.11.0+)
     Provider fallback emits a stderr notice and silently reroutes to
     the next eligible configured supplier (zai, tavily, exa,
-    firecrawl, parallel, jina, linkup, or spider). Under --no-fallback (or SCOUTLINE_NO_FALLBACK=1) the
+    firecrawl, parallel, jina, linkup, spider, or deepseek). Under --no-fallback (or SCOUTLINE_NO_FALLBACK=1) the
     preflight surfaces UNSUPPORTED_CAPABILITY for the selected
     non-supplier.
 

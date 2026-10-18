@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Added
+
+- **DeepSeek provider:** `--provider deepseek` supports standalone web search,
+  Markdown reading, and diagnostics using `DEEPSEEK_API_KEY`. Includes config/init,
+  routing and fallback integration, count/date-aware caching, bounded streaming,
+  cancellation, and credential redaction. Search enforces DeepSeek's 128-character
+  final-query limit and caps requested count at 50; unsupported controls fail
+  explicitly. Diagnostic probes can incur a search charge.
+
+### Fixed
+
+- Empty or whitespace-only `--provider` pins now fail validation before
+  configured search fan-out can create or bill provider arms. Explicit
+  provider IDs, lists, and `all` retain precedence over environment pins.
+
 ## [0.24.2] - 2026-09-27
 
 ### Fixed

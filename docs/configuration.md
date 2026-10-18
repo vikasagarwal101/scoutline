@@ -39,7 +39,7 @@ The version-1 shape is:
 
 Supported provider IDs are `zai`, `minimax`, `tavily`, `exa`, `brave`,
 `firecrawl`, `parallel`, `perplexity`, `jina`, `you`, `linkup`, `spider`, `bocha`,
-`searchapi`, and `kagi`. Unknown IDs are ignored
+`searchapi`, `kagi`, and `deepseek`. Unknown IDs are ignored
 with a warning, and blank API keys are
 treated as absent. Malformed files fail as corrupt configuration; unsupported
 versions require a Scoutline upgrade. Writes use a private (`0600`) temporary
@@ -215,20 +215,30 @@ non-TTY settings surface (dotted paths: `routing`, `routing.<capability>`,
 
 Shared commands (`search`, `vision`, `quota`, `doctor`), **`repo`**,
 **`read`**, **`crawl`**, **`map`**, and **`research`** accept the global
-`--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|bocha|searchapi|kagi>` flag. When the flag
+`--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|bocha|searchapi|kagi|deepseek>` flag. When the flag
 is omitted the value of the `SCOUTLINE_PROVIDER` environment variable is
-consulted; when neither is supplied Scoutline falls back to the compatibility
-default `zai`.
+consulted. With neither pin, capability commands use the routing table
+first, then quota-ranked configured providers that support the capability.
 
 Resolution precedence (highest first):
 
-1. `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|bocha|searchapi|kagi>` on the command line
+1. `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|bocha|searchapi|kagi|deepseek>` on the command line
 2. `SCOUTLINE_PROVIDER`
-3. `zai` (default)
+3. First configured, capable provider in `routing.<capability>`
+4. Quota-ranked configured providers that support the capability
+5. Compatibility default `zai` when no configured provider supports the capability
 
-Provider selection is never inferred from which credentials happen to be
-present. Unknown or empty values fail fast with `VALIDATION_ERROR` before any
-Provider invocation.
+Preflight checks capability before credentials. If Z.AI does not advertise
+the capability (such as crawl, map, or research), step 5 produces
+`UNSUPPORTED_CAPABILITY`. For advertised capabilities, missing Z.AI
+credentials produce `CONFIGURATION_ERROR`. Configuration determines
+eligibility for the unpinned steps; explicit and environment pins take
+precedence. Unknown or empty pins fail fast with `VALIDATION_ERROR` before
+any Provider invocation.
+
+`doctor` lists every provider; unpinned `quota` reports all configured
+providers. These observational commands do not use routing or quota ranking
+to choose a supplier.
 
 `scoutline tools`, `scoutline tool`, `scoutline call`, and `scoutline code`
 accept the flag but ignore it; they continue to use Z.AI and do not validate
@@ -238,7 +248,7 @@ Provider fallback is **always-on** (0.11.0+). When the selected provider
 does not supply the capability (for example, MiniMax does not advertise
 `repository-exploration` or `reader`) or fails at runtime, scoutline
 emits a stderr notice and silently tries the next eligible provider in
-registry order `[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider, bocha, searchapi, kagi]`. The
+registry order `[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider, bocha, searchapi, kagi, deepseek]`. The
 selected provider is still the *first* one tried, so the user-visible
 behavior is the same when the pin works; the fallback only changes
 what happens when it does not. See
@@ -293,7 +303,7 @@ scoutline --no-fallback --provider minimax read https://example.com
 | `Z_AI_TEMPERATURE` | `1` | Vision generation temperature (glm-5.3-flash documented recipe). |
 | `Z_AI_TOP_P` | `0.95` | Vision generation top-p value (glm-5.3-flash documented recipe). |
 | `Z_AI_MAX_TOKENS` | `32768` | Vision response token limit. |
-| `SCOUTLINE_PROVIDER` | (none) | Selects the effective Provider (`zai`, `minimax`, `tavily`, `exa`, `brave`, `firecrawl`, `parallel`, `perplexity`, `jina`, `you`, `linkup`, `spider`, `bocha`, `searchapi`, or `kagi`) for shared capabilities. |
+| `SCOUTLINE_PROVIDER` | (none) | Selects the effective Provider (`zai`, `minimax`, `tavily`, `exa`, `brave`, `firecrawl`, `parallel`, `perplexity`, `jina`, `you`, `linkup`, `spider`, `bocha`, `searchapi`, `kagi`, or `deepseek`) for shared capabilities. |
 | `SCOUTLINE_NO_FALLBACK` | (unset) | When set to a non-empty value, restores the strict single-provider, fail-loud behavior for shared capabilities — `--no-fallback` on the CLI is the per-invocation equivalent. |
 
 ## MiniMax Token Plan Settings
@@ -596,6 +606,18 @@ scoutline --provider searchapi search "raft consensus" --domain github.io --rece
 scoutline --provider searchapi quota
 scoutline doctor --provider searchapi
 ```
+
+## DeepSeek Settings
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `DEEPSEEK_API_KEY` | (none) | Required bearer API key for Search, Reader, and Diagnostics. |
+| `DEEPSEEK_TIMEOUT` | `30000` | Request timeout in milliseconds, including body consumption. Reader `--timeout` overrides it in seconds. |
+
+Store the key through `scoutline init` or an environment variable; environment
+credentials win. Prefer DeepSeek with `scoutline config set routing.search deepseek`
+and `scoutline config set routing.reader deepseek`. See the [provider guide](deepseek.md)
+for query limits, supported controls, error mapping, and probe costs.
 
 ## Kagi Settings
 
@@ -1062,6 +1084,7 @@ Authority and score are kept on separate axes. A provider is either:
 | `spider` | always-unknown | Credit remaining balance (limit unknown); not a percentage-bounded plan signal. |
 | `bocha` | always-unknown | Advertises no `quota` capability; Bocha AI exposes no spend endpoint. Nothing to map. |
 | `exa`, `parallel`, `perplexity` | always-unknown | Advertise no `quota` capability; nothing to map. |
+| `deepseek` | always-unknown | This adapter advertises no quota capability; nothing to map. |
 | `you` | always-unknown | Advertises no `quota` capability; You.com exposes no spend endpoint. Nothing to map. |
 | `arxiv` | always-unknown | Keyless scholarly index; no spend signal exists. Excluded from quota-snapshot availability ranking in v1. |
 | `openalex` | always-unknown | Keyless-by-default scholarly index; no spend signal exists (the optional API key is a rate-limit tier, not billing). Excluded from quota-snapshot availability ranking in v1. |
@@ -1142,7 +1165,7 @@ production wires a stderr writer, tests inject a recorder):
 
 | Reason / warning code | Trigger |
 | --- | --- |
-| `PROVIDER_NON_AUTHORITATIVE` | Brave, Exa, Parallel, Perplexity, Jina, You.com, Linkup, Spider.cloud, Bocha AI, and Kagi — always-unknown by policy, regardless of snapshot. |
+| `PROVIDER_NON_AUTHORITATIVE` | Brave, Exa, Parallel, Perplexity, Jina, You.com, Linkup, Spider.cloud, Bocha AI, Kagi, and DeepSeek — always-unknown by policy, regardless of snapshot. |
 | `MAPPING_MISSING` | `(provider, capability)` has no row in the table (e.g. `quota`, `diagnostics`). |
 | `SNAPSHOT_MISSING` | Provider has no snapshot in `~/.scoutline/state.json`. |
 | `SNAPSHOT_EMPTY` | Snapshot exists but its `categories` array is empty. |
@@ -1174,7 +1197,7 @@ ordered list:
    strictly below every natural unknown, so a still-exhausted provider
    can never ride registry order back to the top.
 4. Ties within a band break by registry order
-    (`[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider, bocha, searchapi, kagi]` by default;
+    (`[zai, minimax, tavily, exa, brave, firecrawl, parallel, perplexity, jina, you, linkup, spider, bocha, searchapi, kagi, deepseek]` by default;
    overridable via the `registryOrder` option).
 
 Calls that supply no clock (no `now` option) skip the exhaustion check

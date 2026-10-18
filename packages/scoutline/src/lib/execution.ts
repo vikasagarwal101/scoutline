@@ -21,7 +21,7 @@
  *   3. Read the provider-partitioned cache key
  *   4. Try and decode Adapter-supplied legacy candidates when applicable
  *   5. Invoke through `executeProviderOperation` (search also passes
- *      the optional count; only Bocha consumes it, #211)
+ *      the optional count; Bocha and DeepSeek consume it)
  *   6. Retry only normalized retryable failures
  *   7. Cache the full normalized result
  *   8. Apply local count truncation

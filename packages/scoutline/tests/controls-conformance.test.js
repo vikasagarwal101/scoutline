@@ -54,6 +54,7 @@ import { createSpiderDescriptor } from "../dist/providers/spider/adapter.js";
 import { createBochaDescriptor } from "../dist/providers/bocha/adapter.js";
 import { createSearchApiDescriptor } from "../dist/providers/searchapi/adapter.js";
 import { createKagiDescriptor } from "../dist/providers/kagi/adapter.js";
+import { createDeepSeekDescriptor } from "../dist/providers/deepseek/adapter.js";
 import { createArxivDescriptor } from "../dist/providers/arxiv/adapter.js";
 import { createOpenalexDescriptor } from "../dist/providers/openalex/adapter.js";
 import { createCrossrefDescriptor } from "../dist/providers/crossref/adapter.js";
@@ -645,6 +646,9 @@ const RESPONDERS = {
   kagi(url, method) {
     return jsonResponse(KAGI_SEARCH_RAW);
   },
+  deepseek(url) {
+    return Response.json(url.endsWith("/fetch") ? { title: "Page", content: "# Page" } : { results: [] });
+  },
   // Science suppliers: one minimal endpoint each (keyless wire).
   arxiv() {
     return xmlResponse(ARXIV_SEARCH_ATOM);
@@ -680,6 +684,7 @@ const ENV_BY_PROVIDER = {
   bocha: { BOCHA_API_KEY: "k" },
   searchapi: { SEARCHAPI_API_KEY: "k" },
   kagi: { KAGI_API_KEY: "k" },
+  deepseek: { DEEPSEEK_API_KEY: "k" },
   // Science suppliers are keyless by default (D2) — every conformance
   // row rides the keyless partition (""). openalex/pubmed keyed rows
   // are not needed for control mapping.
@@ -834,6 +839,8 @@ function makeHarness(provider, capability) {
       };
     case "kagi":
       return { adapter: createKagiDescriptor({ transport }).create(context), calls, timerDelays };
+    case "deepseek":
+      return { adapter: createDeepSeekDescriptor({ transport }).create(context), calls, timerDelays };
     case "arxiv":
       return { adapter: createArxivDescriptor({ transport }).create(context), calls, timerDelays };
     case "openalex":
@@ -1176,6 +1183,21 @@ async function runRow(row) {
 // ---------------------------------------------------------------------------
 
 const ROWS = [
+  { provider: "deepseek", capability: "search", control: "domain", input: { domain: "example.com" },
+    expect: "consumed", on: "body", path: "query", includes: "site:example.com" },
+  { provider: "deepseek", capability: "search", control: "recency", input: { recency: "oneWeek" },
+    expect: "consumed", on: "body", path: "query", includes: "after:" },
+  { provider: "deepseek", capability: "search", control: "topic", input: { topic: "news" },
+    expect: "consumed", on: "body", path: "query", includes: "latest news" },
+  ...[["location", "us"], ["type", "video"], ["contentSize", "high"]].map(([control, value]) => ({
+    provider: "deepseek", capability: "search", control, input: { [control]: value }, expect: "rejected",
+  })),
+  ...[["format", "text"], ["retainImages", false], ["withLinksSummary", true], ["noGfm", true],
+    ["keepImgDataUrl", true], ["withImagesSummary", true], ["renderJs", true]].map(([control, value]) => ({
+    provider: "deepseek", capability: "reader", control, input: { [control]: value }, expect: "rejected",
+  })),
+  { provider: "deepseek", capability: "reader", control: "timeout", input: { timeout: 2 },
+    expect: "consumed", on: "timer", equals: 2000 },
   // ----- zai / search -----------------------------------------------------
   {
     provider: "zai",
@@ -3606,6 +3628,7 @@ describe("controls class-guard — table integrity", () => {
         map: MAP_CONTROLS,
       },
       bocha: { search: SEARCH_CONTROLS },
+      deepseek: { search: SEARCH_CONTROLS, reader: [...READER_CONTROLS, "renderJs"] },
       arxiv: { science: SCIENCE_CONTROLS },
       openalex: { science: SCIENCE_CONTROLS },
       crossref: { science: SCIENCE_CONTROLS },

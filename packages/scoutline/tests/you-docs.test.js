@@ -31,7 +31,7 @@ import { runProcess } from "./helpers/run-process.js";
 // integration widens them 14→15.
 const PROVIDER_ENUM_WIDENED = `--provider <${SHARED_PROVIDER_FLAG_IDS}>`;
 const PROVIDER_LIST_TAIL =
-  "Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, You.com, Linkup, Spider.cloud, Bocha AI, SearchApi.io, or Kagi";
+  "Z.AI, MiniMax, Tavily, Exa, Brave, Firecrawl, Parallel AI, Perplexity, Jina AI, You.com, Linkup, Spider.cloud, Bocha AI, SearchApi.io, Kagi, or DeepSeek";
 
 const packageReadme = fs.readFile(new URL("../README.md", import.meta.url), "utf8");
 const rootReadme = fs.readFile(new URL("../../../README.md", import.meta.url), "utf8");
@@ -129,11 +129,11 @@ describe("You.com docs — CLI help enumerations", () => {
     });
     assert.equal(result.code, 0);
     assert.ok(
-      result.stdout.includes("all 15 Providers"),
-      "main help must count the 14 shared-capability providers",
+      result.stdout.includes("all 16 Providers"),
+      "main help must count the 16 shared-capability providers",
     );
     assert.ok(
-      result.stdout.includes("perplexity|jina|you|linkup|spider|bocha|searchapi|kagi>"),
+      result.stdout.includes("perplexity|jina|you|linkup|spider|bocha|searchapi|kagi|deepseek>"),
       "main help --provider enumeration keeps you and stops at the shared suppliers",
     );
     assert.ok(

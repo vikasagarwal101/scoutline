@@ -56,6 +56,7 @@ const CREDENTIAL_KEYS: ReadonlySet<string> = new Set([
   "serpapi_api_key",
   "kagi_api_key",
   "kagi_token",
+  "deepseek_api_key",
   "ncbi_api_key",
   "openalex_api_key",
 ]);
@@ -240,6 +241,7 @@ export function redactCredentialString(input: string, extraSecrets?: string | st
   // alias accepted by providers/kagi/credentials.ts.
   result = result.replace(/(?<![A-Za-z0-9_])KAGI_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
   result = result.replace(/(?<![A-Za-z0-9_])KAGI_TOKEN\s*[=:]\s*[^\s"]+/gi, REDACTED);
+  result = result.replace(/(?<![A-Za-z0-9_])DEEPSEEK_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
   // Science credential env vars (#208): PubMed (NCBI_API_KEY) and
   // OpenAlex (OPENALEX_API_KEY) rate-tier keys are optional but real
   // credentials — same [=:] assignment shape as the Provider keys.
@@ -265,6 +267,7 @@ export function redactCredentialString(input: string, extraSecrets?: string | st
     "SERPAPI_API_KEY",
     "KAGI_API_KEY",
     "KAGI_TOKEN",
+    "DEEPSEEK_API_KEY",
     "Z_AI_API_KEY",
     "ZAI_API_KEY",
     "TAVILY_API_KEY",
@@ -352,6 +355,7 @@ export function configuredSecrets(env: NodeJS.ProcessEnv = process.env): string[
     env.SERPAPI_API_KEY,
     env.KAGI_API_KEY,
     env.KAGI_TOKEN,
+    env.DEEPSEEK_API_KEY,
     // #208: science supplier rate-tier credentials ride the same
     // literal-value pass as the Provider credentials.
     env.NCBI_API_KEY,

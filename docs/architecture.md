@@ -38,7 +38,7 @@ normalization. It never imports command presentation, output mode, or another
 Provider's Adapter.
 
 The production registry at `src/providers/registry.ts` is a static,
-twenty-entry list `[zai, minimax, tavily, exa, brave, firecrawl, parallel,
+twenty-one-entry list `[zai, minimax, tavily, exa, brave, firecrawl, parallel,
 perplexity, jina, you, linkup, spider, bocha, searchapi, kagi, deepseek, arxiv,
 openalex, crossref, pubmed, europepmc]` — the sixteen shared-capability
 Providers followed by the five science-supplier seats. There is no dynamic

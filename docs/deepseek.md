@@ -64,6 +64,9 @@ are clamped to Node's timer maximum. Reader `--timeout` overrides it.
 The budget covers headers and body consumption. Bodies are read
 incrementally under Scoutline's 50 MiB in-memory ceiling. Cancellation
 stops local work; it does not prove that remote work or billing stopped.
+Local size-limit failures stop same-provider retries, so DeepSeek is not
+asked to download the same oversized page again. Normal provider fallback
+still applies.
 
 HTTP 401 becomes `AUTH_ERROR`; 402 becomes terminal `QUOTA_ERROR`;
 408/504 become `TIMEOUT_ERROR`; other HTTP failures retain their status

@@ -12,15 +12,20 @@ the global `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexi
 
 1. `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|bocha|searchapi|kagi|deepseek>` on the command line
 2. `SCOUTLINE_PROVIDER` environment variable
-3. Default `zai`
+3. For capability commands, the first configured, capable provider in `routing.<capability>`
+4. Otherwise, quota-ranked configured providers that support the capability
 
-Unknown or empty values fail with `VALIDATION_ERROR` before any Provider
-invocation. Provider selection is never inferred from credentials.
+Unknown or empty pins fail with `VALIDATION_ERROR` before any Provider
+invocation. Configuration determines eligibility for the unpinned steps.
+
+`doctor` lists every provider; unpinned `quota` reports all configured
+providers. These observational commands do not use routing or quota
+ranking to choose a supplier.
 
 `tools`, `tool`, `call`, and `code` accept the flag but ignore it; they
 remain Z.AI-only and do not validate the supplied value. `repo` and `read`
 participate in selection: Z.AI, Tavily, Exa, Firecrawl, Parallel, Jina,
-You.com, Linkup, and Spider.cloud supply `reader`; only Z.AI supplies
+You.com, Linkup, Spider.cloud, and DeepSeek supply `reader`; only Z.AI supplies
 `repository-exploration`. `crawl` and `map` participate in selection and
 are supplied by Tavily, Firecrawl, and Spider.cloud. `research` is
 supplied by Tavily, Exa, Parallel, Perplexity, Jina, You.com, and
@@ -41,7 +46,8 @@ scoutline --provider minimax search "React 19 features"
 export SCOUTLINE_PROVIDER=minimax
 scoutline quota
 
-# 3. Default Z.AI when nothing is supplied
+# 3. Routing preference, then quota ranking, when neither pin is supplied
+unset SCOUTLINE_PROVIDER
 scoutline search "TypeScript best practices"
 ```
 
@@ -344,7 +350,7 @@ each advertised capability, exactly which built-in Providers supply it.
 derivation silently hid capabilities supplied by a subset of providers.
 The matrix replaces them. `repository-exploration` is reported under
 Z.AI alone; `reader` under Z.AI, Tavily, Exa, Firecrawl, Parallel, Jina,
-You.com, Linkup, and Spider.cloud; `crawl` and `map` under Tavily,
+You.com, Linkup, Spider.cloud, and DeepSeek; `crawl` and `map` under Tavily,
 Firecrawl, and Spider.cloud; `research` under Tavily, Exa, Parallel,
 Perplexity, Jina, You.com, and Linkup. Doctor help derives its
 unsupported lists from the same descriptor metadata for every other

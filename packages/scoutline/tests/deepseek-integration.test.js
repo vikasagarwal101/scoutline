@@ -35,7 +35,7 @@ it("CLI routing resolves a file-configured DeepSeek key for search and read", as
     assert.equal(String(url), "https://api.deepseek.com/v1/tools/fetch");
     return Response.json({ title: "Page", content: "# Page\n\nText" });
   });
-  await withTempDir("deepseek-cli-", async (dir) => {
+  await withTempDir(t, async (dir) => {
     const run = async (argv) => {
       const stdout = [], stderr = [];
       const status = await main(argv, hermeticMainDeps({
@@ -59,5 +59,5 @@ it("CLI routing resolves a file-configured DeepSeek key for search and read", as
     assert.equal(calls[0].headers.Authorization, "Bearer file-key-123");
     assert.equal(calls[1].headers.Authorization, "Bearer file-key-123");
     assert.equal(JSON.parse(calls[0].body).count, 5);
-  });
+  }, { prefix: "deepseek-cli-" });
 });

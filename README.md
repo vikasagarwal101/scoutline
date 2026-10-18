@@ -229,7 +229,8 @@ npx scoutline read https://example.com/article --provider deepseek
 ```
 
 DeepSeek supports domain and date operators, with a 128-character final
-query limit and at most 50 results. Reader returns Markdown. See the
+query limit and at most 50 results. Reader returns Markdown. The init
+wizard's DeepSeek key probe runs one search that can incur a charge. See the
 [DeepSeek guide](docs/deepseek.md) for controls, timeouts, and billing.
 
 ## Installation
@@ -261,7 +262,11 @@ Shared commands accept `--provider <zai|minimax|tavily|exa|brave|firecrawl|paral
 
 1. Explicit `--provider` flag
 2. `SCOUTLINE_PROVIDER` environment variable
-3. Default `zai`
+3. For capability commands, the first configured, capable provider in `routing.<capability>`
+4. Otherwise, quota-ranked configured providers that support the capability
+
+`doctor` lists every provider; unpinned `quota` reports all configured providers.
+These observational commands do not use routing or quota ranking to choose a supplier.
 
 ```bash
 scoutline --provider minimax search "React 19 features"

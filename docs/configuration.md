@@ -217,18 +217,23 @@ Shared commands (`search`, `vision`, `quota`, `doctor`), **`repo`**,
 **`read`**, **`crawl`**, **`map`**, and **`research`** accept the global
 `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|bocha|searchapi|kagi|deepseek>` flag. When the flag
 is omitted the value of the `SCOUTLINE_PROVIDER` environment variable is
-consulted; when neither is supplied Scoutline falls back to the compatibility
-default `zai`.
+consulted. With neither pin, capability commands use the routing table
+first, then quota-ranked configured providers that support the capability.
 
 Resolution precedence (highest first):
 
 1. `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|bocha|searchapi|kagi|deepseek>` on the command line
 2. `SCOUTLINE_PROVIDER`
-3. `zai` (default)
+3. First configured, capable provider in `routing.<capability>`
+4. Quota-ranked configured providers that support the capability
 
-Provider selection is never inferred from which credentials happen to be
-present. Unknown or empty values fail fast with `VALIDATION_ERROR` before any
-Provider invocation.
+Configuration determines eligibility for the unpinned steps; explicit and
+environment pins take precedence. Unknown or empty pins fail fast with
+`VALIDATION_ERROR` before any Provider invocation.
+
+`doctor` lists every provider; unpinned `quota` reports all configured
+providers. These observational commands do not use routing or quota ranking
+to choose a supplier.
 
 `scoutline tools`, `scoutline tool`, `scoutline call`, and `scoutline code`
 accept the flag but ignore it; they continue to use Z.AI and do not validate

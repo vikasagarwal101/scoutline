@@ -118,9 +118,15 @@ or env vars; API keys never belong in command arguments.
 Shared commands (`search`, `vision analyze`, `quota`, `doctor`),
 **`repo`**, **`read`**, **`crawl`**, **`map`**, and **`research`**
 accept the global `--provider <zai|minimax|tavily|exa|brave|firecrawl|parallel|perplexity|jina|you|linkup|spider|bocha|searchapi|kagi|deepseek>` flag. Precedence
-is the flag, then the `SCOUTLINE_PROVIDER` environment variable, then
-the default `zai`. Provider selection is never inferred from
-credentials. Unknown values fail fast with `VALIDATION_ERROR`.
+is the flag, then the `SCOUTLINE_PROVIDER` environment variable. With
+neither pin, capability commands choose the first configured, capable
+provider in `routing.<capability>`, then fall back to quota-ranked
+configured providers that support the capability. Unknown or empty pins
+fail fast with `VALIDATION_ERROR`.
+
+`doctor` lists every provider; unpinned `quota` reports all configured
+providers. These observational commands do not use routing or quota
+ranking to choose a supplier.
 
 `tools`, `tool`, `call`, and `code` accept the flag but ignore it; they
 remain Z.AI-only.
@@ -176,8 +182,9 @@ in registry order `[zai, minimax, tavily, exa, brave, firecrawl, parallel, perpl
 
 Z.AI is the only Provider that supplies `repo search/read/tree` and the
 Raw tools (`tools`, `tool`, `call`). Reader is supplied by Z.AI, Tavily,
-Exa, Firecrawl, Parallel AI, Jina AI, You.com, Linkup, and Spider.cloud;
-Crawl and Map by Tavily, Firecrawl, and Spider.cloud; Research by
+Exa, Firecrawl, Parallel AI, Jina AI, You.com, Linkup, Spider.cloud,
+and DeepSeek; Crawl and Map by Tavily, Firecrawl, and Spider.cloud;
+Research by
 Tavily, Exa, Parallel AI, Perplexity, Jina AI, You.com, and Linkup;
 Vision by Z.AI and MiniMax only. **Provider
 fallback is always-on by default**

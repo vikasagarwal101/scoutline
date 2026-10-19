@@ -264,6 +264,7 @@ async function withinOperation<T>(
   state: OperationState,
   action: () => Promise<T>,
   what: string,
+  drainNativeCleanup = false,
 ): Promise<T> {
   assertOperationActive(state);
   let detach: (() => void) | undefined;
@@ -280,6 +281,22 @@ async function withinOperation<T>(
     const value = await withDeadline(Promise.race([pending, aborted]), state.deadlineAt, () => {}, what);
     assertOperationActive(state);
     return value;
+  } catch (error) {
+    if (drainNativeCleanup) {
+      // The executor may be stuck before native dispatch (e.g. consumption).
+      // Never await it indefinitely, but let already-dispatched fetches finish
+      // their existing abort/disposal grace and release their deadline timers.
+      const settled = await withDeadline(
+        pending.then(() => ({ ok: true } as const), (innerError: unknown) => ({ ok: false, error: innerError } as const)),
+        Date.now() + ABORT_GRACE_MS + BODY_DISPOSAL_GRACE_MS,
+        () => {},
+        "Acquisition executor cleanup",
+      ).catch(() => undefined);
+      // Keep the native operation's established error when it finishes its
+      // bounded cleanup; a late success still cannot override the stop.
+      if (settled?.ok === false) throw settled.error;
+    }
+    throw error;
   } finally {
     detach?.();
   }
@@ -480,7 +497,12 @@ function wrapFetchForOperation(original: OriginalFetch, state: OperationState, n
       throw new TimeoutError(0, "Acquisition allowance ended before native dispatch");
     }
     // No caller callback intervenes between private bookkeeping and dispatch.
-    state.begin(path);
+    try {
+      state.begin(path);
+    } catch (error) {
+      dispose();
+      throw error;
+    }
     try {
       const pending = original(input, nativeInit);
       let response: FetchResponseLike;
@@ -649,7 +671,11 @@ export function createLeanAcquisitionDeps(
     throw new ValidationError("maxPhysicalAttempts must be finite and nonnegative");
   }
   const notify = (): void => {
-    options.onPhysicalLedger?.(ledgerSnapshot());
+    try {
+      options.onPhysicalLedger?.(ledgerSnapshot());
+    } catch {
+      // Observers cannot change provider results, retry policy or admission.
+    }
   };
   const ledgerSnapshot = (): LeanPhysicalLedger => ({
     // `attempts` counts ACTUAL native fetch dispatches only — refused
@@ -659,7 +685,7 @@ export function createLeanAcquisitionDeps(
     reservationsRefused,
     perAttempt: records.map((r) => Object.freeze({ ...r })),
   });
-  const reserve = (): void => {
+  const assertPhysicalCapacity = (): void => {
     if (
       options.maxPhysicalAttempts !== undefined &&
       physicalAttempts + 1 > options.maxPhysicalAttempts
@@ -671,6 +697,9 @@ export function createLeanAcquisitionDeps(
         `Acquisition exceeded the ${options.maxPhysicalAttempts}-attempt physical HTTP ceiling`,
       );
     }
+  };
+  const reserve = (): void => {
+    assertPhysicalCapacity();
     try {
       options.reservePhysicalAttempt?.();
     } catch (error) {
@@ -680,7 +709,6 @@ export function createLeanAcquisitionDeps(
       notify();
       throw error;
     }
-    physicalAttempts += 1;
   };
 
   const buildState = (
@@ -707,6 +735,15 @@ export function createLeanAcquisitionDeps(
         notify();
       },
       begin: (path: string): void => {
+        // A reservation callback may reenter and dispatch another request.
+        // Recheck at the final boundary, then charge only actual dispatch.
+        try {
+          assertPhysicalCapacity();
+        } catch (error) {
+          state.onRefused(path);
+          throw error;
+        }
+        physicalAttempts += 1;
         state.cancellationUnconfirmed = false;
         records.push({ provider: providerId, path, outcome: "unknown" });
         entry = { index: records.length - 1 };
@@ -846,7 +883,7 @@ export function createLeanAcquisitionDeps(
       const staged = stageCapability("search", options.searchDescriptor.id, dispatch);
       const capability = staged.capability as Parameters<typeof executeSearch>[0];
       assertOperationActive(staged.state);
-      const sources = await executeSearch(
+      const sources = await withinOperation(staged.state, () => executeSearch(
         capability,
         { query },
         {
@@ -854,7 +891,7 @@ export function createLeanAcquisitionDeps(
           ...(options.retryPolicy !== undefined ? { retryPolicy: options.retryPolicy } : {}),
         },
         executionFor(staged.state),
-      );
+      ), "Acquisition search", true);
       assertOperationActive(staged.state);
       return sources.map((source): LeanSearchResult => ({
         url: source.url,
@@ -917,7 +954,7 @@ export function createLeanAcquisitionDeps(
           };
         },
       };
-      const result = await executeReaderOperation(
+      const result = await withinOperation(staged.state, () => executeReaderOperation(
         observedOperation,
         { url },
         {
@@ -925,7 +962,7 @@ export function createLeanAcquisitionDeps(
           ...(options.retryPolicy !== undefined ? { retryPolicy: options.retryPolicy } : {}),
         },
         operationDeps,
-      );
+      ), "Acquisition read", true);
       assertOperationActive(staged.state);
       options.onReadProvenance?.({
         url,

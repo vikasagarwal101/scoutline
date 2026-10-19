@@ -24,6 +24,155 @@ function setup(fetch, extra = {}) {
   return { o, deps: createLeanAcquisitionDeps(o) };
 }
 
+for (const method of ["search", "read"]) {
+  test(`PR287 G3: a throwing ledger observer cannot repeat a successful ${method}`, async () => {
+    const url = "https://offline.test/a";
+    let calls = 0, sleeps = 0, writes = 0, reservations = 0, observerThrows = 0;
+    const provenance = [];
+    const { deps } = setup(async () => {
+      calls++;
+      return json({ results: [{ url, title: "Title", content: "Harmless text", raw_content: "Harmless text" }] });
+    }, {
+      retryPolicy: { ...noRetry, maxRetries: 1 },
+      sleep: async () => { sleeps++; },
+      cache: { get: async () => null, set: async () => { writes++; } },
+      reservePhysicalAttempt() { reservations++; },
+      onReadProvenance: (row) => provenance.push(row),
+      onPhysicalLedger(ledger) {
+        if (observerThrows === 0 && ledger.perAttempt.at(-1)?.outcome === "complete") {
+          observerThrows++;
+          throw new Error("synthetic observer failure after successful HTTP");
+        }
+      },
+    });
+    const result = await deps[method](method === "search" ? "q" : url);
+    assert.deepEqual(result, method === "search" ? [{ url, title: "Title" }] : "Harmless text");
+    assert.equal(observerThrows, 1);
+    assert.equal(calls, 1, "an observer exception cannot cause another paid attempt");
+    assert.equal(reservations, 1);
+    assert.equal(sleeps, 0);
+    assert.equal(writes, 1);
+    assert.equal(deps.physicalLedger.attempts, 1);
+    assert.deepEqual(deps.physicalLedger.perAttempt.map((row) => row.outcome), ["complete"]);
+    assert.equal(provenance.length, method === "read" ? 1 : 0);
+  });
+}
+
+test("PR287 G3: throwing refusal observers preserve the physical ceiling error", async () => {
+  let calls = 0, reservations = 0, notifications = 0;
+  const { deps } = setup(async () => { calls++; return json({ results: [] }); }, {
+    maxPhysicalAttempts: 0,
+    reservePhysicalAttempt() { reservations++; },
+    onPhysicalLedger() { notifications++; throw new Error("synthetic refusal observer failure"); },
+  });
+  await assert.rejects(deps.search("q"), (error) => error.code === "TIMEOUT_ERROR" && error.durationMs === 0);
+  assert.equal(calls, 0);
+  assert.equal(reservations, 0);
+  assert.equal(notifications, 2);
+  assert.equal(deps.physicalLedger.attempts, 0);
+  assert.equal(deps.physicalLedger.reservationsRefused, 1);
+  assert.deepEqual(deps.physicalLedger.perAttempt.map((row) => row.outcome), ["refused"]);
+});
+
+for (const stop of ["abort", "deadline"]) {
+  test(`PR287 G2: ${stop} before native dispatch leaves the private HTTP slot available`, async (t) => {
+    t.mock.timers.enable({ apis: ["Date"], now: 1000 });
+    const controller = new AbortController();
+    let calls = 0, reservations = 0;
+    const { deps } = setup(async () => { calls++; return json({ results: [] }); }, {
+      maxPhysicalAttempts: 1,
+      reservePhysicalAttempt() {
+        if (++reservations === 1) {
+          if (stop === "abort") controller.abort();
+          else t.mock.timers.tick(20);
+        }
+      },
+    });
+    await assert.rejects(deps.search("first", { signal: controller.signal, timeoutMs: 20 }),
+      (error) => error.code === "TIMEOUT_ERROR");
+    assert.equal(calls, 0);
+    assert.equal(deps.physicalLedger.attempts, 0);
+    assert.deepEqual(deps.physicalLedger.perAttempt.map((row) => row.outcome), ["not-started"]);
+    assert.deepEqual(await deps.search("fresh", { signal: new AbortController().signal, timeoutMs: 1000 }), []);
+    assert.equal(calls, 1);
+    assert.equal(reservations, 2);
+    assert.equal(deps.physicalLedger.attempts, 1);
+    assert.equal(deps.physicalLedger.reservationsRefused, 0);
+    assert.deepEqual(deps.physicalLedger.perAttempt.map((row) => row.outcome), ["not-started", "complete"]);
+  });
+}
+
+test("PR287 G2: reentrant reservation cannot cross the private native dispatch ceiling", async () => {
+  let calls = 0, reservations = 0, wrapped, nested;
+  const { deps } = setup(async () => { calls++; return json({ results: [] }); }, {
+    maxPhysicalAttempts: 1,
+    descriptorFactory: (_id, copy) => {
+      wrapped = copy.fetch;
+      return createTavilyDescriptor({ transport: copy });
+    },
+    reservePhysicalAttempt() {
+      if (++reservations === 1) nested = wrapped("https://api.tavily.com/search", {}).then((response) => response.json());
+    },
+  });
+  const result = await deps.search("q").then((value) => ({ value }), (error) => ({ error }));
+  await nested;
+  assert.equal(result.error?.code, "TIMEOUT_ERROR");
+  assert.equal(calls, 1, "only the nested actual dispatch can spend the sole slot");
+  assert.equal(reservations, 2);
+  assert.equal(deps.physicalLedger.attempts, 1);
+  assert.equal(deps.physicalLedger.reservationsRefused, 1);
+  assert.equal(deps.physicalLedger.perAttempt.filter((row) => row.outcome === "refused").length, 1);
+});
+
+for (const method of ["search", "read"]) {
+  for (const stop of ["abort", "deadline"]) {
+    test(`PR287 G1: pending consumption cannot hold ${method} beyond ${stop}`, async (t) => {
+      t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1000 });
+      const controller = new AbortController();
+      let entered, release;
+      const ready = new Promise((resolve) => { entered = resolve; });
+      const held = new Promise((resolve) => { release = resolve; });
+      let calls = 0, writes = 0, reservations = 0;
+      const provenance = [];
+      const { deps } = setup(async () => { calls++; return json({ results: [] }); }, {
+        consume: { record: () => { entered(); return held; } },
+        cache: { get: async () => null, set: async () => { writes++; } },
+        reservePhysicalAttempt() { reservations++; },
+        onReadProvenance: (row) => provenance.push(row),
+      });
+      const pending = deps[method](method === "search" ? "q" : "https://offline.test/a", {
+        signal: controller.signal, timeoutMs: 20,
+      }).then((value) => ({ kind: "success", value }), (error) => ({ kind: "error", error }));
+      await ready;
+      if (stop === "abort") controller.abort();
+      else t.mock.timers.tick(20);
+      // Let cancellation/deadline continuations register bounded disposal.
+      await new Promise((resolve) => setImmediate(resolve));
+      t.mock.timers.tick(100);
+      try {
+        const result = await Promise.race([
+          pending,
+          new Promise((resolve) => setImmediate(() => resolve({ kind: "pending" }))),
+        ]);
+        assert.equal(result.kind, "error", "held consumption must not own outward settlement");
+        assert.equal(result.error.code, "TIMEOUT_ERROR");
+        assert.equal(getEventListeners(controller.signal, "abort").length, 0);
+        assert.equal(calls, 0);
+        assert.equal(reservations, 0);
+        assert.equal(deps.physicalLedger.attempts, 0);
+      } finally {
+        release();
+        await pending;
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      assert.equal(calls, 0, "late consumption settlement cannot dispatch HTTP");
+      assert.equal(reservations, 0);
+      assert.equal(writes, 0);
+      assert.deepEqual(provenance, []);
+    });
+  }
+}
+
 test("PR287 R1: body cap rejects nonfinite and negative configuration before acquisition", () => {
   let calls = 0, reservations = 0;
   const fetch = async () => { calls++; return json({ results: [] }); };

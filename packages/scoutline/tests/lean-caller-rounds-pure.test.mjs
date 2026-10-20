@@ -1536,3 +1536,31 @@ test('W2 no proposal preserves automatic field extraction', async () => {
   assert.equal(next.result.data.version, '2.4'); assert.equal(w.state.candidates.length, 1); assert.equal(next.result.usage.candidateJudgeCalls, 1);
   assert.equal(next.result.requirements.version.provenance.sourceId, first.handoff.evidence[0].evidenceId);
 });
+
+
+test('L7 A latest baseline read API preserves intent without owner work or invented historical baseline', async () => {
+  const f = await fixture();
+  const baseline = { ...contract(), limits: { ...contract().limits, maxUniqueReads: 3 } };
+  const first = await start(f, { contract: baseline, roundLimits: { maxUniqueReads: 1 } });
+  const before = { begin: f.calls.begin.length, settlements: f.calls.settlements.length, releases: f.calls.releases, commits: f.calls.commits };
+  const latest = await f.api.readCallerRecord(first.storeRoot, first.investigationRef);
+  assert.equal(Object.hasOwn(latest, 'baselineContract'), true, 'selected latest must expose the validated baseline');
+  assert.equal(latest.baselineContract.limits.maxUniqueReads, 3);
+  assert.equal(latest.contract.limits.maxUniqueReads, 1, 'executed contract stays episode lowered');
+  const explicitLatest = await f.api.readCallerRecord(first.storeRoot, first.investigationRef, 1);
+  assert.deepEqual(explicitLatest.baselineContract, latest.baselineContract);
+  assert.deepEqual({ begin: f.calls.begin.length, settlements: f.calls.settlements.length, releases: f.calls.releases, commits: f.calls.commits }, before, 'offline reading must not acquire or settle an owner');
+  const second = await continueRound(f, first);
+  const historical = await f.api.readCallerRecord(first.storeRoot, first.investigationRef, 1);
+  assert.equal(Object.hasOwn(historical, 'baselineContract'), false, 'historical views have no invented baseline property');
+  assert.deepEqual(historical.contract, latest.contract); assert.deepEqual(historical.payload, latest.payload);
+  assert.equal((await f.api.readCallerRecord(first.storeRoot, first.investigationRef, second.handoff.revision)).baselineContract.limits.maxUniqueReads, 3);
+  const legacy = await fixture(), legacyFirst = await start(legacy, { contract: baseline, roundLimits: { maxUniqueReads: 1 } });
+  await rewriteCurrent(legacy, legacyFirst.investigationRef, async ({ pointer }) => { delete pointer.baselineContract; });
+  const fallback = await legacy.api.readCallerRecord(legacyFirst.storeRoot, legacyFirst.investigationRef);
+  assert.deepEqual(fallback.baselineContract, fallback.contract, 'legacy missing baseline retains the conservative executed ceiling');
+  await rewriteCurrent(legacy, legacyFirst.investigationRef, async ({ pointer }) => { pointer.baselineContract = { digest: 'bad', chunks: [] }; });
+  const ownersBefore = legacy.calls.begin.length;
+  await assert.rejects(legacy.api.readCallerRecord(legacyFirst.storeRoot, legacyFirst.investigationRef), CorruptRecordError);
+  assert.equal(legacy.calls.begin.length, ownersBefore);
+});

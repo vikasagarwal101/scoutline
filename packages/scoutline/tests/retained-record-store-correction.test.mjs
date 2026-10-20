@@ -7,6 +7,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
+import { syncBuiltinESMExports } from "node:module";
 
 const dist = path.join(import.meta.dirname, "..", "dist", "lib", "retained-record-store.js");
 const m = await import(`file://${dist}`);
@@ -20,8 +21,14 @@ const REQUIREMENTS = {
   fields: { answer: { definition: "synthetic", required: true } },
 };
 
+// Every root this run creates is registered and removed in test.after —
+// only current-run owned roots are touched, never pre-existing temp dirs.
+const ownedRoots = new Set();
 function tempRoot() {
-  return fs.mkdtemp(path.join(os.tmpdir(), "rrs-corr-"));
+  return fs.mkdtemp(path.join(os.tmpdir(), "rrs-corr-")).then((p) => {
+    ownedRoots.add(p);
+    return p;
+  });
 }
 
 async function size(d) {
@@ -33,6 +40,21 @@ async function size(d) {
   }
   return n;
 }
+
+test.after(async () => {
+  const failures = [];
+  for (const root of [...ownedRoots]) {
+    try {
+      await fs.rm(root, { recursive: true, force: true });
+      ownedRoots.delete(root);
+    } catch (e) {
+      failures.push(`${root}: ${e.message}`);
+    }
+  }
+  if (failures.length > 0) {
+    assert.fail(`temp-root cleanup failed: ${failures.join("; ")}`);
+  }
+});
 
 const created = async (root) => {
   const store = openStore({ root });
@@ -46,17 +68,47 @@ const created = async (root) => {
 
 test("correction: admission is held through materialization (second writer refused BEFORE writing)", async () => {
   const root = await tempRoot();
-  const { store, ref, dir } = await created(root);
-  // Tight store cap: exactly one 16KiB body fits beyond current bytes.
-  const before = await size(root);
+  const { store, ref } = await created(root);
+  // Keep room for exactly one original 16000-byte body after both begins.
   const second = await store.createInvestigation({ requirements: REQUIREMENTS });
-  const after = await size(root);
+  // Materialize the two advisory owner files through real public acquisitions
+  // before fixing the bounded store's baseline. release removes these files;
+  // add their exact sizes back, then assert the bounded acquisitions match.
+  const probe1 = await store.acquireOwnership(ref);
+  const probe2 = await store.acquireOwnership(second.investigationRef);
+  let ownerBytes;
+  try {
+    ownerBytes = await Promise.all([ref, second.investigationRef].map(async (recordRef) =>
+      (await fs.stat(path.join(root, "investigations", recordRef, "owner.lock"))).size));
+  } finally {
+    await probe1.release();
+    await probe2.release();
+  }
+  const after = (await size(root)) + ownerBytes.reduce((sum, bytes) => sum + bytes, 0);
   let inWrite = 0;
   const RESERVE = 2048;
-  // Cap: current bytes + one small reserve + one marker + one 16KiB body.
-  // Two rounds (2 reserves + 2 markers + 2 bodies) cannot fit; the second
-  // writer must be refused at its PRE-WRITE check, not after materializing.
-  const CAP = after + RESERVE + 512 + 16000 + 2048;
+  // Preserve the old two-reserve + 512-byte marker budget. New rounds
+  // additionally retain TWO envelopes plus TWO recovery-reference fields.
+  // Bound each field by the frozen format's 64-hex name/32-digit identities.
+  const recoveryFieldBound = Buffer.byteLength(JSON.stringify({ recovery: {
+    name: `ack-${"0".repeat(64)}.record`, device: "9".repeat(32), inode: "9".repeat(32),
+  } })) - 1; // outer braces removed, one separating comma added
+  const CAP = after + 2 * RESERVE + 512 + 16000 + 2 * 8192 + 2 * recoveryFieldBound;
+  const originalLink = fs.link;
+  const creationPeaks = [];
+  fs.link = async (from, to) => {
+    await originalLink(from, to);
+    if (String(to).startsWith(root + path.sep) && /ack-.*\.record$/.test(to)) {
+      // Native placement really has two directory entries for this 8KiB
+      // allocation until the stage is removed; charge/measure both entries.
+      const staged = await fs.stat(from);
+      const final = await fs.stat(to);
+      assert.equal(staged.ino, final.ino);
+      assert.equal(staged.size, 8192);
+      creationPeaks.push(await size(root));
+    }
+  };
+  syncBuiltinESMExports();
   const slow = openStore({
     root,
     caps: { storeMaxBytes: CAP, settlementReserveBytes: RESERVE },
@@ -73,20 +125,46 @@ test("correction: admission is held through materialization (second writer refus
   const j1 = await slow.acquireOwnership(ref);
   const j2 = await slow.acquireOwnership(second.investigationRef);
   try {
+    assert.deepEqual(await Promise.all([ref, second.investigationRef].map(async (recordRef) =>
+      (await fs.stat(path.join(root, "investigations", recordRef, "owner.lock"))).size)), ownerBytes,
+      "bounded acquisitions must retain the measured owner metadata baseline");
     await j1.beginRound({ roundId: "one", intent: "continue" });
     await j2.beginRound({ roundId: "two", intent: "continue" });
+    let legacyMarkerBytes = 0;
+    for (const recordRef of [ref, second.investigationRef]) {
+      const recordDir = path.join(root, "investigations", recordRef);
+      const marker = JSON.parse(await fs.readFile(path.join(recordDir, "incomplete.json")));
+      const { recovery, ...legacy } = marker;
+      const legacyBytes = Buffer.byteLength(JSON.stringify(legacy));
+      legacyMarkerBytes += legacyBytes;
+      assert.ok(Buffer.byteLength(JSON.stringify(marker)) - legacyBytes <= recoveryFieldBound);
+      const names = (await fs.readdir(path.join(recordDir, "audit"))).filter((n) => /^ack-.*\.record$/.test(n));
+      assert.deepEqual(names, [recovery.name]);
+      assert.equal((await fs.stat(path.join(recordDir, "audit", recovery.name))).size, 8192);
+    }
+    assert.ok(legacyMarkerBytes <= 512, "original marker allowance exceeded");
+    assert.equal(creationPeaks.length, 2, "both real native creation peaks must be witnessed");
+    assert.ok(Math.max(...creationPeaks) <= CAP, "native two-entry peak exceeded cap");
+    const prebodyBytes = await size(root);
     const w1 = j1.stageBody("a".repeat(16000));
     const w2 = j2.stageBody("b".repeat(16000));
     const [r1, r2] = await Promise.allSettled([w1, w2]);
+    console.log(JSON.stringify({ fixture: "correction-contention", prebodyBytes, CAP, inWrite,
+      outcomes: [r1, r2].map((r) => r.status === "rejected"
+        ? { status: r.status, name: r.reason.name, code: r.reason.code, message: r.reason.message }
+        : { status: r.status }) }));
     const failures = [r1, r2].filter((r) => r.status === "rejected");
-    assert.ok(failures.length >= 1, "at least one writer must be refused under the cap");
+    assert.equal(failures.length, 1, "exactly one original 16000-byte body must be refused");
+    assert.equal([r1, r2].filter((r) => r.status === "fulfilled").length, 1, "exactly one body must fit");
     for (const f of failures) {
       assert.equal(f.reason.name, "StoreCapacityError");
     }
     const actual = await size(root);
     assert.ok(actual <= CAP, `persistent bytes ${actual} exceed the cap ${CAP}`);
-    assert.ok(inWrite <= 1, `both writers reached the write funnel (${inWrite}) — admission not serialized through materialization`);
+    assert.equal(inWrite, 1, "exactly one body must reach the write funnel");
   } finally {
+    fs.link = originalLink;
+    syncBuiltinESMExports();
     await j1.release().catch(() => {});
     await j2.release().catch(() => {});
   }
@@ -133,16 +211,25 @@ test("correction: two records cannot both provision a settlement reserve that fi
   const store = openStore({ root });
   const a = await store.createInvestigation({ requirements: REQUIREMENTS });
   const b = await store.createInvestigation({ requirements: REQUIREMENTS });
-  const cap = (await size(root)) + m.SETTLEMENT_RESERVE_BYTES + 4096;
+  // One retained envelope + the next round's two-entry creation peak;
+  // retain the original one-reserve + 4096-byte relationship. Paired control
+  // below proves reserve availability, rather than envelope placement, decides.
+  const cap = (await size(root)) + m.SETTLEMENT_RESERVE_BYTES + 4096 + 3 * 8192;
   const bounded = openStore({ root, caps: { storeMaxBytes: cap } });
   const ha = await bounded.acquireOwnership(a.investigationRef);
   const hb = await bounded.acquireOwnership(b.investigationRef);
   try {
     await ha.beginRound({ roundId: "ra", intent: "continue" });
+    assert.ok(cap - (await size(root)) >= 2 * 8192, "native envelope creation alone must fit");
     await assert.rejects(
       hb.beginRound({ roundId: "rb", intent: "continue" }),
-      (e) => e.name === "StoreCapacityError",
+      (e) => e.name === "StoreCapacityError" && /complete pre-dispatch reservations and marker/.test(e.message),
     );
+    assert.deepEqual(await fs.readdir(path.join(root, "investigations", b.investigationRef, "audit")).catch((e) => {
+      if (e.code === "ENOENT") return [];
+      throw e;
+    }), [],
+      "refused beginRound must not place a pending envelope");
     // The reserve is REAL bytes, not arithmetic.
     const reserve = await fs.stat(
       path.join(root, "investigations", a.investigationRef, "reserve.settlement"),
@@ -152,6 +239,22 @@ test("correction: two records cannot both provision a settlement reserve that fi
       !(await fs.stat(path.join(root, "investigations", b.investigationRef, "reserve.settlement")).then(() => true, () => false)),
       "refused beginRound must not leave a reserve file",
     );
+    // Same cap, bodies and envelope costs; freeing ONLY the first reserve
+    // through settlement admits the previously refused second reservation.
+    await ha.settleRound("ra", {
+      status: "partial", measured: { searches: 0, reads: 0, judgments: 0 }, uncertainty: null,
+    });
+    await hb.beginRound({ roundId: "rb", intent: "continue" });
+    assert.equal((await fs.stat(path.join(root, "investigations", b.investigationRef, "reserve.settlement"))).size,
+      m.SETTLEMENT_RESERVE_BYTES);
+    await assert.rejects(fs.stat(path.join(root, "investigations", a.investigationRef, "reserve.settlement")),
+      (e) => e.code === "ENOENT");
+    for (const { investigationRef } of [a, b]) {
+      const dir = path.join(root, "investigations", investigationRef);
+      const marker = JSON.parse(await fs.readFile(path.join(dir, "incomplete.json")));
+      assert.equal((await fs.stat(path.join(dir, "audit", marker.recovery.name))).size, 8192);
+    }
+    assert.ok((await size(root)) <= cap);
   } finally {
     await ha.release();
     await hb.release();
@@ -178,13 +281,6 @@ test("correction: settlement consumes the materialized reserve exactly once", as
       ),
       "reserve.settlement must be consumed by settlement",
     );
-    // The freed headroom is real: a fresh 4KiB write now fits where the
-    // reserve used to be (cap pinned just above post-settlement bytes).
-    const after = await size(root);
-    const bounded = openStore({ root, caps: { storeMaxBytes: after + 1000 } });
-    // (bounded shares the same underlying store tree; only its cap view differs)
-    const hb = await store.acquireOwnership(ref).catch(() => null);
-    if (hb) await hb.release();
   } finally {
     await h.release();
   }
@@ -194,20 +290,12 @@ test("correction: settlement consumes the materialized reserve exactly once", as
 // Finding 3 — rollback failure is never reported as success
 // ---------------------------------------------------------------------------
 
-test("correction: failed rollback is reported as unfinished state, never 'rolled back'", async () => {
+test("correction: beginRound over a tight record cap is refused BEFORE any write", async () => {
   const root = await tempRoot();
   const { dir } = await created(root);
-  // Corrupt the committed view so a re-open measures over-cap and attempts
-  // rollback with an unfakeable fault: make the record dir read-only after
-  // injecting an oversized external file, then try a write.
-  const store = openStore({ root, caps: { recordMaxBytes: 1024 * 1024 } });
-  const insp = await store.inspect((await fs.readdir(path.join(root, "investigations")))[0]);
-  assert.ok(insp.committed, "baseline record verifies");
-  // Simulate the rollback-fault shape directly: pre-check passes (external
-  // ballast under the cap), then the post-write re-measure must see bytes
-  // that appeared un-charged DURING the held turn — impossible through the
-  // store itself, so pin the ERROR CONTRACT instead: a rollback that cannot
-  // complete must surface "ROLLBACK FAILED", never "write rolled back".
+  // A record cap below the record's current bytes: the refusal happens at
+  // the PRE-WRITE admission check — this pins that pre-write refusal, not a
+  // rollback-failure path (dedicated injected-fault tests cover rollback).
   const store2 = openStore({ root, caps: { recordMaxBytes: (await size(dir)) + 200 } });
   const h = await store2.acquireOwnership((await fs.readdir(path.join(root, "investigations")))[0]);
   try {
@@ -333,6 +421,8 @@ test("correction: settlement marker write failure rejects settleRound", async ()
         measured: { searches: 0, reads: 0, judgments: 0 },
         uncertainty: null,
       }),
+      (e) => e.name === "Error" && e.message === "marker fault",
+      "settleRound must reject with the exact injected marker-fault error",
     );
   } finally {
     await h.release();

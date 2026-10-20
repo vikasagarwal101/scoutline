@@ -12,6 +12,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
+import fsp from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 
@@ -27,9 +29,29 @@ globalThis.fetch = () => {
 const REQUIREMENTS = { schemaVersion: 1, fields: { a: { definition: "synthetic", required: true } } };
 const SUMMARY = { status: "partial", measured: { searches: 0, reads: 0, judgments: 0 }, uncertainty: null };
 
+// Every root this run creates is registered and removed in test.after —
+// only current-run owned roots are touched, never pre-existing temp dirs.
+const ownedRoots = new Set();
 function tempRoot() {
-  return fs.mkdtemp(path.join(os.tmpdir(), "rrs-latest-"));
+  return fs.mkdtemp(path.join(os.tmpdir(), "rrs-latest-")).then((p) => {
+    ownedRoots.add(p);
+    return p;
+  });
 }
+test.after(async () => {
+  const failures = [];
+  for (const root of [...ownedRoots]) {
+    try {
+      await fs.rm(root, { recursive: true, force: true });
+      ownedRoots.delete(root);
+    } catch (e) {
+      failures.push(`${root}: ${e.message}`);
+    }
+  }
+  if (failures.length > 0) {
+    assert.fail(`temp-root cleanup failed: ${failures.join("; ")}`);
+  }
+});
 
 async function size(d) {
   let n = 0;
@@ -100,7 +122,7 @@ test("first settlement peak never exceeds cap while reserve and temporary summar
   }
 });
 
-// P1 failed acknowledgment (new-02 + ack-after-fault): a failed ACK audit must
+// P1 failed acknowledgment (new-02 + ack-after-fault): a failed native ACK payload must
 // preserve the reserve and the uncertainty marker, not free capacity.
 test("failed acknowledgment preserves reserve and marker and blocks sibling spend", async () => {
   const cap = 200000;
@@ -114,19 +136,38 @@ test("failed acknowledgment preserves reserve and marker and blocks sibling spen
   await h.beginRound({ roundId: "r", intent: "continue" });
   await h.release();
   await fillTo(root, dir, cap - 256);
-  let fail = true;
-  const failing = openStore({
-    root,
-    caps: { storeMaxBytes: cap },
-    deps: {
-      writeFileAtomic: async (f, c) => {
-        if (fail && f.includes("/round-r.json")) throw Error("ack audit fault");
-        await renameWrite(f, c);
+  const marker = JSON.parse(await fs.readFile(path.join(dir, "incomplete.json")));
+  const recoveryPath = path.join(dir, "audit", marker.recovery.name);
+  const originalOpen = fs.open;
+  let payloadFaults = 0;
+  let ack = null;
+  // Only this owned final envelope's writable handle, after begin/release:
+  // the payload write precedes the seal and every destructive cleanup.
+  fsp.open = async (target, ...args) => {
+    const handle = await originalOpen(target, ...args);
+    if (target !== recoveryPath || (args[0] & fs.constants.O_RDWR) === 0) return handle;
+    return new Proxy(handle, {
+      get(target, key) {
+        if (key === "write") return async (...writeArgs) => {
+          if (writeArgs[3] === 2048) {
+            payloadFaults += 1;
+            throw new Error("ack audit fault");
+          }
+          return target.write(...writeArgs);
+        };
+        const value = Reflect.get(target, key, target);
+        return typeof value === "function" ? value.bind(target) : value;
       },
-    },
-  });
+    });
+  };
+  syncBuiltinESMExports();
   try {
-    await assert.rejects(failing.acknowledgeInterrupted(a));
+    await assert.rejects(
+      async () => { ack = await store.acknowledgeInterrupted(a); },
+      (e) => e.name === "Error" && e.message === "ack audit fault",
+      "failed ACK must surface the exact native payload fault",
+    );
+    assert.equal(payloadFaults, 1, "owned native payload boundary must fire exactly once");
     assert.equal(
       (await fs.stat(path.join(dir, "reserve.settlement"))).size,
       SETTLEMENT_RESERVE_BYTES,
@@ -142,12 +183,15 @@ test("failed acknowledgment preserves reserve and marker and blocks sibling spen
     }
     assert.equal(admitted, false, "sibling spent interrupted reserve after failed ACK");
   } finally {
+    fsp.open = originalOpen;
+    syncBuiltinESMExports();
+    await ack?.release();
     await j.release();
   }
 });
 
 // P1 happy-path ACK at full capacity (positive control: the ack transition
-// must still fit once the reserve is validated and consumed transactionally).
+// seals the already allocated envelope before consuming the validated reserve).
 test("happy-path acknowledgment succeeds at full capacity", async () => {
   const { root, ref, dir, h } = await setup();
   await h.release();
@@ -164,8 +208,8 @@ test("happy-path acknowledgment succeeds at full capacity", async () => {
 
 // P1 publication seam (new-08): a rename-replaced conflict at the final name
 // must be detected and preserved, never destroyed by a replace writer. The
-// conflict is installed at r1.json BEFORE the first round is acquired; the
-// commit that would publish r1 is refused and the conflict survives.
+// conflict is installed at r1.json AT the revision staging funnel; native
+// proof validation refuses the different final inode and preserves it.
 test("rename-replaced conflict is preserved and publication refuses", async () => {
   const root = await tempRoot();
   const plain = openStore({ root });
@@ -173,6 +217,7 @@ test("rename-replaced conflict is preserved and publication refuses", async () =
   const dir = path.join(root, "investigations", ref);
   const base = JSON.parse(await fs.readFile(path.join(dir, "revisions", "r0.json"), "utf8"));
   let conflict, conflictInode;
+  let conflictPlacements = 0;
   const store = openStore({
     root,
     deps: {
@@ -187,6 +232,7 @@ test("rename-replaced conflict is preserved and publication refuses", async () =
           // the store's no-clobber placement must detect and refuse this.
           await fs.rename(f + ".foreign", path.join(dir, "revisions", "r1.json"));
           conflictInode = (await fs.stat(path.join(dir, "revisions", "r1.json"))).ino;
+          conflictPlacements += 1;
         }
         await renameWrite(f, b);
       },
@@ -197,8 +243,11 @@ test("rename-replaced conflict is preserved and publication refuses", async () =
     await hh.beginRound({ roundId: "s2", intent: "continue" });
     await assert.rejects(
       hh.commitRevision({ expectedRevision: 0, snapshot: { ...base, revision: 1, parentRevision: 0 } }),
-      (e) => e.name === "CorruptRecordError",
+      (e) => e.name === "CorruptContentError" && e.code === "CORRUPT_CONTENT" &&
+        e.message === `Native retained file identity changed: ${path.join(dir, "revisions", "r1.json")}`,
+      "foreign final must refuse at the exact owned native identity boundary",
     );
+    assert.equal(conflictPlacements, 1, "revision staging must install the foreign final exactly once");
     const p = path.join(dir, "revisions", "r1.json");
     assert.equal(await fs.readFile(p, "utf8"), conflict, "conflict bytes destroyed");
     assert.equal((await fs.stat(p)).ino, conflictInode, "conflict inode replaced");

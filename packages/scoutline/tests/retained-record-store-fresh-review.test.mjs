@@ -10,6 +10,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
+// Mutable alias of the builtin exports object — the ESM namespace above is
+// frozen; patching the default export + syncBuiltinESMExports() is what the
+// compiled dist modules observe (deterministic owned-target refusal below).
+import fsp from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 
@@ -25,9 +30,30 @@ globalThis.fetch = () => {
 
 const REQUIREMENTS = { schemaVersion: 1, fields: { a: { definition: "synthetic", required: true } } };
 
+// Every root this run creates is registered and removed in test.after —
+// only current-run owned roots are touched, never pre-existing temp dirs.
+const ownedRoots = new Set();
 function tempRoot() {
-  return fs.mkdtemp(path.join(os.tmpdir(), "rrs-fresh-"));
+  return fs.mkdtemp(path.join(os.tmpdir(), "rrs-fresh-")).then((p) => {
+    ownedRoots.add(p);
+    return p;
+  });
 }
+
+test.after(async () => {
+  const failures = [];
+  for (const root of [...ownedRoots]) {
+    try {
+      await fs.rm(root, { recursive: true, force: true });
+      ownedRoots.delete(root);
+    } catch (e) {
+      failures.push(`${root}: ${e.message}`);
+    }
+  }
+  if (failures.length > 0) {
+    assert.fail(`temp-root cleanup failed: ${failures.join("; ")}`);
+  }
+});
 
 async function size(d) {
   let n = 0;
@@ -178,8 +204,8 @@ test("F2c: maximum bounded settlement plus marker succeeds at full store", async
   }
 });
 
-// F2d (extra-4): acknowledgment at full capacity succeeds using the reserve budget.
-test("F2d: acknowledgment at full capacity uses the interrupted round's reserve", async () => {
+// F2d (extra-4): full-cap acknowledgment seals its retained envelope in place.
+test("F2d: acknowledgment at full capacity seals the retained envelope without new allocation", async () => {
   const { root, ref, dir } = await setup();
   const h = await openStore({ root }).acquireOwnership(ref);
   await h.beginRound({ roundId: "r", intent: "continue" });
@@ -254,6 +280,7 @@ test("F3: partial marker rejected by stageBody, not only beginRound", async () =
 test("F4: rollback-failed over-cap state surfaces as inspection damage", async () => {
   const { root, ref, dir } = await setup(null, { storeMaxBytes: 120000 });
   let armed = false;
+  const bodyDir = path.join(dir, "bodies");
   const store = openStore({
     root,
     caps: { storeMaxBytes: 120000 },
@@ -262,16 +289,27 @@ test("F4: rollback-failed over-cap state surfaces as inspection damage", async (
         await fs.writeFile(f + ".temp", b);
         await fs.rename(f + ".temp", f);
         // Fault AFTER placement (reviewer harness shape): the write lands,
-        // then external ballast pushes over cap and the dir goes read-only
-        // so rollback cannot unlink — a truthful ROLLBACK FAILED over-cap
-        // state that must be inspectable damage, not an ordinary view.
+        // then external ballast pushes over cap so the post-write re-measure
+        // demands a rollback — a truthful ROLLBACK FAILED over-cap state
+        // that must be inspectable damage, not an ordinary view.
         if (armed && f.endsWith(".bin")) {
           await fs.writeFile(path.join(dir, "external-ballast"), Buffer.alloc(120000));
-          await fs.chmod(path.dirname(f), 0o500);
         }
       },
     },
   });
+  // Deterministic rollback denial: the builtin removal of the staged body is
+  // refused for this exact owned target — uid-independent (unlike a chmod
+  // 0o500 directory, which root ignores), restored in finally. The body stays
+  // present and over-cap, exactly the state the error contract describes.
+  const originalRm = fsp.rm;
+  fsp.rm = async (p, ...rest) => {
+    if (typeof p === "string" && p.startsWith(bodyDir) && p.endsWith(".bin")) {
+      throw Object.assign(new Error("rollback unlink refused (owned fixture)"), { code: "EPERM" });
+    }
+    return originalRm(p, ...rest);
+  };
+  syncBuiltinESMExports();
   const h = await store.acquireOwnership(ref);
   try {
     await h.beginRound({ roundId: "r", intent: "continue" });
@@ -289,7 +327,8 @@ test("F4: rollback-failed over-cap state surfaces as inspection damage", async (
     assert.ok(view.damage, "unfinished over-cap state not inspectable");
     assert.match(view.damage, /over-cap/);
   } finally {
-    await fs.chmod(path.join(dir, "bodies"), 0o700).catch(() => {});
+    fsp.rm = originalRm;
+    syncBuiltinESMExports();
     await h.release();
   }
 });
@@ -327,12 +366,13 @@ test("F6: oversized retained snapshot refuses verification at inspect", async ()
 test("F7: conflicting r1.json placed by an injected funnel is refused, not overwritten", async () => {
   const { root, ref, dir } = await setup();
   const base = JSON.parse(await fs.readFile(path.join(dir, "revisions", "r0.json"), "utf8"));
-  let conflict;
+  let conflict, conflictInode;
+  let conflictPlacements = 0;
   const store = openStore({
     root,
     deps: {
       writeFileAtomic: async (f, b) => {
-        if (f.includes(".stage.tmp")) {
+        if (/r1\.json\..*\.stage\.tmp$/.test(f)) {
           // Install a rename-replaced conflict at the FINAL immutable name.
           conflict = JSON.stringify({
             ...base,
@@ -342,6 +382,8 @@ test("F7: conflicting r1.json placed by an injected funnel is refused, not overw
           });
           await fs.writeFile(f + ".foreign", conflict);
           await fs.rename(f + ".foreign", path.join(dir, "revisions", "r1.json"));
+          conflictInode = (await fs.stat(path.join(dir, "revisions", "r1.json"))).ino;
+          conflictPlacements += 1;
         }
         await fs.writeFile(f + ".temp", b);
         await fs.rename(f + ".temp", f);
@@ -356,9 +398,15 @@ test("F7: conflicting r1.json placed by an injected funnel is refused, not overw
         expectedRevision: 0,
         snapshot: { ...base, revision: 1, parentRevision: 0 },
       }),
-      (e) => e.name === "CorruptRecordError",
+      (e) => e.name === "CorruptContentError" && e.code === "CORRUPT_CONTENT" &&
+        e.message === `Native retained file identity changed: ${path.join(dir, "revisions", "r1.json")}`,
+      "foreign final must refuse at the exact owned native identity boundary",
     );
-    assert.equal(await fs.readFile(path.join(dir, "revisions", "r1.json"), "utf8"), conflict);
+    assert.equal(conflictPlacements, 1, "revision staging must install the foreign final exactly once");
+    const final = path.join(dir, "revisions", "r1.json");
+    assert.equal(await fs.readFile(final, "utf8"), conflict, "conflict bytes destroyed");
+    assert.equal((await fs.stat(final)).ino, conflictInode, "conflict inode replaced");
+    assert.equal((await store.inspect(ref)).committed.revision, 0);
   } finally {
     await h.release();
   }

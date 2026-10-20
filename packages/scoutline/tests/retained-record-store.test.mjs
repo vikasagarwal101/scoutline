@@ -10,6 +10,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
+import fsp from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { syncBuiltinESMExports } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 import { spawn } from "node:child_process";
@@ -57,7 +60,12 @@ const cleanupFailures = [];
 test.after(async () => {
   // Native children (spawned writers) must exit before their trees vanish.
   for (const child of activeChildren) {
-    if (child.exitCode === null) await new Promise((resolve) => child.once("exit", resolve));
+    if (child.exitCode === null && child.signalCode === null) {
+      await new Promise((resolve) => {
+        child.once("exit", resolve); // observe before signaling, including stopped children
+        child.kill("SIGKILL");
+      });
+    }
   }
   // Attempt EVERY owned root; a genuine deletion failure must surface and
   // fail the suite (reported per-root) rather than pass green with leaked
@@ -96,6 +104,98 @@ function snapshotFor(store, ref, revision, requirementsDigest, bodies = [], roun
     rounds,
     audit: [],
   };
+}
+
+// Frozen recovery framing: 2048-byte header, 4096-byte payload, 128-byte
+// length/hash seal, padded to 8192. This independent reader never calls the
+// production parser; an allocated/name-matching pending file is not a receipt.
+function recoveryFile(dir, marker) {
+  const tupleHash = createHash("sha256")
+    .update(JSON.stringify([marker.roundId, marker.ownerId, marker.revisionBase])).digest("hex");
+  const name = `ack-${tupleHash}.record`;
+  assert.equal(marker.recovery.name, name);
+  return path.join(dir, "audit", name);
+}
+
+function verifyRecovery(bytes, marker, sealed) {
+  assert.equal(bytes.length, 8192);
+  const field = (slot) => {
+    const end = slot.indexOf(0);
+    assert.ok(end >= 0 && slot.subarray(end).every((byte) => byte === 0), "invalid framing padding");
+    return JSON.parse(slot.subarray(0, end).toString("utf8"));
+  };
+  assert.deepEqual(field(bytes.subarray(0, 2048)), {
+    schemaVersion: 1, kind: "ack-recovery", roundId: marker.roundId,
+    priorOwner: marker.ownerId, revisionBase: marker.revisionBase, reserveBytes: 8192,
+  });
+  const sealSlot = bytes.subarray(6144, 6272);
+  if (!sealed) {
+    assert.ok(sealSlot.every((byte) => byte === 0), "pending recovery unexpectedly sealed");
+    return;
+  }
+  assert.ok(sealSlot.some((byte) => byte !== 0), "sealed recovery receipt missing seal");
+  const seal = field(sealSlot);
+  assert.deepEqual(Object.keys(seal).sort(), ["bytes", "digest"]);
+  assert.ok(Number.isInteger(seal.bytes) && seal.bytes > 0 && seal.bytes <= 4096);
+  assert.match(seal.digest, /^[0-9a-f]{64}$/);
+  const payload = bytes.subarray(2048, 2048 + seal.bytes);
+  assert.equal(createHash("sha256").update(payload).digest("hex"), seal.digest);
+  assert.ok(bytes.subarray(2048 + seal.bytes, 6144).every((byte) => byte === 0));
+  assert.ok(bytes.subarray(6272).every((byte) => byte === 0));
+  const receipt = JSON.parse(payload.toString("utf8"));
+  const { at, ...identity } = receipt;
+  assert.ok(Number.isFinite(at) && at >= 0);
+  assert.deepEqual(identity, {
+    schemaVersion: 1, kind: "acknowledge-interrupted", roundId: marker.roundId,
+    priorOwner: marker.ownerId, revisionBase: marker.revisionBase, remoteWork: "unknown",
+  });
+}
+
+async function recordBytes(dir) {
+  let bytes = 0;
+  for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
+    const file = path.join(dir, entry.name);
+    bytes += entry.isDirectory() ? await recordBytes(file) : (await fs.stat(file)).size;
+  }
+  return bytes; // counts each hardlink entry, matching actual physical admission
+}
+
+// Observe real native writes/link peaks in ONLY this owned cap fixture. No
+// synthetic counters, sibling dispatch, admission hooks or production edits.
+async function observeRecordPeak(dir, action) {
+  const originals = { open: fsp.open, writeFile: fsp.writeFile, link: fsp.link };
+  let peak = await recordBytes(dir), recoveryLinkPeak = 0;
+  const owned = (file) => String(file).startsWith(dir + path.sep);
+  const observe = async () => { peak = Math.max(peak, await recordBytes(dir)); };
+  fsp.writeFile = async function (file, ...args) {
+    const result = await originals.writeFile.call(this, file, ...args);
+    if (owned(file)) await observe();
+    return result;
+  };
+  fsp.link = async function (from, to) {
+    const result = await originals.link.call(this, from, to);
+    if (owned(to)) {
+      await observe();
+      if (String(to).endsWith(".record")) recoveryLinkPeak = await recordBytes(dir);
+    }
+    return result;
+  };
+  fsp.open = async function (file, ...args) {
+    const handle = await originals.open.call(this, file, ...args);
+    if (!owned(file)) return handle;
+    return new Proxy(handle, { get(target, key) {
+      const value = Reflect.get(target, key, target);
+      if (key === "write" || key === "writeFile") return async (...params) => {
+        const result = await value.apply(target, params);
+        await observe();
+        return result;
+      };
+      return typeof value === "function" ? value.bind(target) : value;
+    } });
+  };
+  syncBuiltinESMExports();
+  try { await action(); return { peak, recoveryLinkPeak }; }
+  finally { Object.assign(fsp, originals); syncBuiltinESMExports(); }
 }
 
 // ---------------------------------------------------------------------------
@@ -335,6 +435,10 @@ test("full round: marker first, staged body, settle, commit revision 1, reopen",
   assert.equal(mid.incomplete.roundId, "r1");
   assert.equal(mid.incomplete.intent, "start");
   assert.equal(mid.incomplete.settled, false);
+  const dir = path.join(root, "investigations", ref);
+  const marker = JSON.parse(await fs.readFile(path.join(dir, "incomplete.json"), "utf8"));
+  const pendingRecovery = recoveryFile(dir, marker);
+  verifyRecovery(await fs.readFile(pendingRecovery), marker, false);
   // committed view still inspectable during active round
   assert.equal(mid.committed.revision, 0);
   const staged = await handle.stageBody("retained round-one body");
@@ -359,6 +463,7 @@ test("full round: marker first, staged body, settle, commit revision 1, reopen",
   const final = await reopened.inspect(ref);
   assert.equal(final.committed.revision, 1);
   assert.equal(final.incomplete, null);
+  await assert.rejects(fs.stat(pendingRecovery), { code: "ENOENT" });
   const body = await reopened.readBody(ref, staged.bodyId);
   assert.equal(body.toString("utf8"), "retained round-one body");
 });
@@ -444,9 +549,12 @@ test("corrupt manifest: inspect reports damage without fabricating; continuation
   // acquire still possible (ownership is independent of manifest), but
   // commit is refused because manifest is unreadable
   const handle = await store.acquireOwnership(ref);
-  await assert.rejects(() => handle.beginRound({ roundId: "r2", intent: "continue" }), CorruptRecordError);
+  try {
+    await assert.rejects(() => handle.beginRound({ roundId: "r2", intent: "continue" }), CorruptRecordError);
+  } finally {
+    await handle.release();
+  }
   // delete-only recovery is permitted
-  await handle.release();
   const del = await store.deleteInvestigation(ref);
   assert.equal(del.deleted, true);
   await assert.rejects(() => store.inspect(ref), InvalidReferenceError);
@@ -492,8 +600,14 @@ test("write fault on manifest publish leaves prior committed revision readable",
   const snap2 = snapshotFor(store, ref, 2, digest0, [
     { bodyId: staged2.bodyId, digest: `sha256:${staged2.bodyId.slice(2)}`, bytes: staged2.bytes },
   ]);
-  await assert.rejects(() => h2.commitRevision({ expectedRevision: 1, snapshot: snap2 }));
-  await h2.release();
+  try {
+    await assert.rejects(
+      () => h2.commitRevision({ expectedRevision: 1, snapshot: snap2 }),
+      { name: "Error", code: "EIO", message: "EIO: manifest" },
+    );
+  } finally {
+    await h2.release();
+  }
   // revision 1 remains the committed, verifiable view
   const insp = await openStore({ root }).inspect(ref);
   assert.equal(insp.committed.revision, 1);
@@ -517,6 +631,7 @@ test("unacknowledged incomplete marker blocks a fresh owner's round; acknowledgm
       import { openStore } from ${JSON.stringify(new URL("../dist/lib/retained-record-store.js", import.meta.url).href)};
       const h = await openStore({ root: ${JSON.stringify(root)} }).acquireOwnership(${JSON.stringify(ref)});
       await h.beginRound({ roundId: "interrupted", intent: "start" });
+      await h.appendAudit({ at: 1, kind: "dispatch", detail: "preserved normal evidence" });
       console.log("held");
       setInterval(() => {}, 1000);
     `,
@@ -524,14 +639,22 @@ test("unacknowledged incomplete marker blocks a fresh owner's round; acknowledgm
     { stdio: ["ignore", "pipe", "inherit"] },
   );
   child.stdout.resume();
+  const normalAuditPath = path.join(dir, "audit", "round-interrupted.json");
+  let normalAuditBefore;
   const t0 = Date.now();
   for (;;) {
     const i = await store.inspect(ref);
-    if (i.ownership === "live-owner" && i.incomplete?.roundId === "interrupted") break;
+    if (i.ownership === "live-owner" && i.incomplete?.roundId === "interrupted") {
+      try { normalAuditBefore = await fs.readFile(normalAuditPath); break; }
+      catch (error) { if (error.code !== "ENOENT") throw error; }
+    }
     if (Date.now() - t0 > 10_000) assert.fail("child never staged interruption");
     await new Promise((r) => setTimeout(r, 50));
   }
   await assert.rejects(() => store.acquireOwnership(ref), OwnerBusyError);
+  const marker = JSON.parse(await fs.readFile(path.join(dir, "incomplete.json"), "utf8"));
+  const receiptPath = recoveryFile(dir, marker);
+  verifyRecovery(await fs.readFile(receiptPath), marker, false);
   // kill prior owner; kernel proves exit
   child.kill("SIGKILL");
   await new Promise((r) => setTimeout(r, 300));
@@ -544,14 +667,21 @@ test("unacknowledged incomplete marker blocks a fresh owner's round; acknowledgm
   await h.release();
   // acknowledgment admits ONE fresh round (handle returned live)
   const ack = await store.acknowledgeInterrupted(ref);
-  const afterAck = await store.inspect(ref);
-  assert.equal(afterAck.incomplete, null);
-  await ack.beginRound({ roundId: "fresh", intent: "continue" });
-  await assert.rejects(() => ack.beginRound({ roundId: "again", intent: "continue" }), InvalidRecordInputError);
-  await ack.release();
-  // no automatic replay: nothing dispatched, audit recorded the ack
-  const dirFiles = await fs.readdir(path.join(dir, "audit"));
-  assert.ok(dirFiles.includes("round-fresh.json") || dirFiles.includes("round-interrupted.json"));
+  try {
+    const afterAck = await store.inspect(ref);
+    assert.equal(afterAck.incomplete, null);
+    verifyRecovery(await fs.readFile(receiptPath), marker, true);
+    assert.equal((await fs.readdir(path.join(dir, "audit")))
+      .filter((name) => name === path.basename(receiptPath)).length, 1);
+    assert.deepEqual(await fs.readFile(normalAuditPath), normalAuditBefore);
+    await ack.beginRound({ roundId: "fresh", intent: "continue" });
+    await assert.rejects(() => ack.beginRound({ roundId: "again", intent: "continue" }), InvalidRecordInputError);
+  } finally {
+    await ack.release();
+  }
+  // The sealed exact-instance receipt is ACK authority; normal rows remain
+  // byte-preserved informational history, including across the fresh round.
+  assert.deepEqual(await fs.readFile(normalAuditPath), normalAuditBefore);
 });
 
 test("acknowledgment refuses damaged state (delete-only path)", async () => {
@@ -571,16 +701,29 @@ test("acknowledgment refuses damaged state (delete-only path)", async () => {
 // Storage caps — actual bytes, no eviction
 // ---------------------------------------------------------------------------
 
-test("record cap rejects admission; retained evidence survives refusal", async () => {
+test("record cap rejects admission; retained evidence survives refusal", async (t) => {
   const root = await tempRoot();
-  // default 64KiB reserve + base files; cap sized so one 6KiB body fits and a second does not
-  const store = openStore({ root, caps: { recordMaxBytes: 76 * 1024 } });
+  // Default 64KiB settlement reserve; one paid 8KiB recovery envelope.
+  const store = openStore({ root, caps: { recordMaxBytes: 84 * 1024 } });
   const { investigationRef: ref } = await store.createInvestigation({ requirements: REQUIREMENTS });
   const h = await store.acquireOwnership(ref);
-  await h.beginRound({ roundId: "r1", intent: "start" });
-  await h.stageBody("y".repeat(6 * 1024)); // fits
-  await assert.rejects(() => h.stageBody("z".repeat(6 * 1024)), StoreCapacityError);
-  await h.release();
+  const dir = path.join(root, "investigations", ref);
+  const baseline = await recordBytes(dir);
+  let afterFirst;
+  let measured;
+  try {
+    measured = await observeRecordPeak(dir, async () => {
+      await h.beginRound({ roundId: "r1", intent: "start" });
+      await h.stageBody("y".repeat(6 * 1024)); // fits
+      afterFirst = await recordBytes(dir);
+      await assert.rejects(() => h.stageBody("z".repeat(6 * 1024)), StoreCapacityError);
+    });
+  } finally {
+    await h.release();
+  }
+  assert.equal(measured.recoveryLinkPeak, baseline + 2 * 8192);
+  assert.ok(measured.peak <= 84 * 1024);
+  t.diagnostic(JSON.stringify({ cap: 84 * 1024, baseline, afterFirst, ...measured }));
   // committed evidence still present and readable
   const insp = await store.inspect(ref);
   assert.equal(insp.committed.revision, 0);
@@ -598,7 +741,7 @@ test("store cap rejects new retention across investigations, never evicts", asyn
         requirements: REQUIREMENTS,
         bodies: [{ content: "e".repeat(4 * 1024) }], // distinct per record; dedup within one only
       });
-      ref = r.investigationRef;
+      ref ??= r.investigationRef;
     } catch (err) {
       if (!(err instanceof StoreCapacityError)) throw err;
       refused = true;
@@ -611,17 +754,52 @@ test("store cap rejects new retention across investigations, never evicts", asyn
   assert.equal((await first).committed.revision, 0);
 });
 
-test("settlement reserve counts against record admission before dispatch", async () => {
-  const root = await tempRoot();
-  const store = openStore({ root, caps: { recordMaxBytes: 10 * 1024, settlementReserveBytes: 4 * 1024 } });
-  const { investigationRef: ref } = await store.createInvestigation({
-    requirements: REQUIREMENTS,
-    bodies: [{ content: "q".repeat(5 * 1024) }], // 5KiB body + base files
-  });
-  const h = await store.acquireOwnership(ref);
-  // remaining headroom after reserve is ~< 4KiB: staging 4KiB must fail
-  await assert.rejects(() => h.beginRound({ roundId: "r1", intent: "start" }).then(() => h.stageBody("w".repeat(4 * 1024))), StoreCapacityError);
-  await h.release();
+test("settlement reserve counts against record admission before dispatch", async (t) => {
+  // Pay the native two-entry 8KiB envelope peak first. SAME cap, initial
+  // body and payload then straddle only the real 4096-vs-256 reserve cost.
+  const cap = 26 * 1024, payload = "w".repeat(10 * 1024);
+  const measurements = [];
+  for (const reserveBytes of [256, 4096]) {
+    const root = await tempRoot();
+    const store = openStore({ root, caps: { recordMaxBytes: cap, settlementReserveBytes: reserveBytes } });
+    const { investigationRef: ref } = await store.createInvestigation({
+      requirements: REQUIREMENTS,
+      bodies: [{ content: "q".repeat(5 * 1024) }],
+    });
+    const h = await store.acquireOwnership(ref);
+    const dir = path.join(root, "investigations", ref);
+    const baseline = await recordBytes(dir);
+    let beforeStage;
+    try {
+      const measured = await observeRecordPeak(dir, async () => {
+        await h.beginRound({ roundId: "r1", intent: "start" }); // BOTH must succeed
+        const reserve = await fs.readFile(path.join(dir, "reserve.settlement"));
+        assert.equal(reserve.length, reserveBytes);
+        const marker = JSON.parse(await fs.readFile(path.join(dir, "incomplete.json"), "utf8"));
+        assert.deepEqual(JSON.parse(reserve.subarray(0, reserve.indexOf(0)).toString("utf8")), {
+          schemaVersion: 1, kind: "settlement-reserve", roundId: "r1", ownerId: marker.ownerId, reserveBytes,
+        });
+        verifyRecovery(await fs.readFile(recoveryFile(dir, marker)), marker, false);
+        beforeStage = await recordBytes(dir);
+        if (reserveBytes === 256) {
+          const staged = await h.stageBody(payload);
+          assert.equal(staged.bytes, payload.length);
+          assert.equal((await store.readBody(ref, staged.bodyId)).toString("utf8"), payload);
+          assert.ok(cap - (beforeStage + payload.length) >= 512, "positive margin too small");
+        } else {
+          await assert.rejects(() => h.stageBody(payload), StoreCapacityError);
+          assert.equal(await recordBytes(dir), beforeStage, "refused body materialized");
+          assert.ok(beforeStage + payload.length - cap >= 512, "negative margin too small");
+        }
+      });
+      assert.equal(measured.recoveryLinkPeak, baseline + 2 * 8192);
+      assert.ok(measured.peak <= cap);
+      measurements.push({ reserveBytes, baseline, beforeStage, ...measured });
+    } finally {
+      await h.release();
+    }
+  }
+  t.diagnostic(JSON.stringify({ cap, payloadBytes: payload.length, measurements }));
 });
 
 // ---------------------------------------------------------------------------
@@ -686,10 +864,10 @@ test("no automatic replay: interrupted record shows committed view, incomplete s
 });
 
 // ---------------------------------------------------------------------------
-// Fault seam: writeFileAtomic is the single funnel
+// Fault seam: ordinary atomic documents and immutable revision staging
 // ---------------------------------------------------------------------------
 
-test("every store file write flows through the injected writeFileAtomic seam", async () => {
+test("ordinary document writes and revision staging flow through writeFileAtomic", async () => {
   const root = await tempRoot();
   const seen = [];
   const store = openStore({
@@ -725,6 +903,8 @@ test("every store file write flows through the injected writeFileAtomic seam", a
   // may inject a SAFE staging fault. The final name is published atomically by
   // the store, preserving no-clobber semantics (default path stays
   // atomicPlaceNoClobber).
+  // Recovery envelope allocation uses native placement, with an injected
+  // staging witness; its bounded payload/seal ACK writes are native in place.
   assert.ok(rel.some((r) => r.includes("revisions/") && r.includes(".stage.tmp")));
   assert.ok(rel.includes("store.json"));
   assert.ok(rel.includes("incomplete.json"));
@@ -861,38 +1041,98 @@ test("repair: release drains pending writes before closing the owner gate", asyn
   const writing = h.stageBody("pending");
   await ready;
   const releasing = h.release();
-  await new Promise((r) => setTimeout(r, 20));
   let successor = undefined;
+  let assertionFailed = false;
   try {
-    successor = await openStore({ root }).acquireOwnership(ref);
-  } catch (e) {
-    assert.equal(e.name, "OwnerBusyError");
+    await new Promise((r) => setTimeout(r, 20));
+    try {
+      successor = await openStore({ root }).acquireOwnership(ref);
+    } catch (e) {
+      assert.equal(e.name, "OwnerBusyError");
+    }
+    assert.equal(successor, undefined, "successor admitted while prior write in flight");
+  } catch (error) {
+    assertionFailed = true;
+    throw error;
+  } finally {
+    go();
+    const settled = await Promise.allSettled([writing, releasing]);
+    if (successor) settled.push(...await Promise.allSettled([successor.release()]));
+    // Cleanup cannot replace the assertion that exposed a premature admission.
+    if (!assertionFailed) {
+      for (const result of settled) if (result.status === "rejected") throw result.reason;
+    }
   }
-  assert.equal(successor, undefined, "successor admitted while prior write in flight");
-  go();
-  await writing;
-  await releasing;
 });
 
-test("repair: ack audit fault releases the owner gate (no leaked handle)", async () => {
-  const root = await tempRoot();
-  const store = openStore({ root });
-  const { investigationRef: ref } = await store.createInvestigation({ requirements: REQUIREMENTS });
-  const prior = await store.acquireOwnership(ref);
-  await prior.beginRound({ roundId: "dead-owner", intent: "continue" });
-  await prior.release();
-  const bad = openStore({
-    root,
-    deps: {
-      writeFileAtomic: async (p, c) => {
-        if (p.includes("/audit/")) throw new Error("audit write failed");
-        await atomicReplaceFile(p, c);
-      },
-    },
+for (const faultAt of ["payload-write", "payload-sync"]) {
+  test(`repair: ack audit fault releases the owner gate (no leaked handle): ${faultAt}`, async (t) => {
+    const root = await tempRoot();
+    const store = openStore({ root });
+    const { investigationRef: ref } = await store.createInvestigation({ requirements: REQUIREMENTS });
+    const prior = await store.acquireOwnership(ref);
+    await prior.beginRound({ roundId: "dead-owner", intent: "continue" });
+    await prior.release();
+    const dir = path.join(root, "investigations", ref);
+    const markerPath = path.join(dir, "incomplete.json");
+    const reservePath = path.join(dir, "reserve.settlement");
+    const markerBytes = await fs.readFile(markerPath);
+    const marker = JSON.parse(markerBytes.toString("utf8"));
+    const receiptPath = recoveryFile(dir, marker);
+    const reserveBefore = await fs.readFile(reservePath);
+    const recoveryBefore = await fs.readFile(receiptPath);
+    const identityBefore = await fs.stat(receiptPath, { bigint: true });
+    verifyRecovery(recoveryBefore, marker, false);
+    const nativeOpen = fsp.open;
+    let hits = 0, unexpectedAck;
+    fsp.open = async function (file, flags, ...args) {
+      const handle = await nativeOpen.call(this, file, flags, ...args);
+      if (file !== receiptPath || typeof flags !== "number" || !(flags & fs.constants.O_RDWR)) return handle;
+      let payloadWritten = false;
+      return new Proxy(handle, { get(target, key) {
+        const value = Reflect.get(target, key, target);
+        if (key === "write") return async (...params) => {
+          if (faultAt === "payload-write" && params[3] === 2048) {
+            hits += 1;
+            throw new Error("audit write failed");
+          }
+          const result = await value.apply(target, params);
+          if (params[3] === 2048) payloadWritten = true;
+          return result;
+        };
+        if (key === "sync") return async () => {
+          if (faultAt === "payload-sync" && payloadWritten) {
+            hits += 1;
+            throw new Error("audit write failed");
+          }
+          return value.call(target);
+        };
+        return typeof value === "function" ? value.bind(target) : value;
+      } });
+    };
+    syncBuiltinESMExports();
+    try {
+      await assert.rejects(async () => {
+        unexpectedAck = await store.acknowledgeInterrupted(ref);
+      }, { name: "Error", message: "audit write failed" });
+    } finally {
+      fsp.open = nativeOpen;
+      syncBuiltinESMExports();
+      await unexpectedAck?.release();
+    }
+    assert.equal(hits, 1, "owned native fault was not armed exactly once");
+    assert.equal((await store.inspect(ref)).ownership, "free");
+    assert.deepEqual(await fs.readFile(markerPath), markerBytes);
+    assert.deepEqual(await fs.readFile(reservePath), reserveBefore);
+    const recoveryAfter = await fs.readFile(receiptPath);
+    assert.deepEqual(recoveryAfter.subarray(0, 2048), recoveryBefore.subarray(0, 2048));
+    verifyRecovery(recoveryAfter, marker, false); // payload preparation is never authority
+    const identityAfter = await fs.stat(receiptPath, { bigint: true });
+    for (const key of ["dev", "ino", "size"]) assert.equal(identityAfter[key], identityBefore[key]);
+    t.diagnostic(JSON.stringify({ faultAt, hits, markerPreserved: true, reserveBytes: reserveBefore.length,
+      recoveryBytes: recoveryAfter.length, unsealed: true }));
   });
-  await assert.rejects(bad.acknowledgeInterrupted(ref));
-  assert.equal((await store.inspect(ref)).ownership, "free");
-});
+}
 
 test("repair: tombstone-fault deletion leaves noncontinuable damage, not a valid view", async () => {
   const root = await tempRoot();

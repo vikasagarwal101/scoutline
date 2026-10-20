@@ -6,7 +6,8 @@
  * content-addressed shared body files, a small atomically replaced manifest,
  * kernel-verified local-owner exclusion (no age-based takeover), explicit
  * acknowledge/delete-only recovery, and actual-byte store/record admission
- * (32MiB record / 256MiB store / 64KiB settlement reserve).
+ * (32MiB record / 256MiB store / 64KiB settlement reserve, plus physically
+ * provisioned 8KiB recovery/audit headroom per dispatched round).
  *
  * == Ownership: abstract-namespace Unix socket gate (Linux) ==
  *
@@ -55,10 +56,15 @@
  *     requirements.json      retained requirements (digest source)
  *     store.json             manifest: last committed revision
  *     revisions/r<n>.json    revision snapshots (immutable once written)
+ *     revisions/.r<n>.json.<pid>.<uuid>.stage.tmp
+ *                            retained candidate until publication cleanup;
+ *                            acknowledged unpublished candidates remain evidence
  *     bodies/<sha256hex>.bin content-addressed shared bodies (deduped)
  *     audit/round-<id>.json  per-round bounded audit rows (never replaced
  *                            by settlement)
  *     audit/settlement-<id>.json  round settlement summary (separate file)
+ *     audit/ack-<instance hash>.record  preallocated recovery headroom, then
+ *                            one sealed authoritative interruption disposition
  *     owner.lock             owner metadata (advisory; socket is authority)
  *     incomplete.json        pre-dispatch incomplete-round marker
  *     reserve.settlement     materialized settlement reservation (written at
@@ -71,7 +77,6 @@ import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import net from "node:net";
 import * as path from "node:path";
-import { atomicPlaceNoClobber } from "./artifacts.js";
 import { atomicReplaceFile } from "./config-store.js";
 import { ScoutlineError } from "./errors.js";
 
@@ -96,6 +101,14 @@ const ROUND_ID_RE = /^[A-Za-z0-9_.-]{1,64}$/;
 const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
 /** Abstract-namespace socket name limit (108 bytes incl. NUL on Linux). */
 const ABSTRACT_NAME_BUDGET = 107;
+// Required audit headroom, physically provisioned before dispatch and kept
+// across settlement/publication. Only its private mutable receipt slot is
+// written in place; snapshots and all other documents remain atomic writes.
+const RECOVERY_BYTES = 8192;
+const RECOVERY_HEADER_BYTES = 2048;
+const RECOVERY_PAYLOAD_BYTES = 4096;
+const RECOVERY_SEAL_BYTES = 128;
+const RECOVERY_SEAL_OFFSET = RECOVERY_HEADER_BYTES + RECOVERY_PAYLOAD_BYTES;
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -173,7 +186,8 @@ export interface OwnerIdentity {
 }
 
 export interface RetainedStoreDeps {
-  /** Single write funnel for every store file (fault-injection seam). */
+  /** Atomic document/staging fault seam; native publication and the private
+   * preallocated ACK slot retain store-owned no-clobber/durability authority. */
   writeFileAtomic?(filePath: string, contents: string | Uint8Array): Promise<void>;
   /** Recursive removal funnel for deletion (fault-injection seam). */
   removeTree?(dir: string): Promise<void>;
@@ -398,8 +412,15 @@ async function measureTree(dir: string): Promise<number> {
     if (entry.isDirectory()) {
       total += await measureTree(child);
     } else if (entry.isFile()) {
-      const stat = await fs.lstat(child);
-      total += stat.size;
+      try {
+        const stat = await fs.lstat(child);
+        total += stat.size;
+      } catch (err) {
+        // Destructive sibling deletion may remove a listed leaf while this
+        // admitted write measures the store. It only reduces retained bytes;
+        // all admitted additions remain serialized by the admission gate.
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      }
     }
   }
   return total;
@@ -540,6 +561,423 @@ interface IncompleteMarker {
   startedAt: number;
   revisionBase: number;
   settled: boolean;
+  recovery?: NativeFileIdentity & { name: string };
+  publication?: PublicationProof;
+}
+
+interface NativeFileIdentity { device: string; inode: string }
+interface PublicationProof {
+  revision: number;
+  digest: string;
+  stageName: string;
+  identity?: NativeFileIdentity;
+}
+interface PublicationDisposition {
+  disposition: "unverified-preparation" | "unpublished" | "completed";
+  proof: PublicationProof;
+}
+type InterruptedIdentity = Pick<IncompleteMarker, "roundId" | "ownerId" | "revisionBase">;
+interface AckReceipt {
+  schemaVersion: 1;
+  kind: "acknowledge-interrupted";
+  roundId: string;
+  priorOwner: string;
+  revisionBase: number;
+  at: number;
+  remoteWork: "unknown";
+  publication?: PublicationDisposition;
+}
+
+function validatePublicationShape(value: unknown, base: number): PublicationProof {
+  if (!isPlainObject(value) || !Number.isSafeInteger(value.revision) || value.revision !== base + 1 ||
+    typeof value.digest !== "string" || !SHA256_HEX_RE.test(value.digest) ||
+    typeof value.stageName !== "string" || value.stageName.length > 160 ||
+    !/^\.r[1-9][0-9]*\.json\.[1-9][0-9]*\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.stage\.tmp$/.test(value.stageName) ||
+    !value.stageName.startsWith(`.r${value.revision}.json.`) ||
+    Object.keys(value).length !== (value.identity === undefined ? 3 : 4) ||
+    (value.identity !== undefined && (!validIdentity(value.identity) || Object.keys(value.identity).length !== 2))) {
+    throw new CorruptRecordError("Incomplete publication proof corrupt.");
+  }
+  return { revision: value.revision as number, digest: value.digest, stageName: value.stageName,
+    ...(value.identity !== undefined ? { identity: { device: value.identity.device, inode: value.identity.inode } } : {}) };
+}
+
+function nativeIdentity(stat: { dev: bigint; ino: bigint }): NativeFileIdentity {
+  return { device: stat.dev.toString(), inode: stat.ino.toString() };
+}
+
+function sameIdentity(a: NativeFileIdentity, b: NativeFileIdentity): boolean {
+  return a.device === b.device && a.inode === b.inode;
+}
+
+function validIdentity(value: unknown): value is NativeFileIdentity {
+  return isPlainObject(value) && typeof value.device === "string" &&
+    typeof value.inode === "string" && /^(0|[1-9][0-9]{0,31})$/.test(value.device) &&
+    /^(0|[1-9][0-9]{0,31})$/.test(value.inode);
+}
+
+function recoveryName(marker: InterruptedIdentity): string {
+  return `ack-${sha256Hex(canonicalJson([marker.roundId, marker.ownerId, marker.revisionBase]))}.record`;
+}
+
+async function openNativeOwnedFile(
+  dir: string, file: string, writable: boolean, expected?: NativeFileIdentity,
+): Promise<{ handle: Awaited<ReturnType<typeof fs.open>>; identity: NativeFileIdentity }> {
+  await assertNoSymlinkComponents(dir, file);
+  const before = await fs.lstat(file, { bigint: true });
+  if (!before.isFile() || before.size > BigInt(SNAPSHOT_MAX_BYTES)) {
+    throw new CorruptContentError(`Invalid bounded native retained file: ${file}`);
+  }
+  const { O_NOFOLLOW, O_NONBLOCK, O_RDONLY, O_RDWR } = fs.constants;
+  if (O_NOFOLLOW === undefined || O_NONBLOCK === undefined) {
+    throw new CorruptContentError("Safe native file flags unavailable.");
+  }
+  const handle = await fs.open(file, (writable ? O_RDWR : O_RDONLY) | O_NOFOLLOW | O_NONBLOCK);
+  try {
+    const opened = await handle.stat({ bigint: true });
+    const identity = nativeIdentity(opened);
+    if (!opened.isFile() || !sameIdentity(identity, nativeIdentity(before)) ||
+      (expected !== undefined && !sameIdentity(identity, expected))) {
+      throw new CorruptContentError(`Native retained file identity changed: ${file}`);
+    }
+    return { handle, identity };
+  } catch (err) {
+    await handle.close();
+    throw err;
+  }
+}
+
+async function readNativeBounded(handle: Awaited<ReturnType<typeof fs.open>>, max: number): Promise<Buffer> {
+  const bytes = Buffer.alloc(max + 1);
+  let total = 0;
+  while (total <= max) {
+    const result = await handle.read(bytes, total, max + 1 - total, total);
+    if (result.bytesRead === 0) return bytes.subarray(0, total);
+    total += result.bytesRead;
+  }
+  throw new CorruptRecordError(`Native retained file exceeds ${max} bytes.`);
+}
+
+function recoveryHeader(marker: InterruptedIdentity): Record<string, unknown> {
+  return { schemaVersion: 1, kind: "ack-recovery", roundId: marker.roundId,
+    priorOwner: marker.ownerId, revisionBase: marker.revisionBase, reserveBytes: RECOVERY_BYTES };
+}
+
+function paddedJson(value: unknown, length: number): Buffer {
+  const encoded = Buffer.from(canonicalJson(value));
+  if (encoded.length > length) throw new InvalidRecordInputError("Recovery record field exceeds its bound.");
+  const buffer = Buffer.alloc(length);
+  encoded.copy(buffer);
+  return buffer;
+}
+
+function paddedText(bytes: Buffer): string {
+  const end = bytes.indexOf(0);
+  if (end !== -1 && bytes.subarray(end).some((byte) => byte !== 0)) {
+    throw new CorruptRecordError("Recovery field has nonzero trailing padding.");
+  }
+  return bytes.subarray(0, end === -1 ? bytes.length : end).toString("utf8");
+}
+
+function parseRecovery(bytes: Buffer, marker: InterruptedIdentity): AckReceipt | null {
+  if (bytes.length !== RECOVERY_BYTES) throw new CorruptRecordError("Recovery envelope allocation changed.");
+  let header: unknown;
+  try { header = JSON.parse(paddedText(bytes.subarray(0, RECOVERY_HEADER_BYTES))); }
+  catch { throw new CorruptRecordError("Recovery envelope header corrupt."); }
+  if (canonicalJson(header) !== canonicalJson(recoveryHeader(marker))) {
+    throw new CorruptRecordError("Recovery envelope header/instance mismatch.");
+  }
+  const sealBytes = bytes.subarray(RECOVERY_SEAL_OFFSET, RECOVERY_SEAL_OFFSET + RECOVERY_SEAL_BYTES);
+  let seal: unknown;
+  const sealEnd = sealBytes.indexOf(0);
+  try { seal = JSON.parse(sealBytes.subarray(0, sealEnd === -1 ? sealBytes.length : sealEnd).toString("utf8")); }
+  catch (err) {
+    if (err instanceof SyntaxError) return null; // genuinely torn/unsealed preparation
+    throw err;
+  }
+  // A complete JSON seal with bad padding is corruption, never pending.
+  paddedText(sealBytes);
+  if (!isPlainObject(seal) || !Number.isInteger(seal.bytes) || (seal.bytes as number) <= 0 ||
+    (seal.bytes as number) > RECOVERY_PAYLOAD_BYTES || typeof seal.digest !== "string" ||
+    !SHA256_HEX_RE.test(seal.digest) || Object.keys(seal).length !== 2) {
+    throw new CorruptRecordError("Complete recovery seal corrupt.");
+  }
+  const payload = bytes.subarray(RECOVERY_HEADER_BYTES, RECOVERY_HEADER_BYTES + (seal.bytes as number));
+  if (sha256Hex(payload) !== seal.digest) throw new CorruptRecordError("Sealed recovery checksum mismatch.");
+  let receipt: unknown;
+  try { receipt = JSON.parse(payload.toString("utf8")); }
+  catch { throw new CorruptRecordError("Sealed recovery payload corrupt."); }
+  if (!isPlainObject(receipt) || receipt.schemaVersion !== 1 || receipt.kind !== "acknowledge-interrupted" ||
+    receipt.roundId !== marker.roundId || receipt.priorOwner !== marker.ownerId ||
+    receipt.revisionBase !== marker.revisionBase || receipt.remoteWork !== "unknown" ||
+    typeof receipt.at !== "number" || !Number.isFinite(receipt.at) || receipt.at < 0 ||
+    Object.keys(receipt).length !== (receipt.publication === undefined ? 7 : 8)) {
+    throw new CorruptRecordError("Sealed recovery receipt conflicts with interrupted instance.");
+  }
+  if (receipt.publication !== undefined) {
+    if (!isPlainObject(receipt.publication) || Object.keys(receipt.publication).length !== 2 ||
+      typeof receipt.publication.disposition !== "string" ||
+      !["unverified-preparation", "unpublished", "completed"].includes(receipt.publication.disposition)) {
+      throw new CorruptRecordError("Sealed publication disposition malformed.");
+    }
+    const proof = validatePublicationShape(receipt.publication.proof, marker.revisionBase);
+    if ((receipt.publication.disposition === "unverified-preparation") !== (proof.identity === undefined)) {
+      throw new CorruptRecordError("Sealed disposition contradicts native publication proof.");
+    }
+  }
+  return receipt as unknown as AckReceipt;
+}
+
+async function assertNativeIdentity(file: string, expected: NativeFileIdentity): Promise<void> {
+  const stat = await fs.lstat(file, { bigint: true });
+  if (!stat.isFile() || !sameIdentity(nativeIdentity(stat), expected)) {
+    throw new CorruptContentError(`Refusing changed native retained path: ${file}`);
+  }
+}
+
+async function syncOwnedDirectory(dir: string): Promise<void> {
+  const handle = await fs.open(dir, "r");
+  try { await handle.sync(); } finally { await handle.close(); }
+}
+
+async function createRecoveryHeld(
+  store: RetainedRecordStore, dir: string, marker: InterruptedIdentity,
+): Promise<NativeFileIdentity & { name: string }> {
+  const name = recoveryName(marker);
+  const file = path.join(dir, "audit", name);
+  const bytes = Buffer.alloc(RECOVERY_BYTES);
+  paddedJson(recoveryHeader(marker), RECOVERY_HEADER_BYTES).copy(bytes);
+  await store.admittedWriteHeld(dir, file, bytes, {
+    chargeBytes: RECOVERY_BYTES * 2, rollback: { kind: "none" },
+    writeImpl: async () => {
+      const auditDir = path.dirname(file);
+      await fs.mkdir(auditDir, { recursive: true, mode: 0o700 });
+      const stage = path.join(auditDir, `.${name}.${process.pid}.${randomUUID()}.reserve.tmp`);
+      let mine: NativeFileIdentity | undefined;
+      let primary: unknown;
+      try {
+        const handle = await fs.open(stage, "wx", 0o600);
+        try {
+          mine = nativeIdentity(await handle.stat({ bigint: true }));
+          await handle.writeFile(bytes);
+          await handle.sync();
+        } finally { await handle.close(); }
+        const injected = store.depsWriteFunnel();
+        if (injected !== undefined) await injected(stage, bytes);
+        const staged = await openNativeOwnedFile(dir, stage, false);
+        try {
+          if (!(await readNativeBounded(staged.handle, RECOVERY_BYTES)).equals(bytes)) {
+            throw new CorruptRecordError("Recovery staging bytes changed.");
+          }
+          mine = staged.identity;
+          await staged.handle.sync();
+        } finally { await staged.handle.close(); }
+        try { await fs.link(stage, file); }
+        catch (err) {
+          if ((err as NodeJS.ErrnoException).code === "EEXIST") throw new CorruptRecordError("Recovery envelope name already occupied.");
+          throw err;
+        }
+        await assertNativeIdentity(file, mine);
+        await syncOwnedDirectory(auditDir);
+      } catch (err) {
+        primary = err;
+        throw err;
+      } finally {
+        if (mine !== undefined && await entryExistsStrict(stage)) {
+          try {
+            await assertNativeIdentity(stage, mine);
+            await fs.unlink(stage);
+          } catch (cleanupError) {
+            if (primary !== undefined) {
+              throw new CorruptRecordError(`Recovery preparation failed (${String(primary)}) and native staging cleanup failed (${String(cleanupError)}); unfinished state retained.`);
+            }
+            throw cleanupError;
+          }
+        }
+      }
+    },
+  }, "recovery envelope native placement");
+  const opened = await openNativeOwnedFile(dir, file, false);
+  try { parseRecovery(await readNativeBounded(opened.handle, RECOVERY_BYTES), marker); }
+  finally { await opened.handle.close(); }
+  return { name, ...opened.identity };
+}
+
+async function sealRecovery(dir: string, marker: IncompleteMarker, at: number, publication?: PublicationDisposition): Promise<void> {
+  if (marker.recovery === undefined) throw new CorruptRecordError("Recovery envelope missing.");
+  const file = path.join(dir, "audit", marker.recovery.name);
+  const { handle } = await openNativeOwnedFile(dir, file, true, marker.recovery);
+  try {
+    const existing = parseRecovery(await readNativeBounded(handle, RECOVERY_BYTES), marker);
+    if (existing !== null && canonicalJson(existing.publication) !== canonicalJson(publication)) {
+      throw new CorruptRecordError("Authoritative receipt publication conflicts with current proof.");
+    }
+    if (existing === null) {
+      const receipt: AckReceipt = { schemaVersion: 1, kind: "acknowledge-interrupted", roundId: marker.roundId,
+        priorOwner: marker.ownerId, revisionBase: marker.revisionBase, at, remoteWork: "unknown",
+        ...(publication !== undefined ? { publication } : {}) };
+      const payload = Buffer.from(canonicalJson(receipt));
+      const writeSlot = async (buffer: Buffer, offset: number): Promise<void> => {
+        let written = 0;
+        while (written < buffer.length) {
+          const result = await handle.write(buffer, written, buffer.length - written, offset + written);
+          if (result.bytesWritten === 0) throw new CorruptRecordError("Recovery slot write made no progress.");
+          written += result.bytesWritten;
+        }
+      };
+      await writeSlot(paddedJson(receipt, RECOVERY_PAYLOAD_BYTES), RECOVERY_HEADER_BYTES);
+      await handle.sync();
+      await writeSlot(paddedJson({ bytes: payload.length, digest: sha256Hex(payload) }, RECOVERY_SEAL_BYTES), RECOVERY_SEAL_OFFSET);
+    }
+    // Also sync an already-valid receipt: a prior owner may have exited
+    // after its last write but before the final durability barrier.
+    const final = parseRecovery(await readNativeBounded(handle, RECOVERY_BYTES), marker);
+    if (final === null) throw new CorruptRecordError("Recovery receipt not sealed.");
+    await assertNativeIdentity(file, marker.recovery);
+    await handle.sync();
+    await assertNativeIdentity(file, marker.recovery);
+  } finally { await handle.close(); }
+}
+
+/** Marker is absent, owner/admission held, and committed view verified. */
+async function cleanupPendingRecoveries(dir: string, committed: number, reserveBytes: number): Promise<void> {
+  const auditDir = path.join(dir, "audit");
+  await assertNoSymlinkComponents(dir, auditDir);
+  const entries = await fs.readdir(auditDir).catch((err) => {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw err;
+  });
+  for (const name of entries) {
+    if (!/^ack-[0-9a-f]{64}\.record$/.test(name)) continue;
+    const file = path.join(auditDir, name);
+    const opened = await openNativeOwnedFile(dir, file, false);
+    let pending = false;
+    try {
+      const bytes = await readNativeBounded(opened.handle, RECOVERY_BYTES);
+      let header: unknown;
+      try { header = JSON.parse(paddedText(bytes.subarray(0, RECOVERY_HEADER_BYTES))); }
+      catch { throw new CorruptRecordError("Orphan recovery header corrupt; preserving file."); }
+      if (!isPlainObject(header) || typeof header.roundId !== "string" || !ROUND_ID_RE.test(header.roundId) ||
+        typeof header.priorOwner !== "string" || header.priorOwner.length === 0 || header.priorOwner.length > OWNER_ID_MAX_BYTES ||
+        !Number.isInteger(header.revisionBase) || (header.revisionBase as number) < 0 || (header.revisionBase as number) > committed) {
+        throw new CorruptRecordError("Orphan recovery instance cannot be verified.");
+      }
+      const identity = { roundId: header.roundId, ownerId: header.priorOwner, revisionBase: header.revisionBase as number };
+      if (name !== recoveryName(identity)) throw new CorruptRecordError("Orphan recovery filename mismatch.");
+      pending = parseRecovery(bytes, identity) === null;
+      if (pending) {
+        const reservePath = path.join(dir, "reserve.settlement");
+        const reserve = await readIncompleteReserve(dir, reservePath, reserveBytes);
+        if (reserve !== null) {
+          if (reserve.roundId !== identity.roundId || reserve.ownerId !== identity.ownerId) {
+            throw new CorruptRecordError("Orphan settlement reserve belongs to another preparation.");
+          }
+          // Reserve first, envelope last: interruption retains cleanup provenance.
+          await fs.unlink(reservePath);
+          await syncOwnedDirectory(dir);
+        } else if (await fileExists(reservePath)) {
+          throw new CorruptRecordError("Orphan settlement reserve corrupt.");
+        }
+      }
+    } finally { await opened.handle.close(); }
+    if (pending) {
+      await assertNativeIdentity(file, opened.identity);
+      await fs.unlink(file);
+      await syncOwnedDirectory(auditDir);
+    }
+  }
+}
+
+async function entryExistsStrict(file: string): Promise<boolean> {
+  try { await fs.lstat(file); return true; }
+  catch (err) { if ((err as NodeJS.ErrnoException).code === "ENOENT") return false; throw err; }
+}
+
+async function verifyPublicationFile(dir: string, file: string, proof: PublicationProof): Promise<void> {
+  if (proof.identity === undefined) throw new CorruptRecordError("Publication native proof missing.");
+  const opened = await openNativeOwnedFile(dir, file, false, proof.identity);
+  try {
+    const bytes = await readNativeBounded(opened.handle, SNAPSHOT_MAX_BYTES);
+    if (sha256Hex(bytes) !== proof.digest) throw new CorruptRecordError("Publication candidate digest mismatch.");
+    await verifySnapshotFile(dir, file, proof.revision);
+    await assertNativeIdentity(file, proof.identity);
+  } finally { await opened.handle.close(); }
+}
+
+async function publicationDisposition(
+  store: RetainedRecordStore, dir: string, marker: IncompleteMarker,
+): Promise<PublicationDisposition | undefined> {
+  const committed = await store.currentCommittedRevision(dir);
+  await store.verifyRevisionPrivate(dir, committed);
+  const proof = marker.publication;
+  const final = path.join(dir, "revisions", `r${marker.revisionBase + 1}.json`);
+  if (proof === undefined) {
+    await validateMarkerAgainstCommitted(dir, marker);
+    if (await entryExistsStrict(final)) throw new CorruptRecordError("Unproven next revision present; cannot acknowledge publication.");
+    return undefined;
+  }
+  if (committed !== marker.revisionBase && committed !== proof.revision) {
+    throw new CorruptRecordError("Publication marker cannot be bound to committed view.");
+  }
+  const stage = path.join(dir, "revisions", proof.stageName);
+  const finalExists = await entryExistsStrict(final);
+  if (proof.identity === undefined) {
+    if (committed !== marker.revisionBase || finalExists) {
+      throw new CorruptRecordError("Final publication lacks native proof.");
+    }
+    if (await entryExistsStrict(stage)) {
+      // Preserve even partial/invalid bytes as UNVERIFIED preparation.
+      // Opening checks containment/type/identity only; do not parse content.
+      const opened = await openNativeOwnedFile(dir, stage, false);
+      await opened.handle.close();
+    }
+    return { disposition: "unverified-preparation", proof };
+  }
+  if (await entryExistsStrict(stage)) await verifyPublicationFile(dir, stage, proof);
+  else if (committed !== proof.revision) throw new CorruptRecordError("Unpublished candidate stage missing.");
+  if (finalExists) await verifyPublicationFile(dir, final, proof);
+  else if (committed === proof.revision) throw new CorruptRecordError("Completed publication final missing.");
+  return { disposition: committed === proof.revision ? "completed" : "unpublished", proof };
+}
+
+async function disposePublication(dir: string, disposition: PublicationDisposition | undefined): Promise<void> {
+  if (disposition === undefined) return;
+  const proof = disposition.proof;
+  const final = path.join(dir, "revisions", `r${proof.revision}.json`);
+  const stage = path.join(dir, "revisions", proof.stageName);
+  if (disposition.disposition === "unverified-preparation") {
+    if (await entryExistsStrict(final)) throw new CorruptRecordError("Unproven final appeared during disposition.");
+    return; // partial stage remains untouched, with its intention in the receipt
+  }
+  if (disposition.disposition === "completed") {
+    await verifyPublicationFile(dir, final, proof);
+    if (await entryExistsStrict(stage)) {
+      await verifyPublicationFile(dir, stage, proof);
+      await fs.unlink(stage);
+      await syncOwnedDirectory(path.dirname(stage));
+    }
+  } else {
+    await verifyPublicationFile(dir, stage, proof);
+    if (await entryExistsStrict(final)) {
+      await verifyPublicationFile(dir, final, proof);
+      await fs.unlink(final);
+      await syncOwnedDirectory(path.dirname(final));
+    }
+  }
+}
+
+async function removePendingRecovery(dir: string, marker: IncompleteMarker): Promise<void> {
+  if (marker.recovery === undefined) return;
+  const file = path.join(dir, "audit", marker.recovery.name);
+  const opened = await openNativeOwnedFile(dir, file, false, marker.recovery);
+  try {
+    if (parseRecovery(await readNativeBounded(opened.handle, RECOVERY_BYTES), marker) !== null) {
+      throw new CorruptRecordError("Refusing to collect authoritative historical receipt.");
+    }
+  } finally { await opened.handle.close(); }
+  await assertNativeIdentity(file, marker.recovery);
+  await fs.unlink(file);
+  await syncOwnedDirectory(path.dirname(file));
 }
 
 /**
@@ -580,6 +1018,12 @@ async function readIncompleteMarker(dir: string): Promise<IncompleteMarker> {
   } catch {
     throw new CorruptRecordError("Incomplete marker roundId invalid; delete-only recovery.");
   }
+  if (parsed.recovery !== undefined && (!validIdentity(parsed.recovery) ||
+    !isPlainObject(parsed.recovery) || typeof parsed.recovery.name !== "string" ||
+    Object.keys(parsed.recovery).length !== 3 ||
+    parsed.recovery.name !== recoveryName({ roundId: parsed.roundId, ownerId: parsed.ownerId, revisionBase: parsed.revisionBase as number }))) {
+    throw new CorruptRecordError("Incomplete marker recovery binding corrupt.");
+  }
   return {
     schemaVersion: 1,
     roundId: parsed.roundId,
@@ -588,6 +1032,10 @@ async function readIncompleteMarker(dir: string): Promise<IncompleteMarker> {
     startedAt: parsed.startedAt,
     revisionBase: parsed.revisionBase as number,
     settled: parsed.settled,
+    ...(parsed.recovery !== undefined ? { recovery: {
+      device: parsed.recovery.device, inode: parsed.recovery.inode, name: String(parsed.recovery.name),
+    } } : {}),
+    ...(parsed.publication !== undefined ? { publication: validatePublicationShape(parsed.publication, parsed.revisionBase as number) } : {}),
   };
 }
 
@@ -623,6 +1071,25 @@ async function validateMarkerAgainstCommitted(dir: string, marker: IncompleteMar
       `Marker revisionBase ${marker.revisionBase} does not match committed revision ${committed}.`,
     );
   }
+}
+
+/** Encode the full actual header before allocating or publishing any reserve. */
+function encodeSettlementReserve(roundId: string, ownerId: string, reserveBytes: number): Buffer {
+  const header = Buffer.from(canonicalJson({
+    schemaVersion: 1,
+    kind: "settlement-reserve",
+    roundId,
+    ownerId,
+    reserveBytes,
+  }), "utf8");
+  if (header.length > reserveBytes) {
+    throw new InvalidRecordInputError(
+      `Settlement reserve header requires ${header.length} bytes, configured reserve has ${reserveBytes}.`,
+    );
+  }
+  const buffer = Buffer.alloc(reserveBytes);
+  header.copy(buffer);
+  return buffer;
 }
 
 /** Header of a materialized settlement reserve (written at beginRound). */
@@ -941,7 +1408,8 @@ export interface CommitRevisionOptions {
 
 /** Admission charge for one owned write. */
 interface AdmissionSpec {
-  /** Final bytes the write will add (or, for replacements, its new size). */
+  /** Additional physical bytes at the native peak (full replacement temp,
+   * or all charged stage/link entries, rather than only final size growth). */
   readonly chargeBytes: number;
   /** Charge the settlement reserve once, at round begin (globally + record). */
   readonly chargeSettlementReserve?: boolean;
@@ -952,6 +1420,73 @@ interface AdmissionSpec {
   /** Alternative write step (e.g. no-clobber placement) — still charged. */
   readonly writeImpl?: (filePath: string, contents: string | Uint8Array) => Promise<void>;
 }
+
+async function verifySnapshotFile(dir: string, file: string, revision: number): Promise<RevisionSnapshot> {
+    let snapshot: RevisionSnapshot;
+    try {
+      const text = await readOwnedTextUnder(dir, file);
+      snapshot = validateSnapshotShape(JSON.parse(text), revision);
+      // Fresh F6: the RETAINED serialized form must respect the same
+      // ceiling commitRevision enforces — an oversized snapshot refuses
+      // verification at reopen, never reopens "verified".
+      if (Buffer.from(text, "utf8").length > SNAPSHOT_MAX_BYTES) {
+        throw new CorruptRecordError(
+          `Revision r${revision} serialized snapshot exceeds ${SNAPSHOT_MAX_BYTES} bytes.`,
+        );
+      }
+    } catch (err) {
+      if (err instanceof CorruptRecordError || err instanceof CorruptContentError) throw err;
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        throw new CorruptRecordError(`Revision file missing: r${revision}.json`);
+      }
+      throw new CorruptRecordError(`Revision r${revision} unreadable/corrupt.`);
+    }
+    let requirementsBytes: Buffer;
+    try {
+      requirementsBytes = await readOwnedRegularUnder(dir, path.join(dir, "requirements.json"));
+    } catch {
+      throw new CorruptRecordError("Retained requirements missing or not a regular file.");
+    }
+    if (snapshot.requirementsDigest !== `sha256:${sha256Hex(requirementsBytes)}`) {
+      throw new CorruptRecordError(
+        "Revision requirements digest does not match retained requirements.",
+      );
+    }
+    // Complete shape validation of the retained requirements — a consistent
+    // digest over a malformed document is still corrupt.
+    try {
+      validateRequirements(JSON.parse(requirementsBytes.toString("utf8")) as RequirementsInput);
+    } catch (err) {
+      if (err instanceof InvalidRecordInputError) {
+        throw new CorruptRecordError(
+          `Retained requirements shape invalid: ${err.message}`,
+        );
+      }
+      throw err;
+    }
+    for (const body of snapshot.bodies) {
+      const hex = validateBodyId(body.bodyId);
+      let buf: Buffer;
+      try {
+        buf = await readOwnedRegularUnder(dir, path.join(dir, "bodies", `${hex}.bin`));
+      } catch (err) {
+        if (err instanceof CorruptContentError || err instanceof InvalidReferenceError) {
+          throw new CorruptContentError(`Retained body is not a regular file: ${body.bodyId}`);
+        }
+        throw new CorruptContentError(`Retained body missing on disk: ${body.bodyId}`);
+      }
+      if (sha256Hex(buf) !== hex) {
+        throw new CorruptContentError(`Retained body digest mismatch: ${body.bodyId}`);
+      }
+      if (buf.length !== body.bytes) {
+        throw new CorruptContentError(
+          `Retained body byte length mismatch: ${body.bodyId} declared ${body.bytes}, actual ${buf.length}.`,
+        );
+      }
+    }
+    return snapshot;
+  }
+
 
 export class RetainedRecordStore {
   readonly root: string;
@@ -974,10 +1509,11 @@ export class RetainedRecordStore {
       typeof configuredReserve !== "number" ||
       !Number.isFinite(configuredReserve) ||
       !Number.isInteger(configuredReserve) ||
-      configuredReserve <= 0
+      configuredReserve <= 0 ||
+      configuredReserve > SNAPSHOT_MAX_BYTES
     ) {
       throw new InvalidRecordInputError(
-        `settlementReserveBytes must be a positive integer, got ${String(configuredReserve)}.`,
+        `settlementReserveBytes must be a positive integer no greater than ${SNAPSHOT_MAX_BYTES}, got ${String(configuredReserve)}.`,
       );
     }
     this.settlementReserveBytes = configuredReserve;
@@ -1475,7 +2011,7 @@ export class RetainedRecordStore {
   /**
    * Acknowledge an interrupted/unknown round once the prior owner is
    * provably gone (kernel-released gate) and the committed view verifies.
-   * Preserves the unknown interval as an audit row, clears the incomplete
+   * Preserves the unknown interval as a sealed bounded receipt, clears the incomplete
    * marker, and returns the live handle for ONE fresh round. Any failure
    * releases the gate before propagating — the handle never leaks.
    */
@@ -1483,156 +2019,58 @@ export class RetainedRecordStore {
     const handle = await this.acquireOwnership(ref);
     try {
       const inspection = await this.inspect(ref);
-      if (inspection.committed === null) {
-        throw new CorruptRecordError(
-          `Cannot acknowledge ${ref}: no verifiable committed view (${inspection.damage ?? "unknown damage"}). Delete-only recovery.`,
-        );
+      if (inspection.damage !== undefined && /over-cap/.test(inspection.damage)) {
+        throw new StoreCapacityError(`Cannot acknowledge ${ref}: ${inspection.damage}.`);
+      }
+      if (inspection.committed === null || inspection.damage !== undefined) {
+        throw new CorruptRecordError(`Cannot acknowledge ${ref}: committed view damaged (${inspection.damage ?? "unknown"}).`);
       }
       if (inspection.incomplete === null) {
-        if (inspection.damage === "marker-corrupt") {
-          throw new CorruptRecordError(
-            `Cannot acknowledge ${ref}: incomplete round marker is corrupt. Delete-only recovery.`,
-          );
-        }
-        throw new UnacknowledgedInterruptionError(
-          `No incomplete round marker present on ${ref}; nothing to acknowledge.`,
-        );
+        throw new UnacknowledgedInterruptionError(`No incomplete round marker present on ${ref}; nothing to acknowledge.`);
       }
-      // Fail-closed damage fence (latest-correctness P2, damage-ack-fence): a
-      // mutating recovery entry must refuse when inspection reports measured
-      // capacity damage — last verifiable evidence is NOT permission to
-      // continue or acknowledge. Distinguish evidence from permission.
-      if (inspection.damage !== undefined && /over-cap/.test(inspection.damage)) {
-        throw new StoreCapacityError(
-          `Cannot acknowledge ${ref}: ${inspection.damage}. Resolve the over-cap state first.`,
-        );
-      }
-      // Transactional acknowledgment (latest-correctness P1, new-02): consume
-      // the interrupted round's validated reservation only TOGETHER with the
-      // complete bounded ACK audit+marker transition. A failed ACK must
-      // PRESERVE the reserved capacity and the uncertainty marker (never free
-      // it merely to make the happy path fit) and must validate the complete
-      // marker (impossible base refused, new-06) BEFORE any mutation.
-      const incomplete = inspection.incomplete;
-      const reservePath = path.join(handle.dir, "reserve.settlement");
-      const reserve = await readIncompleteReserve(handle.dir, reservePath, this.settlementReserveBytes);
-      if (reserve !== null) {
-        if (reserve.roundId !== incomplete.roundId) {
-          throw new CorruptRecordError(
-            `Reservation round ${reserve.roundId} does not match marker round ${incomplete.roundId}.`,
-          );
-        }
-      }
-      // Complete marker validation shared with every mutator (new-06): an
-      // impossible base is corrupted state, not blessable through ACK.
-      await validateMarkerAgainstCommitted(handle.dir, {
-        schemaVersion: 1,
-        roundId: incomplete.roundId,
-        intent: incomplete.intent as "start" | "continue",
-        ownerId: incomplete.ownerId,
-        startedAt: incomplete.startedAt,
-        revisionBase: incomplete.revisionBase,
-        settled: incomplete.settled,
-      });
-      const reserveBytes = reserve?.reserveBytes ?? this.settlementReserveBytes;
-      // Idempotent disposition (Opus closure G4): a crash between the ack
-      // audit row and marker removal must not append a second identical
-      // acknowledge-interrupted row on re-ACK. One small bounded record check.
-      const dispositionRow = {
-        at: this.nowMs(),
-        kind: "acknowledge-interrupted",
-        detail: canonicalJson({
-          roundId: incomplete.roundId,
-          priorOwner: incomplete.ownerId,
-          revisionBase: incomplete.revisionBase,
-          remoteWork: "unknown",
-        }),
-      };
-      const auditPath = path.join(handle.dir, "audit", `round-${incomplete.roundId}.json`);
-      // Idempotent disposition (Opus closure G4, L5 F4): the fast path
-      // matches the EXACT interrupted instance — round, prior owner AND
-      // revision base — not any historical acknowledge-interrupted row. A
-      // legal round-label reuse under a different owner is a distinct
-      // interruption that gets its own disposition and consumes its own
-      // validated reserve.
-      const isDispositionFor = (row: unknown): boolean => {
-        if (!isPlainObject(row) || row.kind !== "acknowledge-interrupted") return false;
-        try {
-          const detail = JSON.parse(String(row.detail)) as Record<string, unknown>;
-          return (
-            isPlainObject(detail) &&
-            detail.roundId === incomplete.roundId &&
-            detail.priorOwner === incomplete.ownerId &&
-            detail.revisionBase === incomplete.revisionBase
-          );
-        } catch {
-          return false;
-        }
-      };
-      let priorDisposition = false;
-      if (await fileExists(auditPath)) {
-        try {
-          const prior = JSON.parse(await readOwnedTextUnder(handle.dir, auditPath)) as {
-            rows?: unknown[];
-          };
-          priorDisposition = Array.isArray(prior.rows) && prior.rows.some(isDispositionFor);
-        } catch {
-          // corrupt/unreadable audit doc: fall through to the normal path
-        }
-      }
-      // ONE admission turn owns the complete transition (L5 F1): the reserve
-      // cannot be spent by a sibling between its removal and the audit row it
-      // pays for, and a failed row restores it under the same fence — with a
-      // failed restoration surfaced truthfully, never swallowed.
       await this.withAdmission(async () => {
-        if (priorDisposition) {
-          // Disposition already recorded for THIS interruption (crash window
-          // between the audit row and marker removal) — consume the marker
-          // and any residual reserve without a duplicate row.
+        const marker = await readIncompleteMarker(handle.dir);
+        const publication = await publicationDisposition(this, handle.dir, marker);
+        const auditPath = path.join(handle.dir, "audit", `round-${marker.roundId}.json`);
+        try {
+          const doc = JSON.parse(await readOwnedTextUnder(handle.dir, auditPath)) as unknown;
+          if (!isPlainObject(doc) || doc.schemaVersion !== 1 || doc.roundId !== marker.roundId ||
+            !Array.isArray(doc.rows) || doc.rows.length > AUDIT_MAX_ROWS) {
+            throw new CorruptRecordError("Normal interrupted audit corrupt; preserving bytes.");
+          }
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+        }
+        const reservePath = path.join(handle.dir, "reserve.settlement");
+        const reserve = await readIncompleteReserve(handle.dir, reservePath, this.settlementReserveBytes);
+        if (reserve !== null && (reserve.roundId !== marker.roundId || reserve.ownerId !== marker.ownerId)) {
+          throw new CorruptRecordError("Settlement reserve does not match interrupted owner/round.");
+        }
+        if (reserve === null && await fileExists(reservePath)) {
+          throw new CorruptRecordError("Settlement reserve header corrupt.");
+        }
+        if (marker.recovery === undefined) {
+          // Legacy rounds never provisioned this headroom. Measure real room;
+          // normal ACK-looking rows cannot manufacture recovery authority.
+          const name = recoveryName(marker);
+          const file = path.join(handle.dir, "audit", name);
           try {
-            await fs.rm(reservePath, { force: true });
-            await fs.rm(path.join(handle.dir, "incomplete.json"), { force: true });
+            const opened = await openNativeOwnedFile(handle.dir, file, false);
+            try { parseRecovery(await readNativeBounded(opened.handle, RECOVERY_BYTES), marker); }
+            finally { await opened.handle.close(); }
+            marker.recovery = { name, ...opened.identity };
           } catch (err) {
-            throw new CorruptRecordError(`Acknowledgment marker removal failed: ${String(err)}`);
+            if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+            marker.recovery = await createRecoveryHeld(this, handle.dir, marker);
           }
-          return;
         }
-        let reserveConsumed = false;
-        try {
-          // Remove the reserve, then write the ack audit row; if the audit row
-          // faults, restore the reserve under the SAME fence so the capacity
-          // is NOT freed for a sibling to spend.
-          await fs.rm(reservePath, { force: true });
-          reserveConsumed = true;
-          await handle.appendAuditInTurn(incomplete.roundId, dispositionRow);
-        } catch (err) {
-          // Preserve provisioned headroom on failure (new-02): restore the
-          // reservation so a sibling cannot spend it and the uncertainty is
-          // retained for a later retry.
-          if (reserveConsumed && !(await fileExists(reservePath))) {
-            const header = canonicalJson({
-              kind: "settlement-reserve",
-              roundId: incomplete.roundId,
-              ownerId: incomplete.ownerId,
-              reserveBytes: this.settlementReserveBytes,
-            });
-            const reserveBuf = Buffer.alloc(this.settlementReserveBytes);
-            reserveBuf.write(header, 0, "utf8");
-            await this.admittedWriteHeld(
-              handle.dir,
-              reservePath,
-              reserveBuf,
-              { chargeBytes: reserveBuf.length, rollback: { kind: "created" } },
-              "acknowledge reserve restore",
-            );
-          }
-          throw err;
-        }
-        try {
-          await fs.rm(path.join(handle.dir, "incomplete.json"), { force: true });
-        } catch (err) {
-          throw new CorruptRecordError(`Acknowledgment marker removal failed: ${String(err)}`);
-        }
+        await sealRecovery(handle.dir, marker, this.nowMs(), publication);
+        await disposePublication(handle.dir, publication);
+        // The durable bounded receipt already occupies its provisioned bytes.
+        // No reserve-to-temp gap exists, even if this owner exits right here.
+        if (reserve !== null) await fs.unlink(reservePath);
+        await fs.unlink(path.join(handle.dir, "incomplete.json"));
+        await syncOwnedDirectory(handle.dir);
       });
       return handle;
     } catch (err) {
@@ -1726,69 +2164,7 @@ export class RetainedRecordStore {
    * present as a REGULAR file with a matching digest (re-read from disk).
    */
   private async verifyRevision(dir: string, revision: number): Promise<RevisionSnapshot> {
-    let snapshot: RevisionSnapshot;
-    try {
-      const text = await readOwnedTextUnder(dir, path.join(dir, "revisions", `r${revision}.json`));
-      snapshot = validateSnapshotShape(JSON.parse(text), revision);
-      // Fresh F6: the RETAINED serialized form must respect the same
-      // ceiling commitRevision enforces — an oversized snapshot refuses
-      // verification at reopen, never reopens "verified".
-      if (Buffer.from(text, "utf8").length > SNAPSHOT_MAX_BYTES) {
-        throw new CorruptRecordError(
-          `Revision r${revision} serialized snapshot exceeds ${SNAPSHOT_MAX_BYTES} bytes.`,
-        );
-      }
-    } catch (err) {
-      if (err instanceof CorruptRecordError || err instanceof CorruptContentError) throw err;
-      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-        throw new CorruptRecordError(`Revision file missing: r${revision}.json`);
-      }
-      throw new CorruptRecordError(`Revision r${revision} unreadable/corrupt.`);
-    }
-    let requirementsBytes: Buffer;
-    try {
-      requirementsBytes = await readOwnedRegularUnder(dir, path.join(dir, "requirements.json"));
-    } catch {
-      throw new CorruptRecordError("Retained requirements missing or not a regular file.");
-    }
-    if (snapshot.requirementsDigest !== `sha256:${sha256Hex(requirementsBytes)}`) {
-      throw new CorruptRecordError(
-        "Revision requirements digest does not match retained requirements.",
-      );
-    }
-    // Complete shape validation of the retained requirements — a consistent
-    // digest over a malformed document is still corrupt.
-    try {
-      validateRequirements(JSON.parse(requirementsBytes.toString("utf8")) as RequirementsInput);
-    } catch (err) {
-      if (err instanceof InvalidRecordInputError) {
-        throw new CorruptRecordError(
-          `Retained requirements shape invalid: ${err.message}`,
-        );
-      }
-      throw err;
-    }
-    for (const body of snapshot.bodies) {
-      const hex = validateBodyId(body.bodyId);
-      let buf: Buffer;
-      try {
-        buf = await readOwnedRegularUnder(dir, path.join(dir, "bodies", `${hex}.bin`));
-      } catch (err) {
-        if (err instanceof CorruptContentError || err instanceof InvalidReferenceError) {
-          throw new CorruptContentError(`Retained body is not a regular file: ${body.bodyId}`);
-        }
-        throw new CorruptContentError(`Retained body missing on disk: ${body.bodyId}`);
-      }
-      if (sha256Hex(buf) !== hex) {
-        throw new CorruptContentError(`Retained body digest mismatch: ${body.bodyId}`);
-      }
-      if (buf.length !== body.bytes) {
-        throw new CorruptContentError(
-          `Retained body byte length mismatch: ${body.bodyId} declared ${body.bytes}, actual ${buf.length}.`,
-        );
-      }
-    }
-    return snapshot;
+    return verifySnapshotFile(dir, path.join(dir, "revisions", `r${revision}.json`), revision);
   }
 
   /** @internal — handle revision verification. */
@@ -1804,7 +2180,15 @@ export class RetainedRecordStore {
    */
   async currentCommittedRevision(dir: string): Promise<number> {
     const text = await readOwnedTextUnder(dir, path.join(dir, "store.json"));
-    const parsed = JSON.parse(text) as unknown;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch (err) {
+      if (err instanceof SyntaxError) {
+        throw new CorruptRecordError("Manifest contains invalid JSON; delete-only recovery.");
+      }
+      throw err;
+    }
     if (!isPlainObject(parsed)) {
       throw new CorruptRecordError("Manifest malformed: not an object.");
     }
@@ -1878,113 +2262,43 @@ export class OwnershipHandle {
     return run;
   }
 
-  /** Begin a mutating round: incomplete marker written FIRST (pre-dispatch). */
+  /** Provision settlement+recovery, then publish the marker before dispatch. */
   async beginRound(options: BeginRoundOptions): Promise<void> {
     await this.enqueue(async () => {
-      if (this.roundBegun) {
-        throw new InvalidRecordInputError("Handle already began its one fresh round.");
-      }
+      if (this.roundBegun) throw new InvalidRecordInputError("Handle already began its one fresh round.");
       validateRoundId(options.roundId);
       if (options.intent !== "start" && options.intent !== "continue") {
         throw new InvalidRecordInputError('intent must be "start" or "continue".');
       }
+      // Encode the actual header before allocating/publishing any retained round state.
+      const reserveBuf = encodeSettlementReserve(options.roundId, this.ownerId(), this.store.settlementReserveBytesForCap());
       const markerPath = path.join(this.dir, "incomplete.json");
-      try {
-        const text = await readOwnedTextUnder(this.dir, markerPath);
-        const parsed = JSON.parse(text) as unknown;
-        if (
-          !isPlainObject(parsed) ||
-          parsed.schemaVersion !== 1 ||
-          typeof parsed.roundId !== "string" ||
-          (parsed.intent !== "start" && parsed.intent !== "continue") ||
-          typeof parsed.ownerId !== "string" ||
-          typeof parsed.startedAt !== "number" ||
-          typeof parsed.revisionBase !== "number" ||
-          typeof parsed.settled !== "boolean"
-        ) {
-          throw new CorruptRecordError("Incomplete marker corrupt; delete-only recovery.");
+      await this.store.admittedTransition(async () => {
+        try {
+          await readIncompleteMarker(this.dir);
+          throw new UnacknowledgedInterruptionError("Unacknowledged interrupted round present; call acknowledgeInterrupted or delete.");
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
         }
-        if (parsed.ownerId !== this.ownerId()) {
-          throw new UnacknowledgedInterruptionError(
-            "Unacknowledged interrupted round present; call acknowledgeInterrupted or delete.",
-          );
-        }
-      } catch (err) {
-        if (
-          err instanceof UnacknowledgedInterruptionError ||
-          err instanceof CorruptRecordError
-        ) {
-          throw err;
-        }
-        if (err instanceof CorruptContentError || err instanceof SyntaxError) {
-          throw new CorruptRecordError("Incomplete marker corrupt; delete-only recovery.");
-        }
-        if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-      }
-      const revisionBase = await this.store.currentCommittedRevision(this.dir).catch((err) => {
-        throw new CorruptRecordError(`Manifest unreadable; delete-only recovery: ${String(err)}`);
+        const revisionBase = await this.store.currentCommittedRevision(this.dir);
+        await this.store.verifyRevisionPrivate(this.dir, revisionBase);
+        await cleanupPendingRecoveries(this.dir, revisionBase, this.store.settlementReserveBytesForCap());
+        const marker: IncompleteMarker = { schemaVersion: 1, roundId: options.roundId, intent: options.intent,
+          ownerId: this.ownerId(), startedAt: this.store.nowMs(), revisionBase, settled: false };
+        paddedJson(recoveryHeader(marker), RECOVERY_HEADER_BYTES);
+        const worstMarker = canonicalJson({ ...marker, recovery: { name: recoveryName(marker),
+          device: "9".repeat(32), inode: "9".repeat(32) } });
+        const caps = await this.store.measureCapsFor(this.dir);
+        this.store.checkCapsFor(caps.recordBytes, caps.storeBytes,
+          Math.max(RECOVERY_BYTES * 2, RECOVERY_BYTES + reserveBuf.length + Buffer.byteLength(worstMarker)),
+          "complete pre-dispatch reservations and marker");
+        marker.recovery = await createRecoveryHeld(this.store, this.dir, marker);
+        await this.store.admittedWriteHeld(this.dir, path.join(this.dir, "reserve.settlement"), reserveBuf,
+          { chargeBytes: reserveBuf.length, rollback: { kind: "created" } }, "round settlement reserve");
+        const text = canonicalJson(marker);
+        await this.store.admittedWriteHeld(this.dir, markerPath, text,
+          { chargeBytes: Buffer.byteLength(text), rollback: { kind: "created" } }, `round ${options.roundId}`);
       });
-      // The committed view must FULLY verify before new work is admitted
-      // (corrupt revisions block rounds — delete-only recovery).
-      await this.store.verifyRevisionPrivate(this.dir, revisionBase);
-      const marker = {
-        schemaVersion: 1,
-        roundId: options.roundId,
-        intent: options.intent,
-        ownerId: this.ownerId(),
-        startedAt: this.store.nowMs(),
-        revisionBase,
-        settled: false,
-      };
-      const markerText = canonicalJson(marker);
-      await this.trackWrite(
-        this.store.admittedWrite(
-          this.dir,
-          markerPath,
-          markerText,
-          {
-            chargeBytes: Buffer.from(markerText, "utf8").length,
-            rollback: { kind: "created" },
-          },
-          `round ${options.roundId}`,
-        ),
-      );
-      // MATERIALIZE the settlement reservation: a file of EXACTLY the
-      // configured reserve size inside the record, so the actual-byte walk
-      // counts it globally until it is consumed exactly once
-      // (settlement/ack/commit/delete) — no handle-local arithmetic, so two
-      // records can never both reserve when one fits, and a crashed owner's
-      // reserve stays counted until safe handling.
-      const reservePath = path.join(this.dir, "reserve.settlement");
-      const reserveHeader = canonicalJson({
-        schemaVersion: 1,
-        kind: "settlement-reserve",
-        roundId: options.roundId,
-        ownerId: this.ownerId(),
-        reserveBytes: this.store.settlementReserveBytesForCap(),
-      });
-      const reserveBuf = Buffer.alloc(this.store.settlementReserveBytesForCap());
-      Buffer.from(reserveHeader, "utf8").copy(reserveBuf);
-      try {
-        await this.trackWrite(
-          this.store.admittedWrite(
-            this.dir,
-            reservePath,
-            reserveBuf,
-            {
-              chargeBytes: reserveBuf.length,
-              rollback: { kind: "created" },
-            },
-            `round ${options.roundId} settlement reserve`,
-          ),
-        );
-      } catch (err) {
-        // A failed beginRound leaves NO round: remove the marker we just
-        // wrote (best-effort; a double fault leaves a marker without a
-        // reserve — an under-provisioned round recoverable via ack/delete).
-        await fs.rm(markerPath, { force: true }).catch(() => {});
-        throw err;
-      }
       this.roundBegun = true;
     });
   }
@@ -2070,6 +2384,9 @@ export class OwnershipHandle {
     }
     doc.rows.push(row);
     const bytes = canonicalJson(doc);
+    if (Buffer.byteLength(bytes, "utf8") > SNAPSHOT_MAX_BYTES) {
+      throw new StoreCapacityError(`Serialized audit exceeds ${SNAPSHOT_MAX_BYTES} bytes for round ${roundId}.`);
+    }
     await fs.mkdir(path.join(this.dir, "audit"), { recursive: true, mode: 0o700 }).catch(() => {});
     await this.trackWrite(
       held
@@ -2260,15 +2577,8 @@ export class OwnershipHandle {
             }
           }
           if (reserveRemoved && !(await fileExists(reservePath))) {
-            const header = canonicalJson({
-              kind: "settlement-reserve",
-              roundId,
-              ownerId: this.ownerId(),
-              reserveBytes,
-            });
-            const reserveBuf = Buffer.alloc(reserveBytes);
-            reserveBuf.write(header, 0, "utf8");
             try {
+              const reserveBuf = encodeSettlementReserve(roundId, this.ownerId(), reserveBytes);
               await this.store.admittedWriteHeld(
                 this.dir,
                 reservePath,
@@ -2354,169 +2664,97 @@ export class OwnershipHandle {
         }
       }
       const revisionPath = path.join(this.dir, "revisions", `r${snapshot.revision}.json`);
-      await fs.mkdir(path.join(this.dir, "revisions"), { recursive: true, mode: 0o700 }).catch(() => {});
-      // Immutable publication: no-clobber. An existing identical revision
-      // (idempotent retry) proceeds; a CONFLICTING one is refused, never
-      // overwritten.
-      const existing = await readOwnedTextUnder(this.dir, revisionPath).catch(() => null);
-      if (existing !== null && existing !== serialized) {
-        throw new CorruptRecordError(
-          `Revision r${snapshot.revision} already exists with different content; immutable, refusing overwrite.`,
-        );
-      }
-      if (existing === null) {
-        await this.trackWrite(
-          this.store.admittedWrite(
-            this.dir,
-            revisionPath,
-            serialized,
-            {
-              chargeBytes: Buffer.from(serialized, "utf8").length,
-              rollback: { kind: "none" },
-              writeImpl: async () => {
-                // Publication seam (latest-correctness P1): the STORE owns the
-                // authoritative ATOMIC no-clobber publication — the default
-                // path is atomicPlaceNoClobber, and with an injected funnel
-                // the store still performs the same no-clobber temp+link
-                // placement itself. The funnel only injects a SAFE staging
-                // fault at a revision-local STAGING name it is given (never
-                // the final immutable name), so a rename-replaced conflict
-                // (a different inode at the final path) is never touched:
-                // its bytes+inode are preserved and the commit is refused.
-                // No partial final-name visibility (no sentinel at the final
-                // name), and a pre-publication fault leaves no final-name
-                // state, so retry is never poisoned.
-                const injected = this.store.depsWriteFunnel();
-                if (injected === undefined) {
-                  const placed = await atomicPlaceNoClobber(revisionPath, serialized);
-                  if (!placed) {
-                    const raced = await readOwnedTextUnder(this.dir, revisionPath).catch(() => null);
-                    if (raced !== serialized) {
-                      throw new CorruptRecordError(
-                        `Revision r${snapshot.revision} concurrently published with different content; refusing overwrite.`,
-                      );
-                    }
-                  }
-                  return;
-                }
-                const revisionsDir = path.join(this.dir, "revisions");
-                await fs.mkdir(revisionsDir, { recursive: true, mode: 0o700 }).catch(() => {});
-                const stagingPath = path.join(
-                  revisionsDir,
-                  `.${path.basename(revisionPath)}.${process.pid}.${randomUUID()}.stage.tmp`,
-                );
-                const handle = await fs.open(stagingPath, "wx", 0o600);
-                let closed = false;
-                try {
-                  // The store ALWAYS materializes the validated snapshot into
-                  // staging itself (authoritative no-clobber content). An
-                  // injected funnel may inject a SAFE staging fault, but the
-                  // authoritative bytes come from the store, never the funnel.
-                  // The funnel runs FIRST (so its rename onto the staging name
-                  // lands before the store reads it back), then the store
-                  // writes the validated bytes in place.
-                  await injected(stagingPath, serialized);
-                  await handle.write(serialized, 0, "utf8");
-                  await handle.sync();
-                  const staged = await readOwnedTextUnder(this.dir, stagingPath).catch(() => null);
-                  if (staged !== serialized) {
-                    throw new CorruptRecordError(
-                      `Revision staging diverged from the validated snapshot; refusing publication.`,
-                    );
-                  }
-                  await handle.sync();
-                  const mine = await handle.stat();
-                  await handle.close();
-                  closed = true;
-                  let linked = true;
-                  try {
-                    await fs.link(stagingPath, revisionPath);
-                  } catch (err) {
-                    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-                    linked = false;
-                  }
-                  if (!linked) {
-                    const raced = await readOwnedTextUnder(this.dir, revisionPath).catch((e) => {
-                      if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-                      return null;
-                    });
-                    // ENOENT at the final name (undefined): nothing raced us —
-                    // a prior fault left no final content, so this is a clean
-                    // retry, not a conflict. Only genuinely different content
-                    // is a no-clobber conflict.
-                    if (raced !== undefined && raced !== serialized) {
-                      throw new CorruptRecordError(
-                        `Revision r${snapshot.revision} concurrently published with different content; refusing overwrite.`,
-                      );
-                    }
-                    if (raced === serialized) return; // idempotent retry
-                    throw new CorruptRecordError(
-                      `Revision r${snapshot.revision} could not be published; refusing ambiguous state.`,
-                    );
-                  }
-                  const placed = await fs.stat(revisionPath);
-                  // Identity check against the path's inode after linking. A
-                  // fault-injection funnel may rename DIFFERENT bytes over the
-                  // staging name before we link it; the staged-content check
-                  // above already verified those bytes equal the validated
-                  // snapshot, so linking them is correct. Comparing against
-                  // the (now-unlinked) fd inode would false-positive here.
-                  if (placed.dev !== mine.dev || placed.ino !== mine.ino) {
-                    const placedText = await readOwnedTextUnder(this.dir, revisionPath).catch(() => null);
-                    if (placedText !== serialized) {
-                      await fs.unlink(revisionPath).catch(() => {});
-                      throw new CorruptRecordError(
-                        `Revision ${snapshot.revision} concurrently published with different content; refusing overwrite.`,
-                      );
-                    }
-                  }
-                  if (process.platform !== "win32") {
-                    const dirHandle = await fs.open(revisionsDir, "r");
-                    try {
-                      await dirHandle.sync();
-                    } finally {
-                      await dirHandle.close().catch(() => {});
-                    }
-                  }
-                } finally {
-                  if (!closed) await handle.close().catch(() => {});
-                  await fs.unlink(stagingPath).catch(() => {});
-                }
-              },
-            },
-            "immutable revision",
-          ),
-        );
-      }
-      // Verify the written revision validates BEFORE the manifest publishes.
-      await this.store.verifyRevisionPrivate(this.dir, snapshot.revision);
-      const manifest = {
-        schemaVersion: 1,
-        committedRevision: snapshot.revision,
-        updatedAt: this.store.nowMs(),
-      };
-      const manifestText = canonicalJson(manifest);
-      const priorManifest = await readOwnedRegularText(path.join(this.dir, "store.json")).catch(
-        () => null,
-      );
-      await this.trackWrite(
-        this.store.admittedWrite(
-          this.dir,
-          path.join(this.dir, "store.json"),
-          manifestText,
-          {
-            chargeBytes: Buffer.from(manifestText, "utf8").length,
-            rollback:
-              priorManifest !== null
-                ? { kind: "replace", prior: priorManifest }
-                : { kind: "created" },
-          },
-          "revision manifest",
-        ),
-      );
-      await fs.rm(path.join(this.dir, "incomplete.json"), { force: true }).catch(() => {});
-      // Round complete: consume the materialized reservation exactly once.
-      await fs.rm(path.join(this.dir, "reserve.settlement"), { force: true }).catch(() => {});
+      await this.store.admittedTransition(async () => {
+        const markerPath = path.join(this.dir, "incomplete.json");
+        let marker = await readIncompleteMarker(this.dir);
+        await validateMarkerAgainstCommitted(this.dir, marker);
+        if (marker.ownerId !== this.ownerId()) throw new UnacknowledgedInterruptionError("Marker belongs to another owner.");
+        let markerText = await readOwnedTextUnder(this.dir, markerPath);
+        const priorManifest = await readOwnedTextUnder(this.dir, path.join(this.dir, "store.json"));
+        const manifestText = canonicalJson({ schemaVersion: 1, committedRevision: snapshot.revision, updatedAt: this.store.nowMs() });
+        const revisionsDir = path.join(this.dir, "revisions");
+        await assertNoSymlinkComponents(this.dir, revisionsDir);
+        await fs.mkdir(revisionsDir, { recursive: true, mode: 0o700 });
+        const digest = sha256Hex(serialized);
+        let proof = marker.publication;
+        if (proof !== undefined && (proof.digest !== digest || proof.revision !== snapshot.revision)) {
+          throw new CorruptRecordError("Different publication pending; explicit acknowledgment required.");
+        }
+        const initial = proof === undefined;
+        if (initial) {
+          if (await entryExistsStrict(revisionPath)) throw new CorruptRecordError("Unproven immutable revision already exists; refusing overwrite.");
+          proof = { revision: snapshot.revision, digest,
+            stageName: `.${path.basename(revisionPath)}.${process.pid}.${randomUUID()}.stage.tmp` };
+        }
+        if (proof === undefined) throw new CorruptRecordError("Publication preparation missing.");
+        validatePublicationShape(proof, marker.revisionBase);
+        const stagePath = path.join(revisionsDir, proof.stageName);
+        const size = Buffer.byteLength(serialized);
+        const caps = await this.store.measureCapsFor(this.dir);
+        const oldMarkerBytes = Buffer.byteLength(markerText);
+        const preparedText = canonicalJson({ ...marker, publication: proof });
+        const proofBound = canonicalJson({ ...marker, publication: { ...proof,
+          identity: { device: "9".repeat(32), inode: "9".repeat(32) } } });
+        const preparedDelta = Buffer.byteLength(preparedText) - oldMarkerBytes;
+        const proofDelta = Buffer.byteLength(proofBound) - oldMarkerBytes;
+        const finalExists = await entryExistsStrict(revisionPath);
+        const peak = proof.identity === undefined
+          ? Math.max(Buffer.byteLength(preparedText), preparedDelta + 2 * size,
+              preparedDelta + size + Buffer.byteLength(proofBound), proofDelta + 2 * size + Buffer.byteLength(manifestText))
+          : (finalExists ? 0 : size) + Buffer.byteLength(manifestText);
+        this.store.checkCapsFor(caps.recordBytes, caps.storeBytes, peak, "complete publication native peak");
+        if (initial) {
+          await this.store.admittedWriteHeld(this.dir, markerPath, preparedText,
+            { chargeBytes: Buffer.byteLength(preparedText), rollback: { kind: "replace", prior: markerText } }, "publication preparation");
+          marker = { ...marker, publication: proof };
+          markerText = preparedText;
+        }
+        if (proof.identity === undefined) {
+          const injected = this.store.depsWriteFunnel();
+          await this.store.admittedWriteHeld(this.dir, stagePath, serialized,
+            { chargeBytes: injected === undefined ? size : 2 * size, rollback: { kind: "none" }, writeImpl: async () => {
+              const staged = await fs.open(stagePath, "wx", 0o600);
+              try { await staged.writeFile(serialized); await staged.sync(); }
+              finally { await staged.close(); }
+              if (injected !== undefined) await injected(stagePath, serialized);
+            } }, "retained publication stage");
+          const opened = await openNativeOwnedFile(this.dir, stagePath, false);
+          try {
+            const bytes = await readNativeBounded(opened.handle, SNAPSHOT_MAX_BYTES);
+            if (bytes.toString("utf8") !== serialized) throw new CorruptRecordError("Revision staging diverged from validated snapshot.");
+            await verifySnapshotFile(this.dir, stagePath, snapshot.revision);
+            await assertNativeIdentity(stagePath, opened.identity);
+            await opened.handle.sync();
+            await syncOwnedDirectory(revisionsDir);
+            proof = { ...proof, identity: opened.identity };
+          } finally { await opened.handle.close(); }
+          const complete = { ...marker, publication: proof };
+          const text = canonicalJson(complete);
+          await this.store.admittedWriteHeld(this.dir, markerPath, text,
+            { chargeBytes: Buffer.byteLength(text), rollback: { kind: "replace", prior: markerText } }, "native publication proof");
+          marker = complete;
+        }
+        await verifyPublicationFile(this.dir, stagePath, proof);
+        if (!await entryExistsStrict(revisionPath)) {
+          await this.store.admittedWriteHeld(this.dir, revisionPath, serialized,
+            { chargeBytes: size, rollback: { kind: "none" }, writeImpl: async () => {
+              try { await fs.link(stagePath, revisionPath); }
+              catch (err) { if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err; }
+              await verifyPublicationFile(this.dir, revisionPath, proof);
+              const directory = await fs.open(revisionsDir, "r");
+              try { await directory.sync(); } finally { await directory.close(); }
+            } }, "immutable revision native link");
+        }
+        await verifyPublicationFile(this.dir, revisionPath, proof);
+        await this.store.admittedWriteHeld(this.dir, path.join(this.dir, "store.json"), manifestText,
+          { chargeBytes: Buffer.byteLength(manifestText), rollback: { kind: "replace", prior: priorManifest } }, "revision manifest");
+        // Stage first; the remaining final still proves persisted native identity.
+        await disposePublication(this.dir, { disposition: "completed", proof });
+        await fs.rm(path.join(this.dir, "reserve.settlement"), { force: true });
+        await fs.unlink(markerPath);
+        await syncOwnedDirectory(this.dir);
+        await removePendingRecovery(this.dir, marker);
+      });
       return { revision: snapshot.revision };
     });
   }

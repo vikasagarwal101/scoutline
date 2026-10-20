@@ -24,6 +24,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import * as fs from "node:fs/promises";
 // Mutable alias of the builtin exports object — the ESM namespace above is
 // frozen; patching the default export + syncBuiltinESMExports() is what the
@@ -33,6 +34,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { syncBuiltinESMExports } from "node:module";
 import { execFile as execFileCb } from "node:child_process";
+import netDefault from "node:net";
 import { promisify } from "node:util";
 
 import { openStore } from "../dist/lib/retained-record-store.js";
@@ -50,6 +52,39 @@ const SUMMARY = (uncertainty = null) => ({
   uncertainty,
 });
 
+// Read-only check of the approved fixed frame, independent of the private parser.
+// A pending 8192-byte file (or its hash-derived name) is never ACK authority.
+function validateSealedReceipt(bytes, marker) {
+  assert.equal(bytes.length, 8192, "receipt allocation changed");
+  const paddedJson = (slot) => {
+    const end = slot.indexOf(0);
+    assert.ok(end > 0, "receipt is not sealed JSON");
+    assert.ok(slot.subarray(end).every((byte) => byte === 0), "nonzero frame padding");
+    return JSON.parse(slot.subarray(0, end).toString("utf8"));
+  };
+  assert.deepEqual(paddedJson(bytes.subarray(0, 2048)), {
+    schemaVersion: 1, kind: "ack-recovery", roundId: marker.roundId,
+    priorOwner: marker.ownerId, revisionBase: marker.revisionBase, reserveBytes: 8192,
+  }, "receipt header must match the exact interrupted tuple");
+  const seal = paddedJson(bytes.subarray(6144, 6272));
+  assert.deepEqual(Object.keys(seal).sort(), ["bytes", "digest"]);
+  assert.ok(Number.isInteger(seal.bytes) && seal.bytes > 0 && seal.bytes <= 4096);
+  const payload = bytes.subarray(2048, 2048 + seal.bytes);
+  assert.equal(crypto.createHash("sha256").update(payload).digest("hex"), seal.digest, "receipt seal checksum");
+  const receipt = JSON.parse(payload.toString("utf8"));
+  assert.deepEqual(Object.keys(receipt).sort(), ["at", "kind", "priorOwner", "remoteWork", "revisionBase", "roundId", "schemaVersion"]);
+  assert.deepEqual({ ...receipt, at: 0 }, {
+    schemaVersion: 1, kind: "acknowledge-interrupted", roundId: marker.roundId,
+    priorOwner: marker.ownerId, revisionBase: marker.revisionBase, at: 0, remoteWork: "unknown",
+  }, "receipt payload must match the exact interrupted tuple");
+  assert.ok(Number.isFinite(receipt.at) && receipt.at >= 0);
+}
+
+function receiptName(marker) {
+  const tuple = JSON.stringify([marker.roundId, marker.ownerId, marker.revisionBase]);
+  return `ack-${crypto.createHash("sha256").update(tuple).digest("hex")}.record`;
+}
+
 function tempRoot() {
   return fs.mkdtemp(path.join(os.tmpdir(), "rrs-ready-"));
 }
@@ -65,15 +100,78 @@ async function treeSize(dir) {
 }
 
 /**
- * Start a sibling operation and observe its ADMISSION ATTEMPT without joining
- * it: the caller invokes this inside a boundary hook that fires while the
- * protected transition is mid-flight. An operation that is not serialized
- * against the transition completes within a handful of local-fs event-loop
- * turns; one correctly blocked on the store admission gate cannot complete
- * until the transition finishes. Never await the sibling inside the hook.
+ * Deterministic admission witness (T13): wraps node:net server creation so
+ * every abstract-socket bind is recorded with a monotonic sequence and its
+ * kernel outcome. A transition's successful admission bind marks the held
+ * interval; a sibling's EADDRINUSE binds on the SAME name inside that
+ * interval are the WITNESSED admission attempts — order and refusal are
+ * kernel-observed facts, not timing inference. Delegates to the real
+ * createServer/listen, so behavior is unchanged.
  */
-async function observeSiblingBlocked(start) {
-  const observed = { pending: true, outcome: null, joined: null };
+function trackAbstractBinds() {
+  const log = [];
+  const counter = { n: 0 };
+  const originalCreateServer = netDefault.createServer;
+  netDefault.createServer = function (...args) {
+    const server = originalCreateServer.apply(netDefault, args);
+    const originalListen = server.listen.bind(server);
+    server.listen = function (options, ...rest) {
+      const target = typeof options === "object" && options !== null ? options.path : options;
+      const entry = {
+        path: typeof target === "string" ? target : null,
+        seq: counter.n++,
+        ok: false,
+        err: null,
+      };
+      if (entry.path !== null) log.push(entry);
+      server.once("listening", () => {
+        entry.ok = true;
+      });
+      server.once("error", (e) => {
+        entry.err = e?.code ?? null;
+      });
+      return originalListen(options, ...rest);
+    };
+    return server;
+  };
+  syncBuiltinESMExports();
+  return {
+    log,
+    mark: () => counter.n++,
+    restore() {
+      netDefault.createServer = originalCreateServer;
+      syncBuiltinESMExports();
+    },
+  };
+}
+
+/**
+ * Find the admission path whose successful bind PRECEDED the boundary mark
+ * and that received kernel-refused (EADDRINUSE) binds AFTER it: the held
+ * store admission gate plus the sibling's witnessed mid-turn attempts.
+ */
+function witnessedAdmissionRefusal(log, markSeq) {
+  const byPath = new Map();
+  for (const entry of log) {
+    if (!byPath.has(entry.path)) byPath.set(entry.path, []);
+    byPath.get(entry.path).push(entry);
+  }
+  for (const [gatePath, entries] of byPath) {
+    const heldBefore = entries.some((e) => e.ok && e.seq < markSeq);
+    const refusalsAfter = entries.filter((e) => e.err === "EADDRINUSE" && e.seq > markSeq);
+    if (heldBefore && refusalsAfter.length > 0) return { gatePath, refusalsAfter };
+  }
+  return null;
+}
+
+/**
+ * Start a sibling operation and wait for its WITNESSED admission attempt —
+ * a kernel-refused bind on the held admission gate — without joining it.
+ * The bounded deadline is a safety valve only: the proof is the witnessed
+ * bind sequence, never elapsed time. Never await the sibling inside the hook.
+ */
+async function observeSiblingBlocked(start, bindLog) {
+  const observed = { outcome: null, joined: null };
   observed.joined = (async () => {
     try {
       await start();
@@ -81,9 +179,12 @@ async function observeSiblingBlocked(start) {
     } catch (error) {
       observed.outcome = { error };
     }
-    observed.pending = false;
   })();
-  for (let i = 0; i < 50; i++) await new Promise((resolve) => setImmediate(resolve));
+  const deadline = Date.now() + 5000;
+  while (observed.outcome === null && Date.now() < deadline) {
+    if (bindLog !== undefined && bindLog.some((e) => e.err === "EADDRINUSE")) break;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
   return observed;
 }
 
@@ -187,7 +288,8 @@ test("reader: same-content regular-file substitution (different inode) is reject
 // ---------------------------------------------------------------------------
 
 test("settle: full-cap near-reserve settlement never materializes the marker-temp peak over the cap", async () => {
-  const cap = 16000;
+  // One retained envelope; the initial two-entry creation peak also fits.
+  const cap = 16000 + 8192;
   const reserveBytes = 4096;
   const root = await tempRoot();
   const store = openStore({ root, caps: { storeMaxBytes: cap, settlementReserveBytes: reserveBytes } });
@@ -196,6 +298,7 @@ test("settle: full-cap near-reserve settlement never materializes the marker-tem
   const h = await store.acquireOwnership(ref);
   try {
     await h.beginRound({ roundId: "r", intent: "start" });
+    assert.equal((await fs.stat(path.join(dir, "audit", JSON.parse(await fs.readFile(path.join(dir, "incomplete.json"))).recovery.name))).size, 8192);
     await fs.writeFile(path.join(dir, "ballast"), Buffer.alloc(cap - (await treeSize(root))));
     // Summary doc sized to one byte below the reserve: the settlement fits
     // the reserved budget, but the complete native transition (summary temp,
@@ -234,7 +337,8 @@ test("settle: full-cap near-reserve settlement never materializes the marker-tem
 });
 
 test("settle: reserve removal through the marker flip holds one admission turn — a sibling cannot spend the transfer", async () => {
-  const cap = 16000;
+  // Two retained envelopes; the second begin also admits its two-entry creation peak.
+  const cap = 16000 + 2 * 8192;
   const reserveBytes = 4096;
   const root = await tempRoot();
   const store = openStore({ root, caps: { storeMaxBytes: cap, settlementReserveBytes: reserveBytes } });
@@ -246,18 +350,27 @@ test("settle: reserve removal through the marker flip holds one admission turn �
   try {
     await h.beginRound({ roundId: "a", intent: "start" });
     await j.beginRound({ roundId: "b", intent: "start" });
+    for (const ref of [a, b]) {
+      const dir = path.join(root, "investigations", ref);
+      const marker = JSON.parse(await fs.readFile(path.join(dir, "incomplete.json")));
+      assert.equal((await fs.stat(path.join(dir, "audit", marker.recovery.name))).size, 8192);
+    }
     await fs.writeFile(path.join(aDir, "ballast"), Buffer.alloc(cap - (await treeSize(root))));
+    const binds = trackAbstractBinds();
     const originalRm = fs.rm;
     let triggered = false;
+    let markSeq = -1;
     let sibling = null;
     fsp.rm = async (p, ...args) => {
       const value = await originalRm(p, ...args);
       if (p === path.join(aDir, "reserve.settlement") && !triggered) {
         triggered = true;
         // The reserve just became visibly free. A sibling body write must NOT
-        // be able to spend those bytes mid-transition: observe its admission
-        // attempt, do NOT join it inside the hook.
-        sibling = await observeSiblingBlocked(() => j.stageBody("s".repeat(3500)));
+        // be able to spend those bytes mid-transition: witness its admission
+        // attempt (kernel-refused bind on the held gate), never join it
+        // inside the hook.
+        markSeq = binds.mark();
+        sibling = await observeSiblingBlocked(() => j.stageBody("s".repeat(3500)), binds.log);
       }
       return value;
     };
@@ -270,10 +383,19 @@ test("settle: reserve removal through the marker flip holds one admission turn �
     } finally {
       fsp.rm = originalRm;
       syncBuiltinESMExports();
+      binds.restore();
     }
     assert.ok(triggered, "sibling boundary did not fire");
     assert.equal(error, null, `settlement failed: ${error && error.message}`);
-    assert.ok(sibling.pending, "sibling body write completed while the settlement held admission");
+    const witness = witnessedAdmissionRefusal(binds.log, markSeq);
+    assert.ok(
+      witness,
+      "no witnessed sibling admission refusal on the held store admission gate",
+    );
+    assert.ok(
+      witness.refusalsAfter.length >= 1,
+      "sibling admission attempt was not kernel-refused mid-turn",
+    );
     // Join the sibling AFTER the protected operation finished.
     await sibling.joined;
     const siblingError = sibling.outcome?.error;
@@ -295,7 +417,8 @@ test("settle: reserve removal through the marker flip holds one admission turn �
 });
 
 test("settle: failed settlement rolls back marker and reserve under the same turn; sibling still fenced", async () => {
-  const cap = 16000;
+  // Two retained envelopes; the second begin also admits its two-entry creation peak.
+  const cap = 16000 + 2 * 8192;
   const reserveBytes = 4096;
   const root = await tempRoot();
   const plain = openStore({ root, caps: { storeMaxBytes: cap, settlementReserveBytes: reserveBytes } });
@@ -320,28 +443,45 @@ test("settle: failed settlement rolls back marker and reserve under the same tur
   try {
     await h.beginRound({ roundId: "a", intent: "start" });
     await j.beginRound({ roundId: "b", intent: "start" });
+    for (const ref of [a, b]) {
+      const dir = path.join(root, "investigations", ref);
+      const marker = JSON.parse(await fs.readFile(path.join(dir, "incomplete.json")));
+      assert.equal((await fs.stat(path.join(dir, "audit", marker.recovery.name))).size, 8192);
+    }
     await fs.writeFile(path.join(aDir, "ballast"), Buffer.alloc(cap - (await treeSize(root))));
+    const binds = trackAbstractBinds();
     const originalRm = fs.rm;
     let triggered = false;
+    let markSeq = -1;
     let sibling = null;
     fsp.rm = async (p, ...args) => {
       const value = await originalRm(p, ...args);
       if (p === path.join(aDir, "reserve.settlement") && !triggered) {
         triggered = true;
-        sibling = await observeSiblingBlocked(() => j.stageBody("s".repeat(3500)));
+        markSeq = binds.mark();
+        sibling = await observeSiblingBlocked(() => j.stageBody("s".repeat(3500)), binds.log);
       }
       return value;
     };
     syncBuiltinESMExports();
     try {
-      await assert.rejects(h.settleRound("a", SUMMARY("x".repeat(100))));
+      await assert.rejects(
+        h.settleRound("a", SUMMARY("x".repeat(100))),
+        (e) => e.name === "Error" && e.message === "owned settlement fault",
+        "failed settlement must reject with the exact injected settlement fault",
+      );
     } finally {
       fsp.rm = originalRm;
       syncBuiltinESMExports();
+      binds.restore();
       await h.release().catch(() => {});
     }
     assert.ok(triggered, "sibling boundary did not fire");
-    assert.ok(sibling.pending, "sibling body write completed while the failed settlement held admission");
+    const witness = witnessedAdmissionRefusal(binds.log, markSeq);
+    assert.ok(
+      witness,
+      "no witnessed sibling admission refusal on the held store admission gate",
+    );
     await sibling.joined;
     const siblingError = sibling.outcome?.error;
     assert.ok(
@@ -361,7 +501,8 @@ test("settle: failed settlement rolls back marker and reserve under the same tur
 });
 
 test("ack: reserve consumption through marker removal holds one admission turn; a fault preserves it and fences the sibling", async () => {
-  const cap = 16000;
+  // Two retained envelopes; the second begin also admits its two-entry creation peak.
+  const cap = 16000 + 2 * 8192;
   const reserveBytes = 4096;
   const root = await tempRoot();
   const plain = openStore({ root, caps: { storeMaxBytes: cap, settlementReserveBytes: reserveBytes } });
@@ -374,44 +515,75 @@ test("ack: reserve consumption through marker removal holds one admission turn; 
   try {
     await h.beginRound({ roundId: "a", intent: "start" });
     await j.beginRound({ roundId: "b", intent: "start" });
+    for (const ref of [a, b]) {
+      const dir = path.join(root, "investigations", ref);
+      const marker = JSON.parse(await fs.readFile(path.join(dir, "incomplete.json")));
+      assert.equal((await fs.stat(path.join(dir, "audit", marker.recovery.name))).size, 8192);
+    }
     await h.release();
-    // Leave just enough headroom for the ack's advisory metadata write.
+    // ACK writes in place; retain the original 256-byte free-space relationship.
     await fs.writeFile(path.join(aDir, "ballast"), Buffer.alloc(cap - 256 - (await treeSize(root))));
-    ackStore = openStore({
-      root,
-      caps: { storeMaxBytes: cap, settlementReserveBytes: reserveBytes },
-      deps: {
-        writeFileAtomic: async (p, bytes) => {
-          if (p.endsWith("/round-a.json")) throw new Error("owned ACK audit fault");
-          await atomicReplaceFile(p, bytes);
-        },
-      },
-    });
-    const originalRm = fs.rm;
+    const marker = JSON.parse(await fs.readFile(path.join(aDir, "incomplete.json")));
+    const recoveryPath = path.join(aDir, "audit", marker.recovery.name);
+    const binds = trackAbstractBinds();
+    ackStore = openStore({ root, caps: { storeMaxBytes: cap, settlementReserveBytes: reserveBytes } });
+    const originalOpen = fs.open;
     let triggered = false;
+    let markSeq = -1;
     let sibling = null;
-    fsp.rm = async (p, ...args) => {
-      const value = await originalRm(p, ...args);
-      if (p === path.join(aDir, "reserve.settlement") && !triggered) {
-        triggered = true;
-        sibling = await observeSiblingBlocked(() => j.stageBody("s".repeat(3500)));
-      }
-      return value;
-    };
-    syncBuiltinESMExports();
     let ack = null;
     let error = null;
+    // Payload durability fails BEFORE the seal. Reserve removal now follows
+    // successful sealing, so it cannot witness this pre-seal failure.
+    fsp.open = async (target, ...args) => {
+      const handle = await originalOpen(target, ...args);
+      if (target !== recoveryPath || (args[0] & fs.constants.O_RDWR) === 0) return handle;
+      let payloadWritten = false;
+      return new Proxy(handle, {
+        get(target, key) {
+          if (key === "write") return async (...writeArgs) => {
+            const result = await target.write(...writeArgs);
+            if (writeArgs[3] === 2048) payloadWritten = true;
+            return result;
+          };
+          if (key === "sync") return async () => {
+            if (payloadWritten && !triggered) {
+              triggered = true;
+              markSeq = binds.mark();
+              sibling = await observeSiblingBlocked(() => j.stageBody("s".repeat(3500)), binds.log);
+              throw new Error("owned ACK audit fault");
+            }
+            return target.sync();
+          };
+          const value = Reflect.get(target, key, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    };
+    syncBuiltinESMExports();
     try {
       ack = await ackStore.acknowledgeInterrupted(a);
     } catch (e) {
       error = e;
     } finally {
-      fsp.rm = originalRm;
+      fsp.open = originalOpen;
       syncBuiltinESMExports();
+      binds.restore();
+      // Both the sibling and an unexpectedly successful ACK are owned even
+      // when a counterfactual makes the following rejection assertion fail.
+      await sibling?.joined;
+      await ack?.release();
     }
-    assert.ok(error instanceof Error, "the injected ACK audit fault must surface truthfully");
+    assert.ok(
+      error instanceof Error && error.message.includes("owned ACK audit fault"),
+      `the injected ACK audit fault must surface truthfully, got ${error && error.message}`,
+    );
     assert.ok(triggered, "sibling boundary did not fire");
-    assert.ok(sibling.pending, "sibling body write completed while the acknowledgment held admission");
+    const witness = witnessedAdmissionRefusal(binds.log, markSeq);
+    assert.ok(
+      witness,
+      "no witnessed sibling admission refusal on the held store admission gate",
+    );
     await sibling.joined;
     const siblingError = sibling.outcome?.error;
     assert.ok(
@@ -421,7 +593,6 @@ test("ack: reserve consumption through marker removal holds one admission turn; 
     assert.equal((await fs.stat(path.join(aDir, "reserve.settlement"))).size, reserveBytes);
     assert.equal(JSON.parse(await fs.readFile(path.join(aDir, "incomplete.json"), "utf8")).settled, false);
     assert.ok((await treeSize(root)) <= cap, "persistent bytes over cap after failed acknowledgment");
-    await ack?.release().catch(() => {});
   } finally {
     await h.release().catch(() => {});
     await j.release().catch(() => {});
@@ -436,41 +607,55 @@ test("ack: reserve consumption through marker removal holds one admission turn; 
 test("ack: reused round label under a different owner gets its own disposition and consumes its own reserve", async () => {
   const root = await tempRoot();
   const store = openStore({ root });
+  let h = null;
+  let ack1 = null;
+  let ack2 = null;
   try {
     const { investigationRef: ref } = await store.createInvestigation({ requirements: REQUIREMENTS });
     const dir = path.join(root, "investigations", ref);
-    const h = await store.acquireOwnership(ref);
+    const markerPath = path.join(dir, "incomplete.json");
+    const auditPath = path.join(dir, "audit", "round-r.json");
+    h = await store.acquireOwnership(ref);
     await h.beginRound({ roundId: "r", intent: "start" });
-    const firstOwner = h.ownerId();
+    const first = JSON.parse(await fs.readFile(markerPath));
+    await h.appendAudit({ at: 1, kind: "ordinary", detail: "preserve caller bytes\n" });
+    const firstAudit = await fs.readFile(auditPath);
     await h.release();
-    const ack1 = await store.acknowledgeInterrupted(ref);
-    try {
-      // Legal label reuse: beginRound permits a path-safe round id that a
-      // prior acknowledged round already used — under a NEW owner identity.
-      await ack1.beginRound({ roundId: "r", intent: "continue" });
-      const secondOwner = ack1.ownerId();
-      assert.notEqual(firstOwner, secondOwner);
-      await ack1.release();
-      const ack2 = await store.acknowledgeInterrupted(ref);
-      await ack2.release();
-      const auditDoc = JSON.parse(await fs.readFile(path.join(dir, "audit", "round-r.json"), "utf8"));
-      const rows = auditDoc.rows.filter((row) => row.kind === "acknowledge-interrupted");
-      assert.equal(rows.length, 2, `expected one disposition per interrupted instance, found ${rows.length}`);
-      assert.ok(
-        rows.some((row) => JSON.parse(row.detail).priorOwner === secondOwner),
-        "no disposition recorded for the second owner's interruption",
-      );
-      assert.equal((await store.inspect(ref)).incomplete, null, "marker not cleared by the second acknowledgment");
-      await assert.rejects(
-        fs.stat(path.join(dir, "reserve.settlement")),
-        (e) => e.code === "ENOENT",
-        "the second owner's reserve was not consumed with its marker",
-      );
-    } catch (e) {
-      await ack1.release().catch(() => {});
-      throw e;
-    }
+    ack1 = await store.acknowledgeInterrupted(ref);
+    const firstPath = path.join(dir, "audit", receiptName(first));
+    const firstReceipt = await fs.readFile(firstPath);
+    validateSealedReceipt(firstReceipt, first);
+    assert.deepEqual(await fs.readFile(auditPath), firstAudit);
+    // Legal label reuse retains the first sealed instance and allocates a
+    // second real envelope, distinguished by the NEW owner in the tuple.
+    await ack1.beginRound({ roundId: "r", intent: "continue" });
+    const second = JSON.parse(await fs.readFile(markerPath));
+    assert.notEqual(first.ownerId, second.ownerId);
+    await ack1.appendAudit({ at: 2, kind: "acknowledge-interrupted", detail: JSON.stringify({
+      roundId: second.roundId, priorOwner: second.ownerId, revisionBase: second.revisionBase, remoteWork: "unknown",
+    }) });
+    const secondAudit = await fs.readFile(auditPath);
+    const secondPath = path.join(dir, "audit", receiptName(second));
+    const pending = await fs.readFile(secondPath);
+    assert.throws(() => validateSealedReceipt(pending, second), /not sealed JSON/);
+    await ack1.release();
+    ack2 = await store.acknowledgeInterrupted(ref);
+    await ack2.release();
+    const names = (await fs.readdir(path.join(dir, "audit"))).filter((name) => /^ack-.*\.record$/.test(name)).sort();
+    assert.deepEqual(names, [receiptName(first), receiptName(second)].sort(), "one receipt per distinct owner tuple");
+    const secondReceipt = await fs.readFile(secondPath);
+    validateSealedReceipt(await fs.readFile(firstPath), first);
+    validateSealedReceipt(secondReceipt, second);
+    assert.throws(() => validateSealedReceipt(secondReceipt, first), /exact interrupted tuple/);
+    assert.deepEqual(await fs.readFile(firstPath), firstReceipt, "first sealed disposition changed");
+    assert.deepEqual(await fs.readFile(auditPath), secondAudit, "normal audit bytes changed");
+    assert.equal((await store.inspect(ref)).incomplete, null, "marker not cleared by the second acknowledgment");
+    await assert.rejects(fs.stat(path.join(dir, "reserve.settlement")), (e) => e.code === "ENOENT",
+      "the second owner's reserve was not consumed with its marker");
   } finally {
+    await ack2?.release();
+    await ack1?.release();
+    await h?.release();
     await fs.rm(root, { recursive: true, force: true });
   }
 });
@@ -487,7 +672,8 @@ test("ack: reused round label under a different owner gets its own disposition a
 // The physical peak is measured after every mutating builtin call — no
 // artificial barrier that would deadlock against correct serial code.
 test("rollback: marker-then-reserve restore is serial; native temp peak stays under the cap", async () => {
-  const cap = 16000;
+  // One retained envelope; the initial two-entry creation peak also fits.
+  const cap = 16000 + 8192;
   const reserveBytes = 4096;
   const root = await tempRoot();
   // The faulting funnel must live on the store whose handle OWNS the round.
@@ -506,6 +692,8 @@ test("rollback: marker-then-reserve restore is serial; native temp peak stays un
   const h = await failing.acquireOwnership(a);
   try {
     await h.beginRound({ roundId: "a", intent: "start" });
+    const marker = JSON.parse(await fs.readFile(path.join(aDir, "incomplete.json")));
+    assert.equal((await fs.stat(path.join(aDir, "audit", marker.recovery.name))).size, 8192);
     await fs.writeFile(path.join(aDir, "ballast"), Buffer.alloc(cap - (await treeSize(root))));
     // Measure the PHYSICAL peak at every restore-temp rename, BEFORE the
     // rename consumes the temp. A bounded coordinated hold lets a SECOND
@@ -542,7 +730,11 @@ test("rollback: marker-then-reserve restore is serial; native temp peak stays un
     };
     syncBuiltinESMExports();
     try {
-      await assert.rejects(h.settleRound("a", SUMMARY("x".repeat(100))));
+      await assert.rejects(
+        h.settleRound("a", SUMMARY("x".repeat(100))),
+        (e) => e.name === "Error" && e.message === "owned summary refusal",
+        "refused settlement must reject with the exact injected summary fault",
+      );
     } finally {
       for (const release of pendingReleases) release();
       pendingReleases.clear();

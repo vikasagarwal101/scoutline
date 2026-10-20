@@ -28,11 +28,11 @@ async function fixture(t, options = {}) {
 
 // Exit at the real native placement boundaries; abrupt exit deliberately skips
 // createRecoveryHeld's finally. The parent owns and joins this exact child.
-async function crashRecoveryPreparation(t, root, ref, dir, phase) {
+async function crashRecoveryPreparation(t, root, ref, dir, phase, ownerId = "") {
   const script = `
     import fsp from "node:fs/promises";
     import { syncBuiltinESMExports } from "node:module";
-    const [root, ref, phase, moduleUrl] = process.argv.slice(1);
+    const [root, ref, phase, moduleUrl, ownerId] = process.argv.slice(1);
     if (phase === "postlink") {
       const link = fsp.link;
       fsp.link = async (from, to) => {
@@ -42,7 +42,7 @@ async function crashRecoveryPreparation(t, root, ref, dir, phase) {
       syncBuiltinESMExports();
     }
     const { openStore } = await import(moduleUrl);
-    const store = openStore({ root, deps: { writeFileAtomic: async (file) => {
+    const store = openStore({ root, deps: { ...(ownerId ? { randomId: () => ownerId } : {}), writeFileAtomic: async (file) => {
       if (String(file).endsWith(".reserve.tmp")) {
         if (phase === "prelink") process.exit(93);
         return;
@@ -56,7 +56,7 @@ async function crashRecoveryPreparation(t, root, ref, dir, phase) {
   `;
   t.diagnostic(`owned crash root ${root}; phase ${phase}`);
   const child = spawn(process.execPath, ["--input-type=module", "-e", script, root, ref, phase,
-    new URL("../dist/lib/retained-record-store.js", import.meta.url).href],
+    new URL("../dist/lib/retained-record-store.js", import.meta.url).href, ownerId],
   { env: process.env, stdio: ["ignore", "ignore", "pipe"], timeout: 15000 });
   let stderr = "";
   child.stderr.setEncoding("utf8");
@@ -81,6 +81,123 @@ async function crashRecoveryPreparation(t, root, ref, dir, phase) {
   await assert.rejects(fs.lstat(path.join(dir, "incomplete.json")), { code: "ENOENT" });
   return { stage, final, bytes };
 }
+
+test("R3: canonical replacement during native read preserves both preparations", async (t) => {
+  const { root, ref, dir } = await fixture(t);
+  const { stage, final, bytes } = await crashRecoveryPreparation(t, root, ref, dir, "postlink");
+  const oldStage = await fs.lstat(stage, { bigint: true });
+  const revision = await fs.readFile(path.join(dir, "revisions", "r0.json"));
+  const originalOpen = fsp.open;
+  const replacement = path.join(dir, "audit", "owned-canonical-replacement.tmp");
+  let swapped = 0;
+  let foreign;
+  const writes = [];
+  const store = openStore({ root, deps: { writeFileAtomic: async (file, data) => {
+    writes.push(file);
+    await atomicReplaceFile(file, data);
+  } } });
+  const handle = await store.acquireOwnership(ref);
+  writes.length = 0; // Only beginRound's fresh allocations are forbidden after the swap.
+  try {
+    fsp.open = async (file, ...args) => {
+      const opened = await originalOpen(file, ...args);
+      if (file !== final) return opened;
+      return new Proxy(opened, { get(target, key) {
+        if (key === "read") return async (...readArgs) => {
+          const result = await target.read(...readArgs);
+          if (result.bytesRead > 0 && swapped === 0) {
+            await fs.writeFile(replacement, bytes, { flag: "wx" });
+            await fs.rename(replacement, final);
+            foreign = await fs.lstat(final, { bigint: true });
+            assert.notEqual(foreign.ino, oldStage.ino, "replacement must be a different native inode");
+            swapped += 1;
+            t.diagnostic(`canonical read replacement witness ${swapped}; old inode ${oldStage.ino}; foreign inode ${foreign.ino}`);
+          }
+          return result;
+        };
+        const value = Reflect.get(target, key, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      } });
+    };
+    syncBuiltinESMExports();
+    await assert.rejects(handle.beginRound({ roundId: "must-preserve-swapped-canonical", intent: "continue" }),
+      (error) => error.name === "CorruptContentError" && error.code === "CORRUPT_CONTENT" &&
+        error.message === `Refusing changed native retained path: ${final}`);
+    assert.equal(swapped, 1, "canonical replacement must occur inside the opened native read");
+    for (const [file, before] of [[stage, oldStage], [final, foreign]]) {
+      const after = await fs.lstat(file, { bigint: true });
+      assert.equal(after.ino, before.ino); assert.equal(after.dev, before.dev);
+      assert.deepEqual(await fs.readFile(file), bytes);
+    }
+    assert.deepEqual((await fs.readdir(path.join(dir, "audit"))).sort(), [path.basename(stage), path.basename(final)].sort());
+    assert.deepEqual(writes, [], "no fresh recovery slot, reserve or marker may be dispatched");
+    for (const name of ["incomplete.json", "reserve.settlement"]) await assert.rejects(fs.lstat(path.join(dir, name)), { code: "ENOENT" });
+    assert.deepEqual(await fs.readFile(path.join(dir, "revisions", "r0.json")), revision);
+  } finally {
+    fsp.open = originalOpen;
+    syncBuiltinESMExports();
+    await handle.release();
+  }
+});
+
+for (const canonicalOnly of [false, true]) {
+  test(`R3: legacy UTF16 owner reclaims ${canonicalOnly ? "canonical-only" : "linked-stage"} pending preparation`, async (t) => {
+    const { root, store, ref, dir } = await fixture(t);
+    const revision = await fs.readFile(path.join(dir, "revisions", "r0.json"));
+    const ownerId = "€".repeat(32);
+    assert.equal(ownerId.length, 32); assert.equal(Buffer.byteLength(ownerId), 96);
+    const { stage, final, bytes } = await crashRecoveryPreparation(t, root, ref, dir, "postlink", ownerId);
+    assert.equal(JSON.parse(bytes.subarray(0, bytes.indexOf(0)).toString()).priorOwner, ownerId);
+    // Explicit fixture derivation from the real postlink pair; no canonical-only crash claim.
+    if (canonicalOnly) await fs.unlink(stage);
+    const originalUnlink = fsp.unlink;
+    const reclaimed = [];
+    const handle = await store.acquireOwnership(ref);
+    try {
+      fsp.unlink = async (file) => {
+        if (file === stage || file === final) reclaimed.push((await fs.lstat(file)).size);
+        return originalUnlink(file);
+      };
+      syncBuiltinESMExports();
+      await handle.beginRound({ roundId: "legacy-owner-successor", intent: "continue" });
+      assert.deepEqual(reclaimed, canonicalOnly ? [8192] : [8192, 8192]);
+      for (const file of [stage, final]) await assert.rejects(fs.lstat(file), { code: "ENOENT" });
+      assert.deepEqual(await fs.readFile(path.join(dir, "revisions", "r0.json")), revision);
+      const marker = JSON.parse(await fs.readFile(path.join(dir, "incomplete.json"), "utf8"));
+      assert.equal(marker.roundId, "legacy-owner-successor");
+      assert.equal((await fs.readdir(path.join(dir, "audit"))).filter((name) => name.endsWith(".record")).length, 1);
+    } finally {
+      fsp.unlink = originalUnlink;
+      syncBuiltinESMExports();
+      await handle.release();
+    }
+  });
+}
+
+test("R3: over64 UTF16 owner preserves both orphan forms", async (t) => {
+  for (const canonicalOnly of [false, true]) {
+    const { root, store, ref, dir } = await fixture(t);
+    const { stage, final, bytes } = await crashRecoveryPreparation(t, root, ref, dir, "postlink", "€".repeat(65));
+    if (canonicalOnly) await fs.unlink(stage);
+    const names = await fs.readdir(path.join(dir, "audit"));
+    const before = await Promise.all(names.map(async (name) => [name, await fs.lstat(path.join(dir, "audit", name), { bigint: true })]));
+    const handle = await store.acquireOwnership(ref);
+    try {
+      await assert.rejects(handle.beginRound({ roundId: "overlong-owner-refused", intent: "continue" }),
+        (error) => error.name === "CorruptRecordError" && error.code === "CORRUPT_RECORD" &&
+          error.message === `Orphan recovery${canonicalOnly ? "" : " stage"} instance cannot be verified.`);
+      assert.deepEqual(await fs.readdir(path.join(dir, "audit")), names);
+      for (const [name, old] of before) {
+        const file = path.join(dir, "audit", name);
+        const after = await fs.lstat(file, { bigint: true });
+        assert.equal(after.ino, old.ino); assert.equal(after.dev, old.dev);
+        assert.deepEqual(await fs.readFile(file), bytes);
+      }
+      for (const name of ["incomplete.json", "reserve.settlement"]) await assert.rejects(fs.lstat(path.join(dir, name)), { code: "ENOENT" });
+      assert.equal((await store.inspect(ref)).committed.revision, 0);
+    } finally { await handle.release(); }
+  }
+});
 
 for (const phase of ["prelink", "postlink"]) {
   test(`F1: next owner reclaims actual native ${phase} crash preparation`, async (t) => {

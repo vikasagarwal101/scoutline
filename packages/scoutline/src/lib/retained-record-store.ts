@@ -841,25 +841,34 @@ async function sealRecovery(dir: string, marker: IncompleteMarker, at: number, p
 
 /** Prove native, never-sealed preparations before the final-file cleanup can
  * remove any competing canonical path. Partial/foreign/sealed bytes stay put. */
+/** Bind either orphan form to the same legacy string-domain instance. */
+function orphanRecoveryIdentity(
+  bytes: Buffer, name: string, committed: number, context: "" | " stage",
+): InterruptedIdentity {
+  let header: unknown;
+  try { header = JSON.parse(paddedText(bytes.subarray(0, RECOVERY_HEADER_BYTES))); }
+  catch { throw new CorruptRecordError(`Orphan recovery${context} header corrupt; preserving file.`); }
+  if (!isPlainObject(header) || typeof header.roundId !== "string" || !ROUND_ID_RE.test(header.roundId) ||
+    // Match existing marker/pending-envelope UTF16 length acceptance; the frame remains byte-bounded.
+    typeof header.priorOwner !== "string" || header.priorOwner.length === 0 || header.priorOwner.length > OWNER_ID_MAX_BYTES ||
+    !Number.isInteger(header.revisionBase) || (header.revisionBase as number) < 0 || (header.revisionBase as number) > committed) {
+    throw new CorruptRecordError(`Orphan recovery${context} instance cannot be verified.`);
+  }
+  const identity = { roundId: header.roundId, ownerId: header.priorOwner, revisionBase: header.revisionBase as number };
+  if (name !== recoveryName(identity)) throw new CorruptRecordError(`Orphan recovery${context} filename mismatch.`);
+  return identity;
+}
+
 async function cleanupOrphanRecoveryStages(dir: string, committed: number, entries: string[]): Promise<void> {
   const auditDir = path.join(dir, "audit");
   for (const name of entries) {
     const match = /^\.(ack-[0-9a-f]{64}\.record)\.[1-9][0-9]{0,9}\.[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.reserve\.tmp$/.exec(name);
-    if (match === null) continue;
+    if (match === null || match[1] === undefined) continue;
     const stage = path.join(auditDir, name);
     const opened = await openNativeOwnedFile(dir, stage, false);
     try {
       const bytes = await readNativeBounded(opened.handle, RECOVERY_BYTES);
-      let header: unknown;
-      try { header = JSON.parse(paddedText(bytes.subarray(0, RECOVERY_HEADER_BYTES))); }
-      catch { throw new CorruptRecordError("Orphan recovery stage header corrupt; preserving file."); }
-      if (!isPlainObject(header) || typeof header.roundId !== "string" || !ROUND_ID_RE.test(header.roundId) ||
-        typeof header.priorOwner !== "string" || header.priorOwner.length === 0 || Buffer.byteLength(header.priorOwner) > OWNER_ID_MAX_BYTES ||
-        !Number.isInteger(header.revisionBase) || (header.revisionBase as number) < 0 || (header.revisionBase as number) > committed) {
-        throw new CorruptRecordError("Orphan recovery stage instance cannot be verified.");
-      }
-      const identity = { roundId: header.roundId, ownerId: header.priorOwner, revisionBase: header.revisionBase as number };
-      if (match[1] !== recoveryName(identity)) throw new CorruptRecordError("Orphan recovery stage filename mismatch.");
+      const identity = orphanRecoveryIdentity(bytes, match[1], committed, " stage");
       const pristine = Buffer.alloc(RECOVERY_BYTES);
       paddedJson(recoveryHeader(identity), RECOVERY_HEADER_BYTES).copy(pristine);
       // Includes exact header encoding, allocation length, payload, seal AND tail.
@@ -871,6 +880,7 @@ async function cleanupOrphanRecoveryStages(dir: string, committed: number, entri
           if (!(await readNativeBounded(canonical.handle, RECOVERY_BYTES)).equals(pristine)) {
             throw new CorruptRecordError("Orphan recovery canonical bytes changed; preserving preparation.");
           }
+          await assertNativeIdentity(final, canonical.identity);
         } finally { await canonical.handle.close(); }
       }
       await assertNativeIdentity(stage, opened.identity);
@@ -896,16 +906,7 @@ async function cleanupPendingRecoveries(dir: string, committed: number, reserveB
     let pending = false;
     try {
       const bytes = await readNativeBounded(opened.handle, RECOVERY_BYTES);
-      let header: unknown;
-      try { header = JSON.parse(paddedText(bytes.subarray(0, RECOVERY_HEADER_BYTES))); }
-      catch { throw new CorruptRecordError("Orphan recovery header corrupt; preserving file."); }
-      if (!isPlainObject(header) || typeof header.roundId !== "string" || !ROUND_ID_RE.test(header.roundId) ||
-        typeof header.priorOwner !== "string" || header.priorOwner.length === 0 || header.priorOwner.length > OWNER_ID_MAX_BYTES ||
-        !Number.isInteger(header.revisionBase) || (header.revisionBase as number) < 0 || (header.revisionBase as number) > committed) {
-        throw new CorruptRecordError("Orphan recovery instance cannot be verified.");
-      }
-      const identity = { roundId: header.roundId, ownerId: header.priorOwner, revisionBase: header.revisionBase as number };
-      if (name !== recoveryName(identity)) throw new CorruptRecordError("Orphan recovery filename mismatch.");
+      const identity = orphanRecoveryIdentity(bytes, name, committed, "");
       pending = parseRecovery(bytes, identity) === null;
       if (pending) {
         const reservePath = path.join(dir, "reserve.settlement");

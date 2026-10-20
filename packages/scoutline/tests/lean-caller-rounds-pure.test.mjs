@@ -17,6 +17,7 @@ async function fixture(observeAdmission = false) {
   const records = new Map(), calls = { create: [], open: [], queries: [], begin: [], settlements: [], releases: 0, bodyWrites: 0, commits: 0, preparations: [], seeds: [] };
   const gates = { create: null, acquire: null, body: null, settlement: null, release: null };
   const store = {
+    recoveryRecords: [], // Scalar fixture pages only, never native authority evidence.
     async createInvestigation({ requirements }) {
       calls.create.push(requirements); if (gates.create) await gates.create;
       const ref = `memory-${records.size}`;
@@ -29,6 +30,8 @@ async function fixture(observeAdmission = false) {
       if (gates.acquire) await gates.acquire;
       const record = records.get(ref);
       return {
+        // Logical projection seam only: no native cursor/authority guarantee.
+        async readRecoveryPage() { return { records: copy(store.recoveryRecords), cursor: null, complete: true, revision: record.snapshot.revision, viewDigest: digest(JSON.stringify(record.snapshot)) }; },
         async beginRound(round) { calls.begin.push(copy(round)); }, async appendAudit() {},
         async settleRound(roundId, summary) { calls.settlements.push({ roundId, summary: copy(summary) }); if (gates.settlement) await gates.settlement(); },
         async release() { calls.releases++; if (gates.release) await gates.release(); },
@@ -127,7 +130,7 @@ test('F2 continue owns nested proposal ranges and round feedback before successf
   await assert.doesNotReject(async () => { second = await pending; }, 'continue must use admitted feedback, not later caller mutations');
   f.gates.acquire = null;
   const retained = await f.api.readCallerRecord(first.storeRoot, first.investigationRef);
-  assert.deepEqual(retained.payload.proposals[0], { fieldId: 'version', mode: 'string', value: '2.4', definitionRevision: first.handoff.definitions.version,
+  assert.deepEqual(retained.payload.proposals[0], { evidenceId: evidence.evidenceId, fieldId: 'version', mode: 'string', value: '2.4', definitionRevision: first.handoff.definitions.version,
     representationId: evidence.representationId, digest: evidence.digest, quote: '2.4', charRange: [13, 16] });
   assert(second.result.evidence.some(e => e.content === 'Additional original context.'));
   assert(!second.result.evidence.some(e => e.content === 'Mutated context.'));
@@ -1257,4 +1260,236 @@ test('T3 actual captured zero is settled while unavailable engine capture is dis
     } else assert.deepEqual(f.calls.settlements[0].summary, { status: 'failed', measured: { searches: 0, reads: 0, judgments: 0 }, uncertainty: 'engine-run-failed:measured-attempts-preserved' });
     assert.equal((await f.store.inspect('memory-0')).committed.snapshot.revision, 0);
   }
+});
+
+test('ABD D14 malformed native attempts refuse with typed corruption before serialization', async () => {
+  const f = await fixture();
+  const cyclic = {}; cyclic.provider = cyclic;
+  for (const attempt of [{ provider: 1n, phase: 'producer', outcome: 'ok' }, cyclic]) {
+    assert.throws(() => f.validatePhysical({ ...observation(), attempts: [attempt] }), CorruptRecordError);
+  }
+  const unserializable = { ...observation(), attempts: [] }; Object.defineProperty(unserializable, 'toJSON', { value: () => { throw new Error('native serialization'); } });
+  assert.throws(() => f.validatePhysical(unserializable), CorruptRecordError);
+  assert.doesNotThrow(() => f.validatePhysical(observation()));
+});
+
+for (const [kind, feedback] of Object.entries({ leadArray: { leads: {} }, leadNull: { leads: [null] }, leadURL: { leads: [{ url: 'bad URL' }] },
+  leadType: { leads: [{ url: 5 }] }, leadTitle: { leads: [{ url: 'https://fixture.invalid', title: 4 }] }, repArray: { representations: {} },
+  repNull: { representations: [null] }, repLabel: { representations: [{ format: 'text', content: 'X', label: 5 }] }, proposals: { proposals: {} },
+  serial: { representations: [{ format: 'text', content: 'X', extension: 1n }] } })) {
+  test('ABD D10 malformed feedback ' + kind + ' refuses before store work', async () => {
+    const f = await fixture();
+    await assert.rejects(start(f, feedback), e => e.code === 'VALIDATION_ERROR'); assert.equal(f.calls.open.length, 0);
+  });
+}
+
+const continueRound = (f, last, extra = {}) => f.api.continueCallerRound({ storeRoot: last.storeRoot, investigationRef: last.investigationRef,
+  expectedRevision: last.handoff.revision, deps: f.deps, ...extra });
+async function corruptBoundary(f, last, kind) {
+  const ref = last.investigationRef, { snapshot, pointer } = await currentState(f, ref), handle = await f.store.acquireOwnership(ref);
+  const body = async text => { const b = await handle.stageBody(text), item = { bodyId: b.bodyId, digest: 'sha256:' + b.bodyId.slice(2), bytes: b.bytes }; snapshot.bodies.push(item); return item; };
+  try {
+    if (kind === 'auditJSON' || kind === 'auditNull') snapshot.audit.at(-1).detail = kind === 'auditJSON' ? '{' : 'null';
+    else {
+      if (kind.startsWith('state') || kind === 'contractJSON') {
+        const which = kind === 'contractJSON' ? 'contract' : 'state', b = await body(kind === 'stateShape' ? 'null' : '{');
+        pointer[which] = { digest: b.digest, chunks: [b] }; if (which === 'contract') pointer.definitionRevision = b.digest;
+      }
+      const b = await body(kind === 'rootJSON' ? '{' : kind === 'rootNull' ? 'null' : JSON.stringify(pointer));
+      snapshot.audit.at(-1).detail = JSON.stringify({ schemaVersion: 1, root: b.bodyId });
+      if (kind === 'ghost') snapshot.bodies = snapshot.bodies.filter(x => x.bodyId !== b.bodyId);
+    }
+    await handle.commitRevision({ snapshot });
+  } finally { await handle.release(); }
+}
+for (const kind of ['ghost', 'auditJSON', 'auditNull', 'rootJSON', 'rootNull', 'stateJSON', 'stateShape', 'contractJSON']) for (const action of ['continue', 'read']) {
+  test(`ABD D9D11 ${kind} ${action} refuses with typed corruption before work`, async () => {
+    const f = await fixture(), last = await start(f); await corruptBoundary(f, last, kind);
+    const begin = f.calls.begin.length, writes = f.calls.bodyWrites, commits = f.calls.commits;
+    let rootReads = 0; const original = f.store.readBody;
+    f.store.readBody = async (...args) => { rootReads++; return original(...args); };
+    await assert.rejects(action === 'read' ? f.api.readCallerRecord(last.storeRoot, last.investigationRef) : continueRound(f, last), CorruptRecordError);
+    assert.deepEqual([f.calls.begin.length, f.calls.bodyWrites, f.calls.commits], [begin, writes, commits]);
+    if (kind === 'ghost') assert.equal(rootReads, 0, 'committed membership precedes body access');
+  });
+}
+
+const proposalFor = (last, event = last.handoff.evidence[0], extra = {}) => ({ fieldId: 'version', mode: 'string', value: '2.4',
+  definitionRevision: last.handoff.definitions.version, representationId: event.representationId, digest: event.digest, quote: '2.4', charRange: [8, 11], ...extra });
+for (const outcome of ['valid', 'invalid', 'ordinary-error', 'fatal']) test('ABD A1 delegates unrelated typed extraction ' + outcome, async () => {
+  const f = await fixture(), c = { schemaVersion: 1, question: 'Release?', scope: { entity: 'fixture' }, requirements: {
+    version: { question: 'Version?', schema: { type: 'string' } }, license: { question: 'License?', schema: { type: 'string' } } } };
+  const first = await start(f, { contract: c, representations: [{ format: 'text', content: 'Version 2.4. License MIT.' }] });
+  const w = orderWorld(f), requests = [], primary = Object.assign(new Error('delegated'), outcome === 'fatal' ? { fatalMeasurement: true } : {});
+  const attempt = { finishReason: 'stop', rawOutput: outcome === 'invalid' ? 'not JSON' : JSON.stringify({ license: { value: 'MIT', quote: 'MIT', charRange: [21, 24] } }),
+    usage: { inputTokens: 7, outputTokens: 3 }, observedCost: 0.5, elapsedMs: 17, requestSha256: 'a'.repeat(64) };
+  f.deps.extract = async (request, options) => { requests.push({ request, options }); if (outcome.endsWith('error') || outcome === 'fatal') throw primary; return attempt; };
+  const pending = continueRound(f, first, { proposals: [proposalFor(first)], judgeIdentity: 'fixture', policyRevision: '1' });
+  if (outcome === 'fatal') await assert.rejects(pending, e => e === primary);
+  else {
+    const last = await pending;
+    assert.equal(last.result.data.version, '2.4');
+    assert.equal(last.result.data.license, outcome === 'valid' ? 'MIT' : undefined);
+    if (outcome === 'valid') {
+      const rows = (await currentState(f, first.investigationRef)).state.checkpoint.history.flatMap(r => r.state.attemptedRecords ?? []);
+      const meta = rows.find(r => r.metadata?.requestSha256 === attempt.requestSha256)?.metadata;
+      assert(meta); assert.deepEqual(meta.usage, attempt.usage); assert.equal(meta.observedCost, 0.5); assert.equal(meta.elapsedMs, 17);
+    }
+  }
+  assert.equal(requests.length, 1, 'local proposal never delegates; unrelated field delegates exactly once');
+  assert.deepEqual(requests[0].request.fields.map(x => x.id), ['license']);
+  assert.equal(requests[0].request.sourceId, first.handoff.evidence[0].evidenceId); assert.equal(requests[0].request.sourceText, first.result.evidence[0].content);
+  assert.deepEqual(requests[0].request.scope, c.scope); assert.deepEqual(requests[0].request.depBindings, {});
+  assert(requests[0].options.signal instanceof AbortSignal); assert(requests[0].options.timeoutMs > 0); assert(requests[0].options.timeoutMs <= engine.compileLeanContract(c).limits.deadlineMs);
+});
+
+for (const kind of ['ambiguous', 'second', 'wrong', 'selectorWithoutBody', 'unique']) test('ABD A4 event binding ' + kind, async () => {
+  const f = await fixture(), last = await start(f, { representations: Array.from({ length: kind === 'unique' ? 1 : 2 }, () => ({ format: 'text', content: 'Version 2.4.' })) });
+  const before = f.calls.begin.length, p = proposalFor(last, last.handoff.evidence.at(-1));
+  if (kind === 'second') p.evidenceId = last.handoff.evidence[1].evidenceId;
+  if (kind === 'wrong') p.evidenceId = 'unrelated';
+  if (kind === 'selectorWithoutBody') { p.evidenceId = last.handoff.evidence[1].evidenceId; delete p.representationId; }
+  const owned = copy(p);
+  if (['ambiguous', 'wrong', 'selectorWithoutBody'].includes(kind)) {
+    await assert.rejects(continueRound(f, last, { proposals: [p] }), e => e.code === 'VALIDATION_ERROR'); assert.equal(f.calls.begin.length, before);
+  } else {
+    const w = orderWorld(f); f.deps.extract = null;
+    const next = await continueRound(f, last, { proposals: [p], judgeIdentity: 'fixture', policyRevision: '1' });
+    assert.equal(next.result.data.version, '2.4');
+    const saved = await f.api.readCallerRecord(last.storeRoot, last.investigationRef);
+    assert.equal(saved.payload.proposals[0].evidenceId, last.handoff.evidence.at(-1).evidenceId);
+    const attempts = (await currentState(f, last.investigationRef)).state.checkpoint.history.flatMap(r => r.state.callerAttempts ?? []);
+    assert(attempts.some(a => a.basis.candidate.evidenceId === last.handoff.evidence.at(-1).evidenceId && a.basis.candidate.url === last.handoff.evidence.at(-1).url));
+    const paid = w.semantic(); await continueRound(f, next, { representations: [{ format: 'text', content: 'Version 2.4.' }], judgeIdentity: 'fixture', policyRevision: '1' });
+    assert.equal((await currentState(f, last.investigationRef)).state.proposals[0].evidenceId, last.handoff.evidence.at(-1).evidenceId);
+    assert(w.semantic() >= paid);
+  }
+  assert.deepEqual(p, owned, 'normalization owns its selector without mutating caller input');
+});
+for (const kind of ['null', 'body', 'classification', 'extra', 'duplicate']) test('ABD A12 malformed retained proposal ' + kind + ' refuses even obsolete intent', async () => {
+  const f = await fixture(), last = await start(f, { representations: [{ format: 'text', content: 'Version 2.4.' }] });
+  await rewriteCurrent(f, last.investigationRef, async ({ state }) => {
+    const p = proposalFor(last);
+    if (kind === 'null') state.proposals = [null];
+    if (kind === 'body') state.proposals = [{ ...p, representationId: 'b:' + '0'.repeat(64) }];
+    if (kind === 'classification') state.proposals = [{ ...p, mode: 'classification', value: 'nonsense' }];
+    if (kind === 'extra') state.proposals = [{ ...p, evidenceId: 42 }];
+    if (kind === 'duplicate') state.proposals = [p, p];
+  });
+  const before = f.calls.begin.length;
+  await assert.rejects(continueRound(f, last, { contract: { ...contract(), question: 'Changed meaning?' } }), CorruptRecordError);
+  assert.equal(f.calls.begin.length, before);
+});
+
+for (const kind of ['active', 'replacement', 'obsolete']) test('ABD A4 legacy ambiguous reference remains historical with ' + kind + ' continuation', async () => {
+  const f = await fixture(), last = await start(f, { representations: [0, 1].map(() => ({ format: 'text', content: 'Version 2.4.' })) });
+  await rewriteCurrent(f, last.investigationRef, async ({ state, read, stage }) => {
+    state.proposals = [proposalFor(last)]; const entry = state.results.at(-1), payload = await read(entry.result);
+    payload.proposals = copy(state.proposals); entry.result = await stage(JSON.stringify(payload));
+  });
+  const old = await f.api.readCallerRecord(last.storeRoot, last.investigationRef); assert.equal(Object.hasOwn(old.payload.proposals[0], 'evidenceId'), false);
+  if (kind === 'active') {
+    const before = f.calls.begin.length; await assert.rejects(continueRound(f, last), e => e.code === 'VALIDATION_ERROR' && /Ambiguous/.test(e.message)); assert.equal(f.calls.begin.length, before);
+  } else {
+    const next = await continueRound(f, last, kind === 'replacement' ? { proposals: [proposalFor(last, last.handoff.evidence[1], { evidenceId: last.handoff.evidence[1].evidenceId })] }
+      : { contract: { ...contract(), question: 'Different intent?' } });
+    assert.equal((await f.api.readCallerRecord(last.storeRoot, last.investigationRef)).payload.proposals.length, kind === 'replacement' ? 1 : 0);
+    assert.deepEqual((await f.api.readCallerRecord(last.storeRoot, last.investigationRef, 1)).payload, old.payload);
+    assert.equal(next.handoff.revision, 2);
+  }
+});
+
+test('ABD B episode lowering restores baseline for genuinely eligible reads and preserves prior executed history', async () => {
+  const f = await fixture(), reads = []; f.deps.read = async url => { reads.push(url); return 'Source ' + url; };
+  const baseline = { ...contract(), limits: { ...contract().limits, maxUniqueReads: 3 } };
+  const first = await start(f, { contract: baseline, roundLimits: { maxUniqueReads: 1 }, leads: Array.from({ length: 16 }, (_, i) => ({ url: 'https://fixture.invalid/baseline-' + i })) });
+  assert.equal(reads.length, 1); const old = await f.api.readCallerRecord(first.storeRoot, first.investigationRef, 1); assert.equal(old.contract.limits.maxUniqueReads, 1);
+  const second = await continueRound(f, first); assert.equal(second.result.usage.readAttempts, 3); assert.equal(reads.length, 4); assert.equal(second.contract.limits.maxUniqueReads, 3);
+  const raised = await continueRound(f, second, { roundLimits: { maxUniqueReads: 4 } }); assert.equal(raised.result.usage.readAttempts, 3); assert.equal(raised.contract.limits.maxUniqueReads, 3); assert.equal(reads.length, 7);
+  const replacement = await continueRound(f, raised, { contract: { ...baseline, limits: { ...baseline.limits, maxUniqueReads: 4 } } });
+  assert.equal(replacement.result.usage.readAttempts, 4); assert.equal(reads.length, 11); assert.equal(new Set(reads).size, 11);
+  assert.deepEqual((await f.api.readCallerRecord(first.storeRoot, first.investigationRef, 1)).payload, old.payload);
+  assert.deepEqual((await f.api.readCallerRecord(first.storeRoot, first.investigationRef, 1)).contract, old.contract);
+  assert.equal(replacement.handoff.cumulativeUsage.reads, reads.length);
+});
+
+test('ABD B absent legacy baseline stays conservatively effective until explicit replacement', async () => {
+  const f = await fixture(); f.deps.read = async url => 'Source ' + url;
+  const baseline = { ...contract(), limits: { ...contract().limits, maxUniqueReads: 3 } };
+  const first = await start(f, { contract: baseline, roundLimits: { maxUniqueReads: 1 }, leads: Array.from({ length: 8 }, (_, i) => ({ url: 'https://fixture.invalid/legacy-' + i })) });
+  await rewriteCurrent(f, first.investigationRef, async ({ pointer }) => { delete pointer.baselineContract; });
+  const second = await continueRound(f, first, { roundLimits: { maxUniqueReads: 3 } }); assert.equal(second.contract.limits.maxUniqueReads, 1); assert.equal(second.result.usage.readAttempts, 1);
+  const third = await continueRound(f, second, { contract: baseline }); assert.equal(third.contract.limits.maxUniqueReads, 3); assert.equal(third.result.usage.readAttempts, 3);
+});
+for (const baselineContract of [null, {}, { digest: 'bad', chunks: [] }]) test('ABD B malformed recognized baseline pointer refuses', async () => {
+  const f = await fixture(), first = await start(f); await rewriteCurrent(f, first.investigationRef, async ({ pointer }) => { pointer.baselineContract = baselineContract; });
+  const before = f.calls.begin.length; await assert.rejects(continueRound(f, first), CorruptRecordError); assert.equal(f.calls.begin.length, before);
+  await assert.rejects(f.api.readCallerRecord(first.storeRoot, first.investigationRef), CorruptRecordError);
+});
+
+for (const kind of ['data', 'requirements', 'definitions']) test('ABD D payload dictionary shape ' + kind + ' refuses at its document boundary', async () => {
+  const f = await fixture(), last = await start(f);
+  await rewriteCurrent(f, last.investigationRef, async ({ state, read, stage }) => {
+    const entry = state.results.at(-1), payload = await read(entry.result);
+    if (kind === 'definitions') payload.definitions = Object.values(payload.definitions); else payload.result[kind] = [];
+    entry.result = await stage(JSON.stringify(payload));
+  });
+  await assert.rejects(f.api.readCallerRecord(last.storeRoot, last.investigationRef), CorruptRecordError);
+});
+
+const c7Observation = (acquisition, judge = null, total = acquisition + (judge ?? 0), admission = judge === null ? "not-configured" : "shared") => ({
+  schemaVersion:1,source:"handler-owned-native-ledger",cutoff:"locally-settled",stages:{acquisition,judge,producer:null},knownSubtotal:acquisition+(judge??0),total,reservationsRefused:0,
+  admission:{acquisition:"shared",judge:admission,producer:"not-configured"},attempts:[],
+});
+test("C7 measured physical subtotals survive conservative totals and unknown admission", async () => {
+  const f=await fixture(); let observations=0;
+  const first=await start(f,{nativeObservation:()=>{observations++;return c7Observation(3,2,null,"unknown");}});
+  assert.equal(first.handoff.cumulativeUsage.knownSubtotal.physicalAttempts,5,"measured subtotal must survive conservative totalnull");
+  assert.equal(first.handoff.cumulativeUsage.physicalAttempts,null);
+  assert.deepEqual(first.handoff.cumulativeUsage.unknownStages,[]);
+  assert(first.handoff.cumulativeUsage.reasons.includes("physical-conservative-total"));
+  const second=await f.api.continueCallerRound({storeRoot:first.storeRoot,investigationRef:first.investigationRef,expectedRevision:1,deps:f.deps,
+    nativeObservation:()=>{observations++;return c7Observation(4);}});
+  assert.equal(second.handoff.cumulativeUsage.knownSubtotal.physicalAttempts,9);
+  assert.equal(second.handoff.cumulativeUsage.physicalAttempts,null);
+  assert.deepEqual(second.handoff.cumulativeUsage.unknownStages,[]);
+  assert.equal(observations,2,"physical callback sampled exactly once per episode");
+  const old=await f.api.readCallerRecord(first.storeRoot,first.investigationRef,1);
+  const {schemaVersion,...projection}=old.payload.accounting;
+  assert.equal(schemaVersion,1); assert.deepEqual(projection,first.handoff.cumulativeUsage);
+});
+
+for(const state of ["unsafe-native","sum-overflow","missing-continuity","missing-prefix","missing-observation","legacy-accounting"])test(`C7 numeric and physical truth: ${state}`,async()=>{
+  const f=await fixture(),first=await start(f,{nativeObservation:()=>c7Observation(2)});
+  await rewriteCurrent(f,first.investigationRef,async({state:s,snapshot,stage,read})=>{
+    if(state==="unsafe-native")snapshot.rounds[0].usage.searches=Number.MAX_SAFE_INTEGER+1;
+    if(state==="sum-overflow")snapshot.rounds[0].usage.searches=Number.MAX_SAFE_INTEGER;
+    if(state==="missing-continuity")delete s.accountingContinuity;
+    if(state==="missing-prefix")delete s.results;
+    if(state==="missing-observation"||state==="legacy-accounting"){
+      const e=s.results[0],payload=await read(e.result);delete payload.accounting;
+      if(state==="missing-observation")delete payload.physical;
+      e.result=await stage(JSON.stringify(payload));
+    }
+  });
+  if(state==="legacy-accounting")assert.equal(Object.hasOwn((await f.api.readCallerRecord(first.storeRoot,first.investigationRef,1)).payload,"accounting"),false);
+  const next=await f.api.continueCallerRound({storeRoot:first.storeRoot,investigationRef:first.investigationRef,expectedRevision:1,deps:f.deps,
+    contract:{...contract(),question:"A different version?"},nativeObservation:()=>c7Observation(3)});
+  const c=next.handoff.cumulativeUsage;
+  if(state==="unsafe-native"||state==="sum-overflow"){
+    assert.equal(c.searches,null);assert.equal(c.knownSubtotal.searches,state==="sum-overflow"?Number.MAX_SAFE_INTEGER:next.result.usage.searches);
+    assert(c.reasons.includes(`${state==="sum-overflow"?"numeric-overflow":"numeric-range"}:searches`));
+    assert.equal(c.reads,0);assert.equal(c.judgments,0);assert.equal(c.rounds,2);assert.equal(c.physicalAttempts,5);
+  }else if(state==="missing-continuity"){
+    assert.equal(c.rounds,null);assert.equal(c.searches,null);assert.equal(c.physicalAttempts,null);assert.equal(c.knownSubtotal.physicalAttempts,5);assert(c.reasons.includes("missing-continuity"));
+  }else if(state==="missing-prefix"||state==="missing-observation"){
+    assert.equal(c.rounds,2);assert.equal(c.physicalAttempts,null);assert.equal(c.knownSubtotal.physicalAttempts,3);assert.deepEqual(c.unknownStages,["acquisition","judge","producer"]);
+  }else{assert.equal(c.physicalAttempts,5);assert.equal(c.complete.physical,true);}
+});
+
+test("C7 failed extra has unknown physical work while measured committed subtotal survives",async()=>{
+ const f=await fixture(),first=await start(f,{nativeObservation:()=>c7Observation(2)});
+ f.store.recoveryRecords=[{publicationState:"unpublished",work:{schemaVersion:1,measured:{searches:0,reads:1,judgments:0},status:"failed",settledAt:1,unavailableReason:null}}];
+ const next=await f.api.continueCallerRound({storeRoot:first.storeRoot,investigationRef:first.investigationRef,expectedRevision:1,deps:f.deps,nativeObservation:()=>c7Observation(3)});
+ assert.equal(next.handoff.cumulativeUsage.physicalAttempts,null);assert.equal(next.handoff.cumulativeUsage.knownSubtotal.physicalAttempts,5);assert.deepEqual(next.handoff.cumulativeUsage.unknownStages,["acquisition","judge","producer"]);assert.equal(next.handoff.cumulativeUsage.rounds,3);assert.equal(next.handoff.cumulativeUsage.reads,1);
 });

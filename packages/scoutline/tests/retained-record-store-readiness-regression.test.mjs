@@ -72,9 +72,10 @@ function validateSealedReceipt(bytes, marker) {
   const payload = bytes.subarray(2048, 2048 + seal.bytes);
   assert.equal(crypto.createHash("sha256").update(payload).digest("hex"), seal.digest, "receipt seal checksum");
   const receipt = JSON.parse(payload.toString("utf8"));
-  assert.deepEqual(Object.keys(receipt).sort(), ["at", "kind", "priorOwner", "remoteWork", "revisionBase", "roundId", "schemaVersion"]);
+  assert.deepEqual(Object.keys(receipt).sort(), ["at", "kind", "priorOwner", "publicationState", "remoteWork", "revisionBase", "roundId", "schemaVersion", "work"]);
   assert.deepEqual({ ...receipt, at: 0 }, {
-    schemaVersion: 1, kind: "acknowledge-interrupted", roundId: marker.roundId,
+    schemaVersion: 2, kind: "acknowledge-interrupted", publicationState: "unpublished",
+    work: { schemaVersion: 1, measured: null, status: null, settledAt: null, unavailableReason: "unsettled" }, roundId: marker.roundId,
     priorOwner: marker.ownerId, revisionBase: marker.revisionBase, at: 0, remoteWork: "unknown",
   }, "receipt payload must match the exact interrupted tuple");
   assert.ok(Number.isFinite(receipt.at) && receipt.at >= 0);
@@ -831,4 +832,214 @@ test("reader: leaf swapped to a FIFO at the open boundary refuses promptly, neve
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
+});
+
+// C1: the new authority is opt-in; native default exact-fit fixtures remain unchanged.
+test("C1 bound settlement fits the actual 256 reserve with full tuple authority", async () => {
+  const root = await tempRoot();
+  const store = openStore({ root, caps: { settlementReserveBytes: 256 }, deps: { clock: () => Number.MAX_VALUE } });
+  const { investigationRef: ref } = await store.createInvestigation({ requirements: REQUIREMENTS });
+  const h = await store.acquireOwnership(ref);
+  try {
+    await h.beginRound({ roundId: "compact", intent: "start" });
+    const marker = JSON.parse(await fs.readFile(path.join(h.dir, "incomplete.json"), "utf8"));
+    const measured = { searches: Number.MAX_SAFE_INTEGER, reads: Number.MAX_SAFE_INTEGER, judgments: Number.MAX_SAFE_INTEGER };
+    await h.settleRound("compact", { status: "complete", measured, uncertainty: "definition-pointer-bound:measured-attempts-preserved" }, { bindInstance: true });
+    const bytes = await fs.readFile(path.join(h.dir, "audit/settlement-compact.json"));
+    assert.ok(bytes.length <= 256, "actual bound summary must fit the unchanged reserve");
+    assert.deepEqual(JSON.parse(bytes), [2, receiptName(marker).slice(4, -7), Number.MAX_VALUE, "complete", Object.values(measured), "definition-pointer-bound:measured-attempts-preserved"]);
+    assert.equal((await store.inspect(ref)).incomplete.settled, true);
+    assert.equal(await fs.stat(path.join(h.dir, "reserve.settlement")).then(() => true, e => e.code !== "ENOENT"), false);
+  } finally { await h.release(); }
+});
+
+test("C2 ACK endorses bound work and keeps the sealed instance immutable", async () => {
+  const root = await tempRoot(), store = openStore({ root });
+  const { investigationRef: ref } = await store.createInvestigation({ requirements: REQUIREMENTS });
+  const h = await store.acquireOwnership(ref); const dir = h.dir;
+  await h.beginRound({ roundId: "bound", intent: "start" });
+  await h.settleRound("bound", { status: "failed", measured: { searches: 2, reads: 3, judgments: 4 }, uncertainty: "synthetic" }, { bindInstance: true });
+  const marker = JSON.parse(await fs.readFile(path.join(dir, "incomplete.json"), "utf8"));
+  await h.release();
+  const ack = await store.acknowledgeInterrupted(ref);
+  try {
+    const bytes = await fs.readFile(path.join(dir, "audit", receiptName(marker)));
+    const end = bytes.subarray(2048, 6144).indexOf(0), receipt = JSON.parse(bytes.subarray(2048, 2048 + end));
+    assert.equal(receipt.schemaVersion, 2);
+    assert.equal(receipt.publicationState, "unpublished");
+    assert.deepEqual(receipt.work, { schemaVersion: 1, measured: { searches: 2, reads: 3, judgments: 4 }, status: "failed", settledAt: receipt.work.settledAt, unavailableReason: null });
+    assert.ok(Number.isFinite(receipt.work.settledAt));
+  } finally { await ack.release(); }
+});
+
+test("C6 recovery pages finish at EOF and forbid replay, forks and use after begin", async () => {
+  const root = await tempRoot(), store = openStore({ root });
+  const { investigationRef: ref } = await store.createInvestigation({ requirements: REQUIREMENTS });
+  const h = await store.acquireOwnership(ref);
+  try {
+    const page = await h.readRecoveryPage({});
+    assert.deepEqual(page.records, []); assert.equal(page.complete, true); assert.equal(page.cursor, null);
+    await assert.rejects(h.readRecoveryPage({}), e => e.code === "INVALID_RECORD_INPUT");
+    await h.beginRound({ roundId: "after-page", intent: "start" });
+    await assert.rejects(h.readRecoveryPage({}), e => e.code === "INVALID_RECORD_INPUT");
+  } finally { await h.release(); }
+});
+
+for (const state of ["initial-body", "audit-file", "missing-after-commit"]) {
+  test(`C6 empty-audit specificity: ${state}`, async () => {
+    const root = await tempRoot(), store = openStore({ root });
+    const { investigationRef: ref } = await store.createInvestigation({ requirements: REQUIREMENTS, bodies: state === "initial-body" ? [{ content: "initial synthetic body" }] : [] });
+    let h = await store.acquireOwnership(ref); const dir = h.dir;
+    try {
+      if (state === "audit-file") {
+        await fs.writeFile(path.join(dir, "audit"), "keep exact ordinary bytes");
+        await assert.rejects(h.readRecoveryPage({}), e => e.code === "ENOTDIR");
+        assert.equal(await fs.readFile(path.join(dir, "audit"), "utf8"), "keep exact ordinary bytes");
+      } else if (state === "missing-after-commit") {
+        const base = (await store.inspect(ref)).committed.snapshot;
+        await h.beginRound({ roundId: "specificity", intent: "start" });
+        await h.settleRound("specificity", SUMMARY());
+        await h.commitRevision({ expectedRevision: 0, snapshot: { ...base, revision: 1, parentRevision: 0,
+          rounds: [{ roundId: "specificity", intent: "start", settledAt: 1, usage: { searches: 0, reads: 0, judgments: 0 } }] } });
+        await h.release();
+        await fs.rename(path.join(dir, "audit"), path.join(root, "preserved-audit"));
+        h = await store.acquireOwnership(ref);
+        await assert.rejects(h.readRecoveryPage({}), e => e.code === "CORRUPT_RECORD");
+        assert.equal((await store.inspect(ref)).committed.snapshot.revision, 1);
+      } else {
+        assert.equal((await store.inspect(ref)).committed.snapshot.bodies.length, 1);
+        const page = await h.readRecoveryPage({});
+        assert.deepEqual(page.records, []); assert.equal(page.complete, true); assert.equal(page.revision, 0);
+        await assert.rejects(fs.lstat(path.join(dir, "audit")), e => e.code === "ENOENT");
+      }
+    } finally { await h.release(); }
+  });
+}
+
+function cReceipt(bytes) {
+  const seal = JSON.parse(bytes.subarray(6144, 6272).toString().split("\0")[0]);
+  const payload = bytes.subarray(2048, 2048 + seal.bytes);
+  assert.equal(crypto.createHash("sha256").update(payload).digest("hex"), seal.digest);
+  return JSON.parse(payload);
+}
+test("C3 native same-label marker-first crash never endorses foreign settled work", async () => {
+  const root = await tempRoot(), store = openStore({ root });
+  const { investigationRef: ref } = await store.createInvestigation({ requirements: REQUIREMENTS });
+  const h = await store.acquireOwnership(ref), dir = h.dir;
+  await h.beginRound({ roundId: "same-label", intent: "start" });
+  await h.settleRound("same-label", { status: "failed", measured: { searches: 7, reads: 8, judgments: 9 }, uncertainty: null }, { bindInstance: true });
+  const oldMarker = JSON.parse(await fs.readFile(path.join(dir, "incomplete.json"), "utf8"));
+  await h.release(); const firstAck = await store.acknowledgeInterrupted(ref); await firstAck.release();
+  const oldPath = path.join(dir, "audit", receiptName(oldMarker)), oldBytes = await fs.readFile(oldPath);
+  const code = `import {openStore} from ${JSON.stringify(new URL("../dist/lib/retained-record-store.js", import.meta.url).href)};
+    import {atomicReplaceFile} from ${JSON.stringify(new URL("../dist/lib/config-store.js", import.meta.url).href)};
+    import {writeSync} from 'node:fs';
+    const store=openStore({root:${JSON.stringify(root)},deps:{writeFileAtomic:async(file,bytes)=>{
+      if(file.endsWith('/settlement-same-label.json')){writeSync(1,JSON.stringify({target:'settlement-same-label.json',fired:true})+'\\n');process.exit(73);}await atomicReplaceFile(file,bytes);}}});
+    const h=await store.acquireOwnership(${JSON.stringify(ref)});await h.beginRound({roundId:'same-label',intent:'continue'});
+    await h.settleRound('same-label',{status:'failed',measured:{searches:99,reads:99,judgments:99},uncertainty:null},{bindInstance:true});
+    throw new Error('crash boundary not fired');`;
+  let exited;
+  try { await execFileAsync(process.execPath, ["--input-type=module", "-e", code], { timeout: 15000, maxBuffer: 16384 }); }
+  catch(e) { exited=e; }
+  assert.equal(exited?.code, 73); assert.equal(exited?.killed, false);
+  assert.equal(exited.stderr, ""); assert.deepEqual(JSON.parse(exited.stdout.trim()), {target:"settlement-same-label.json",fired:true});
+  const current = JSON.parse(await fs.readFile(path.join(dir, "incomplete.json"), "utf8"));
+  assert.equal(current.settled, true); assert.notEqual(current.ownerId, oldMarker.ownerId);
+  const ack = await store.acknowledgeInterrupted(ref);
+  try {
+    const currentReceipt = cReceipt(await fs.readFile(path.join(dir, "audit", receiptName(current))));
+    assert.equal(currentReceipt.publicationState, "unpublished");
+    assert.deepEqual(currentReceipt.work, { schemaVersion:1,measured:null,status:null,settledAt:null,unavailableReason:"foreign-instance" });
+    assert.deepEqual(await fs.readFile(oldPath), oldBytes);
+    assert.deepEqual(cReceipt(oldBytes).work.measured, {searches:7,reads:8,judgments:9});
+  } finally { await ack.release(); }
+});
+
+test("C6 streamed cursor lifetime and terminal ceiling stay bounded", async () => {
+  const root=await tempRoot(),store=openStore({root});
+  const {investigationRef:ref}=await store.createInvestigation({requirements:REQUIREMENTS});
+  let h=await store.acquireOwnership(ref);const audit=path.join(h.dir,"audit");await fs.mkdir(audit);
+  // Tiny ordinary audit entries consume the traversal ceiling without manufacturing authority.
+  for(let i=0;i<4096;i++) await fs.writeFile(path.join(audit,`ordinary-${i}`),"");
+  try {
+    let page=await h.readRecoveryPage({});assert.equal(page.records.length,0);assert.ok(page.cursor);
+    const firstCursor=page.cursor;page=await h.readRecoveryPage({cursor:firstCursor});assert.ok(page.cursor);assert.notEqual(page.cursor,firstCursor);
+    await assert.rejects(h.readRecoveryPage({cursor:firstCursor}),e=>e.code==="INVALID_RECORD_INPUT");
+    await h.release();h=await store.acquireOwnership(ref);
+    let pages=0,cursor;do{page=await h.readRecoveryPage(cursor?{cursor}:{});pages++;cursor=page.cursor;}while(cursor);
+    assert.equal(pages,64);assert.equal(page.complete,false);assert.equal(page.cursor,null);
+    await assert.rejects(h.readRecoveryPage({}),e=>e.code==="INVALID_RECORD_INPUT");
+    await h.release();h=await store.acquireOwnership(ref);
+    page=await h.readRecoveryPage({});const token=page.cursor;await h.release();h=await store.acquireOwnership(ref);
+    await assert.rejects(h.readRecoveryPage({cursor:token}),e=>e.code==="INVALID_RECORD_INPUT");
+    await h.release();h=await store.acquireOwnership(ref);await h.readRecoveryPage({});
+    await assert.rejects(h.beginRound({roundId:"",intent:"start"}),e=>e.code==="INVALID_RECORD_INPUT");
+    await assert.rejects(h.readRecoveryPage({}),e=>e.code==="INVALID_RECORD_INPUT");
+    await h.release();h=await store.acquireOwnership(ref);
+    const denied=assert.rejects(h.readRecoveryPage({}),e=>e.code==="OWNER_UNCERTAIN");const released=h.release();await denied;await released;
+  } finally {await h.release();}
+});
+
+test("C6 oversized recovery max+1 probe refuses before fresh begin with one envelope budget",async()=>{
+  const root=await tempRoot(),store=openStore({root});const {investigationRef:ref}=await store.createInvestigation({requirements:REQUIREMENTS});
+  const h=await store.acquireOwnership(ref);await h.beginRound({roundId:"oversize",intent:"start"});
+  const marker=JSON.parse(await fs.readFile(path.join(h.dir,"incomplete.json"),"utf8"));await h.release();
+  const ack=await store.acknowledgeInterrupted(ref);await ack.release();
+  const file=path.join(h.dir,"audit",receiptName(marker));await fs.appendFile(file,Buffer.from([0]));
+  const reader=await store.acquireOwnership(ref),open=fsp.open;let readBytes=0;
+  fsp.open=async function(p,...args){const handle=await Reflect.apply(open,this,[p,...args]);if(String(p)===file){const read=handle.read.bind(handle);handle.read=async(...a)=>{const r=await read(...a);readBytes+=r.bytesRead;return r;};}return handle;};syncBuiltinESMExports();
+  try {await assert.rejects(reader.readRecoveryPage({}),e=>e.code==="CORRUPT_RECORD"&&/exceeds 8192/.test(e.message));assert.equal(readBytes,8193);}
+  finally{fsp.open=open;syncBuiltinESMExports();await reader.release();}
+  assert.equal((await store.inspect(ref)).incomplete,null);
+});
+
+for(const state of ["unsettled","missing","legacy-unbound","foreign-instance","malformed"])test(`C2 authority specificity ${state}`,async()=>{
+  const root=await tempRoot(),store=openStore({root});const {investigationRef:ref}=await store.createInvestigation({requirements:REQUIREMENTS});const h=await store.acquireOwnership(ref);
+  await h.beginRound({roundId:"authority",intent:"start"});const summary=path.join(h.dir,"audit/settlement-authority.json");
+  if(state!=="unsettled")await h.settleRound("authority",SUMMARY(),state==="legacy-unbound"?undefined:{bindInstance:true});
+  if(state==="missing")await fs.unlink(summary);
+  if(state==="foreign-instance"||state==="malformed"){const doc=JSON.parse(await fs.readFile(summary));doc[1]=state==="foreign-instance"?"f".repeat(64):"invalid-hash";await fs.writeFile(summary,JSON.stringify(doc));}
+  const marker=JSON.parse(await fs.readFile(path.join(h.dir,"incomplete.json"),"utf8")),dir=h.dir;await h.release();
+  if(state==="malformed"){await assert.rejects(store.acknowledgeInterrupted(ref),e=>e.code==="CORRUPT_RECORD");assert.equal((await store.inspect(ref)).incomplete.settled,true);return;}
+  const ack=await store.acknowledgeInterrupted(ref);try{assert.deepEqual(cReceipt(await fs.readFile(path.join(dir,"audit",receiptName(marker)))).work,{schemaVersion:1,measured:null,status:null,settledAt:null,unavailableReason:state});}finally{await ack.release();}
+});
+
+test("C2 sealed retry wins before mutable summary and rejects a torn checksum",async()=>{
+  const root=await tempRoot(),store=openStore({root});const {investigationRef:ref}=await store.createInvestigation({requirements:REQUIREMENTS});const h=await store.acquireOwnership(ref),dir=h.dir;
+  await h.beginRound({roundId:"retry",intent:"start"});await h.settleRound("retry",SUMMARY(),{bindInstance:true});const marker=JSON.parse(await fs.readFile(path.join(dir,"incomplete.json"),"utf8"));await h.release();
+  const unlink=fsp.unlink,primary=new Error("C2_ACK_POSTSEAL_REFUSAL");
+  fsp.unlink=async function(file,...args){if(String(file)===path.join(dir,"incomplete.json"))throw primary;return Reflect.apply(unlink,this,[file,...args]);};syncBuiltinESMExports();
+  try{await assert.rejects(store.acknowledgeInterrupted(ref),e=>e===primary);}finally{fsp.unlink=unlink;syncBuiltinESMExports();}
+  const file=path.join(dir,"audit",receiptName(marker)),original=await fs.readFile(file);
+  await fs.writeFile(path.join(dir,"audit/settlement-retry.json"),"{malformed mutable summary");
+  const ack=await store.acknowledgeInterrupted(ref);await ack.release();assert.deepEqual(await fs.readFile(file),original);
+  const torn=Buffer.from(original);torn[2048]^=1;await fs.writeFile(file,torn);const reader=await store.acquireOwnership(ref);
+  try{await assert.rejects(reader.readRecoveryPage({}),e=>e.code==="CORRUPT_RECORD"&&/checksum/.test(e.message));}finally{await reader.release();}
+});
+
+test("C1 strict bound options preserve exact UTF8 and too-large refusal under256",async()=>{
+  const root=await tempRoot(),store=openStore({root,caps:{settlementReserveBytes:256}});const {investigationRef:ref}=await store.createInvestigation({requirements:REQUIREMENTS});const h=await store.acquireOwnership(ref);
+  try{await h.beginRound({roundId:"utf8",intent:"start"});
+    for(const [summary,options] of [[SUMMARY(),{bindInstance:false}],[SUMMARY(),{bindInstance:true,extra:true}],[{...SUMMARY(),measured:{searches:Number.MAX_SAFE_INTEGER+1,reads:0,judgments:0}},{bindInstance:true}],[SUMMARY("é".repeat(300)),{bindInstance:true}]]){
+      await assert.rejects(h.settleRound("utf8",summary,options),e=>e.code==="INVALID_RECORD_INPUT");assert.equal((await store.inspect(ref)).incomplete.settled,false);assert.equal((await fs.stat(path.join(h.dir,"reserve.settlement"))).size,256);
+    }
+    await h.settleRound("utf8",SUMMARY("é𐀀\n\""),{bindInstance:true});const doc=JSON.parse(await fs.readFile(path.join(h.dir,"audit/settlement-utf8.json")));assert.equal(doc[5],"é𐀀\n\"");
+  }finally{await h.release();}
+});
+
+test("C2 historical v1 sealed fixture retries without importing mutable summary work",async()=>{
+  const root=await tempRoot(),store=openStore({root});const {investigationRef:ref}=await store.createInvestigation({requirements:REQUIREMENTS});const h=await store.acquireOwnership(ref),dir=h.dir;
+  await h.beginRound({roundId:"old-receipt",intent:"start"});const marker=JSON.parse(await fs.readFile(path.join(dir,"incomplete.json"),"utf8"));await h.release();
+  const unlink=fsp.unlink,primary=new Error("C2_OLD_FIXTURE_POSTSEAL");fsp.unlink=async function(file,...args){if(String(file)===path.join(dir,"incomplete.json"))throw primary;return Reflect.apply(unlink,this,[file,...args]);};syncBuiltinESMExports();
+  try{await assert.rejects(store.acknowledgeInterrupted(ref),e=>e===primary);}finally{fsp.unlink=unlink;syncBuiltinESMExports();}
+  // Compatibility fixture: historical v1 payload in the actual native tuple/header frame.
+  // This edited historical frame is not claimed as a newly native-generated v1 receipt.
+  const file=path.join(dir,"audit",receiptName(marker)),frame=await fs.readFile(file),receipt=cReceipt(frame);receipt.schemaVersion=1;delete receipt.work;delete receipt.publicationState;
+  const bytes=Buffer.from(JSON.stringify(receipt)),seal=Buffer.from(JSON.stringify({bytes:bytes.length,digest:crypto.createHash("sha256").update(bytes).digest("hex")}));
+  frame.fill(0,2048,6144);bytes.copy(frame,2048);frame.fill(0,6144,6272);seal.copy(frame,6144);await fs.writeFile(file,frame);
+  await fs.writeFile(path.join(dir,"audit/settlement-old-receipt.json"),"{unread mutable summary");
+  const ack=await store.acknowledgeInterrupted(ref);
+  try{assert.deepEqual(await fs.readFile(file),frame);let page=await ack.readRecoveryPage({}),cursor=page.cursor;const records=[...page.records];while(cursor){page=await ack.readRecoveryPage({cursor});cursor=page.cursor;records.push(...page.records);}assert.equal(records.length,1);assert.equal(records[0].publicationState,"unknown");assert.equal(records[0].work.unavailableReason,"legacy-unbound");}
+  finally{await ack.release();}
 });

@@ -577,8 +577,46 @@ interface PublicationDisposition {
   proof: PublicationProof;
 }
 type InterruptedIdentity = Pick<IncompleteMarker, "roundId" | "ownerId" | "revisionBase">;
-interface AckReceipt {
+export interface RecoveryWork {
   schemaVersion: 1;
+  measured: { searches: number; reads: number; judgments: number } | null;
+  status: "complete" | "partial" | "failed" | null;
+  settledAt: number | null;
+  unavailableReason: "unsettled" | "missing" | "legacy-unbound" | "foreign-instance" | null;
+}
+const unknownRecoveryWork = (unavailableReason: NonNullable<RecoveryWork["unavailableReason"]>): RecoveryWork =>
+  ({ schemaVersion: 1, measured: null, status: null, settledAt: null, unavailableReason });
+function validateRecoveryWork(value: unknown): asserts value is RecoveryWork {
+  if (!isPlainObject(value) || Object.keys(value).length !== 5 || value.schemaVersion !== 1) throw new CorruptRecordError("Invalid recovery work.");
+  if (value.unavailableReason !== null) {
+    if (!["unsettled", "missing", "legacy-unbound", "foreign-instance"].includes(value.unavailableReason as string) || value.measured !== null || value.status !== null || value.settledAt !== null) throw new CorruptRecordError("Invalid unknown recovery work.");
+  } else if (!isPlainObject(value.measured) || Object.keys(value.measured).length !== 3 ||
+    ![value.measured.searches, value.measured.reads, value.measured.judgments].every(n => Number.isSafeInteger(n) && (n as number) >= 0) ||
+    !["complete", "partial", "failed"].includes(value.status as string) || typeof value.settledAt !== "number" || !Number.isFinite(value.settledAt) || value.settledAt < 0) throw new CorruptRecordError("Invalid measured recovery work.");
+}
+async function boundRecoveryWork(dir: string, marker: IncompleteMarker): Promise<RecoveryWork> {
+  if (!marker.settled) return unknownRecoveryWork("unsettled");
+  let doc: unknown;
+  try { doc = JSON.parse(await readOwnedTextUnder(dir, path.join(dir, "audit", `settlement-${marker.roundId}.json`))); }
+  catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") return unknownRecoveryWork("missing"); throw e instanceof SyntaxError ? new CorruptRecordError("Invalid bound settlement JSON.") : e; }
+  if (isPlainObject(doc) && doc.schemaVersion === 1) return unknownRecoveryWork("legacy-unbound");
+  if (!Array.isArray(doc) || doc.length !== 6 || doc[0] !== 2 || typeof doc[1] !== "string" || !SHA256_HEX_RE.test(doc[1]) || !Array.isArray(doc[4]) || doc[4].length !== 3 || !(doc[5] === null || typeof doc[5] === "string")) throw new CorruptRecordError("Invalid bound settlement.");
+  const work: RecoveryWork = { schemaVersion: 1, measured: { searches: doc[4][0], reads: doc[4][1], judgments: doc[4][2] }, status: doc[3], settledAt: doc[2], unavailableReason: null };
+  validateRecoveryWork(work);
+  return doc[1] === recoveryName(marker).slice(4, -7) ? work : unknownRecoveryWork("foreign-instance");
+}
+export interface RecoveryRecord {
+  publicationState: "unpublished" | "completed" | "unknown";
+  work: RecoveryWork;
+}
+export interface RecoveryPage {
+  records: RecoveryRecord[]; cursor: string | null; complete: boolean;
+  revision: number; viewDigest: string;
+}
+interface AckReceipt {
+  schemaVersion: 1 | 2;
+  work?: RecoveryWork;
+  publicationState?: "unpublished" | "completed";
   kind: "acknowledge-interrupted";
   roundId: string;
   priorOwner: string;
@@ -707,11 +745,11 @@ function parseRecovery(bytes: Buffer, marker: InterruptedIdentity): AckReceipt |
   let receipt: unknown;
   try { receipt = JSON.parse(payload.toString("utf8")); }
   catch { throw new CorruptRecordError("Sealed recovery payload corrupt."); }
-  if (!isPlainObject(receipt) || receipt.schemaVersion !== 1 || receipt.kind !== "acknowledge-interrupted" ||
+  if (!isPlainObject(receipt) || (receipt.schemaVersion !== 1 && receipt.schemaVersion !== 2) || receipt.kind !== "acknowledge-interrupted" ||
     receipt.roundId !== marker.roundId || receipt.priorOwner !== marker.ownerId ||
     receipt.revisionBase !== marker.revisionBase || receipt.remoteWork !== "unknown" ||
     typeof receipt.at !== "number" || !Number.isFinite(receipt.at) || receipt.at < 0 ||
-    Object.keys(receipt).length !== (receipt.publication === undefined ? 7 : 8)) {
+    Object.keys(receipt).length !== (receipt.publication === undefined ? 7 : 8) + (receipt.schemaVersion === 2 ? 2 : 0)) {
     throw new CorruptRecordError("Sealed recovery receipt conflicts with interrupted instance.");
   }
   if (receipt.publication !== undefined) {
@@ -724,6 +762,11 @@ function parseRecovery(bytes: Buffer, marker: InterruptedIdentity): AckReceipt |
     if ((receipt.publication.disposition === "unverified-preparation") !== (proof.identity === undefined)) {
       throw new CorruptRecordError("Sealed disposition contradicts native publication proof.");
     }
+  }
+  if (receipt.schemaVersion === 2) {
+    validateRecoveryWork(receipt.work);
+    if (receipt.publicationState !== "unpublished" && receipt.publicationState !== "completed" ||
+      (receipt.publicationState === "completed") !== (isPlainObject(receipt.publication) && receipt.publication.disposition === "completed")) throw new CorruptRecordError("Recovery publication classification conflicts with proof.");
   }
   return receipt as unknown as AckReceipt;
 }
@@ -813,7 +856,8 @@ async function sealRecovery(dir: string, marker: IncompleteMarker, at: number, p
       throw new CorruptRecordError("Authoritative receipt publication conflicts with current proof.");
     }
     if (existing === null) {
-      const receipt: AckReceipt = { schemaVersion: 1, kind: "acknowledge-interrupted", roundId: marker.roundId,
+      const receipt: AckReceipt = { schemaVersion: 2, work: await boundRecoveryWork(dir, marker),
+        publicationState: publication?.disposition === "completed" ? "completed" : "unpublished", kind: "acknowledge-interrupted", roundId: marker.roundId,
         priorOwner: marker.ownerId, revisionBase: marker.revisionBase, at, remoteWork: "unknown",
         ...(publication !== undefined ? { publication } : {}) };
       const payload = Buffer.from(canonicalJson(receipt));
@@ -2259,6 +2303,97 @@ export class OwnershipHandle {
   readonly ref: string;
   /** @internal */ readonly dir: string;
   private roundBegun = false;
+  private recoveryScan: { dir: Awaited<ReturnType<typeof fs.opendir>>; revision: number; digest: string; cursor: string; scanned: number } | undefined;
+  private recoveryClosed = false;
+  private async closeRecoveryScan(): Promise<void> {
+    this.recoveryClosed = true;
+    const scan = this.recoveryScan; this.recoveryScan = undefined;
+    if (scan) await scan.dir.close();
+  }
+
+  /** One owner-local forward traversal. Recovery envelopes alone have a 16KiB/page I/O bound. */
+  async readRecoveryPage(request: { cursor?: string; limit?: number } = {}): Promise<RecoveryPage> {
+    return this.enqueue(async () => {
+      try {
+        this.guardHeld();
+        if (this.roundBegun || this.recoveryClosed || !isPlainObject(request) || Object.keys(request).some(k => k !== "cursor" && k !== "limit") ||
+          (request.limit !== undefined && (!Number.isSafeInteger(request.limit) || request.limit < 1 || request.limit > 8))) throw new InvalidRecordInputError("Invalid recovery traversal.");
+        const revision = await this.store.currentCommittedRevision(this.dir);
+        const snapshot = await this.store.verifyRevisionPrivate(this.dir, revision);
+        const digest = sha256Hex(canonicalJson(snapshot));
+        if (!this.recoveryScan) {
+          if (request.cursor !== undefined) throw new InvalidRecordInputError("Invalid recovery cursor.");
+          await assertNoSymlinkComponents(this.dir, path.join(this.dir, "audit"));
+          let audit: Awaited<ReturnType<typeof fs.opendir>>;
+          try { audit = await fs.opendir(path.join(this.dir, "audit")); }
+          catch (e) {
+            if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+            const record = await fs.lstat(this.dir);
+            if (revision !== 0 || snapshot.rounds.length !== 0 || snapshot.audit.length !== 0 || !record.isDirectory() ||
+              await entryExistsStrict(path.join(this.dir, "incomplete.json")) || await entryExistsStrict(path.join(this.dir, "reserve.settlement"))) {
+              throw new CorruptRecordError("Missing recovery history on nonpristine record.");
+            }
+            await this.closeRecoveryScan();
+            return { records: [], cursor: null, complete: true, revision, viewDigest: digest };
+          }
+          this.recoveryScan = { dir: audit, revision, digest, cursor: randomUUID(), scanned: 0 };
+        } else if (request.cursor !== this.recoveryScan.cursor || revision !== this.recoveryScan.revision || digest !== this.recoveryScan.digest) {
+          throw new InvalidRecordInputError("Stale or foreign recovery cursor.");
+        }
+        const scan = this.recoveryScan, records: RecoveryRecord[] = [];
+        let scanned = 0, reservedBytes = 0;
+        while (scanned < 64 && records.length < (request.limit ?? 8) && scan.scanned < 4096) {
+          // Reserve the max+1 probe BEFORE advancing to a potentially readable envelope.
+          // Ending here avoids yielding a Dirent that must be buffered or could be lost.
+          if (reservedBytes + RECOVERY_BYTES + 1 > 16384) break;
+          const entry = await scan.dir.read();
+          if (entry === null) {
+            await this.closeRecoveryScan();
+            return { records, cursor: null, complete: true, revision, viewDigest: digest };
+          }
+          scan.scanned++; scanned++;
+          if (!/^ack-[0-9a-f]{64}\.record$/.test(entry.name)) continue;
+          reservedBytes += RECOVERY_BYTES + 1;
+          const file = path.join(this.dir, "audit", entry.name);
+          const opened = await openNativeOwnedFile(this.dir, file, false);
+          try {
+            const bytes = await readNativeBounded(opened.handle, RECOVERY_BYTES);
+            const identity = orphanRecoveryIdentity(bytes, entry.name, revision, "");
+            const receipt = parseRecovery(bytes, identity);
+            await assertNativeIdentity(file, opened.identity);
+            if (receipt === null) {
+              const pristine = Buffer.alloc(RECOVERY_BYTES); paddedJson(recoveryHeader(identity), RECOVERY_HEADER_BYTES).copy(pristine);
+              if (!bytes.equals(pristine)) throw new CorruptRecordError("Unproved recovery preparation.");
+              // A pristine frame cannot establish zero after a dispatched marker.
+              try { await readIncompleteMarker(this.dir); throw new CorruptRecordError("Recovery preparation has an active marker."); }
+              catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; }
+              const reserve = await readIncompleteReserve(this.dir, path.join(this.dir, "reserve.settlement"), this.settlementReserveBytes());
+              if (reserve && (reserve.roundId !== identity.roundId || reserve.ownerId !== identity.ownerId)) throw new CorruptRecordError("Recovery preparation reserve mismatch.");
+              if (!reserve && await fileExists(path.join(this.dir, "reserve.settlement"))) throw new CorruptRecordError("Recovery preparation reserve corrupt.");
+              continue;
+            }
+            let publicationState: RecoveryRecord["publicationState"] = receipt.publicationState ?? "unknown";
+            if (receipt.publication?.disposition === "completed") {
+              const proof = receipt.publication.proof;
+              await verifyPublicationFile(this.dir, path.join(this.dir, "revisions", `r${proof.revision}.json`), proof);
+              const published = await this.store.verifyRevisionPrivate(this.dir, proof.revision);
+              publicationState = published.rounds.at(-1)?.roundId === receipt.roundId ? "completed" : "unknown";
+            }
+            records.push({ publicationState, work: receipt.work ?? unknownRecoveryWork("legacy-unbound") });
+          } finally { await opened.handle.close(); }
+        }
+        if (scan.scanned >= 4096) {
+          await this.closeRecoveryScan();
+          return { records, cursor: null, complete: false, revision, viewDigest: digest };
+        }
+        scan.cursor = randomUUID();
+        return { records, cursor: scan.cursor, complete: false, revision, viewDigest: digest };
+      } catch (e) {
+        try { await this.closeRecoveryScan(); } catch { /* Preserve primary; release retries the lifetime fence. */ }
+        throw e;
+      }
+    });
+  }
   private readonly store: RetainedRecordStore;
   private readonly gate: Gate;
   private readonly meta: OwnerMetadata;
@@ -2308,6 +2443,7 @@ export class OwnershipHandle {
   /** Provision settlement+recovery, then publish the marker before dispatch. */
   async beginRound(options: BeginRoundOptions): Promise<void> {
     await this.enqueue(async () => {
+      await this.closeRecoveryScan();
       if (this.roundBegun) throw new InvalidRecordInputError("Handle already began its one fresh round.");
       validateRoundId(options.roundId);
       if (options.intent !== "start" && options.intent !== "continue") {
@@ -2463,7 +2599,7 @@ export class OwnershipHandle {
   }
 
   /** Settle the active round: summary written to its own file (audit preserved). */
-  async settleRound(roundId: string, summary: SettlementSummary): Promise<void> {
+  async settleRound(roundId: string, summary: SettlementSummary, options?: { bindInstance: true }): Promise<void> {
     await this.enqueue(async () => {
       await this.requireActiveRound(roundId);
       validateRoundId(roundId);
@@ -2474,7 +2610,20 @@ export class OwnershipHandle {
       ) {
         throw new InvalidRecordInputError("Settlement status must be complete|partial|failed.");
       }
-      const doc = { schemaVersion: 1, roundId, settledAt: this.store.nowMs(), summary };
+      const settledAt = this.store.nowMs();
+      let doc: unknown = { schemaVersion: 1, roundId, settledAt, summary };
+      if (options !== undefined) {
+        if (!isPlainObject(options) || Object.keys(options).length !== 1 || options.bindInstance !== true ||
+          !isPlainObject(summary) || Object.keys(summary).length !== 3 ||
+          !isPlainObject(summary.measured) || Object.keys(summary.measured).length !== 3 ||
+          ![summary.measured.searches, summary.measured.reads, summary.measured.judgments].every(n => Number.isSafeInteger(n) && n >= 0) ||
+          !(summary.uncertainty === null || typeof summary.uncertainty === "string") || !Number.isFinite(settledAt) || settledAt < 0) {
+          throw new InvalidRecordInputError("Invalid instance-bound settlement.");
+        }
+        const marker = await readIncompleteMarker(this.dir);
+        doc = [2, recoveryName(marker).slice(4, -7), settledAt, summary.status,
+          [summary.measured.searches, summary.measured.reads, summary.measured.judgments], summary.uncertainty];
+      }
       const bytes = canonicalJson(doc);
       if (Buffer.from(bytes, "utf8").length > this.settlementReserveBytes()) {
         throw new InvalidRecordInputError(
@@ -2817,6 +2966,7 @@ export class OwnershipHandle {
       await new Promise((resolve) => setImmediate(resolve));
     }
     await this.opChain.catch(() => {});
+    await this.closeRecoveryScan();
     this.released = true;
     // Metadata cleanup while the gate is still held: a successor never
     // observes or removes another owner's owner.lock.

@@ -12,7 +12,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { startCallerRound } from "../dist/lib/lean-caller-rounds.js";
+import { startCallerRound, continueCallerRound } from "../dist/lib/lean-caller-rounds.js";
 import { runLeanInvestigation } from "../dist/lib/lean-investigation.js";
 
 globalThis.fetch = () => {
@@ -78,7 +78,7 @@ test("cold start: acquires context with no extractor and hands off awaiting call
       assert.equal(result.requirements.version.status, "unresolved");
       assert.equal(result.requirements.version.reason, "no_semantic_judge");
       assert.equal(handoff.kind, "caller-assisted-investigation");
-      assert.equal(handoff.schemaVersion, 1);
+      assert.equal(handoff.schemaVersion, 2);
       assert.equal(handoff.investigationRef, investigationRef);
       assert.equal(handoff.revision, 1);
       assert.equal(handoff.round.status, "settled");
@@ -487,6 +487,67 @@ test("storage admission failure refuses the round before paid dispatch", async (
   }
   assert.equal(w.searches.length, searchesBefore, "no paid dispatch after storage refusal");
   await fs.rm(root, { recursive: true, force: true });
+});
+
+// fresh caps: a second round with genuinely NEW work gets its own allowance.
+// The reuse test above proves unchanged work re-dispatches nothing; this one
+// proves the per-round cap is fresh rather than lifetime-exhausted.
+test("two rounds: a second round of new work spends a fresh search allowance", async () => {
+  const root = await freshRoot();
+  // Empty results: every planned query stays eligible and demand stays
+  // unresolved, so neither round can stop for lack of work.
+  const w = world({});
+  const deps = { ...w.deps(), search: async (q) => { w.searches.push(q); return []; } };
+  const contract = {
+    schemaVersion: 1,
+    question: "Find release information",
+    requirements: { version: { question: "Find package version", schema: { type: "string" }, required: true } },
+  };
+  // Frozen plan for this contract: shared, primary, counterevidence => 3 distinct queries.
+  const LIMITS = { maxSearchAttempts: 1 };
+  let first, second;
+  try {
+    first = await startCallerRound({ storeRoot: root, requirements: REQUIREMENTS, contract, deps, roundLimits: LIMITS });
+    const firstCalls = w.searches.length;
+    assert.equal(first.result.usage.searches, 1, "round 1 spends exactly its own bound");
+    assert.equal(firstCalls, 1, "round 1 dispatches exactly one actual search");
+    const firstQueries = [...w.searches];
+
+    // No contract replacement: the omission is deliberate — it exercises the
+    // frozen baseline rather than a re-supplied one.
+    second = await continueCallerRound({
+      storeRoot: first.storeRoot,
+      investigationRef: first.investigationRef,
+      expectedRevision: first.handoff.revision,
+      deps,
+      roundLimits: LIMITS,
+    });
+
+    const delta = w.searches.length - firstCalls;
+    assert.equal(second.result.usage.searches, 1, "round 2 spends a fresh bound, not an exhausted lifetime one");
+    assert.equal(delta, 1, "round 2 dispatches exactly one new actual search");
+    assert.ok(
+      w.searches.slice(firstCalls).every((q) => !firstQueries.includes(q)),
+      "round 2 work must be outside the round 1 query set",
+    );
+
+    const reads = w.reads.length;
+    assert.equal(reads, 0, "empty results mean no read is dispatched");
+    const usage = second.handoff.cumulativeUsage;
+    assert.equal(usage.searches, first.result.usage.searches + second.result.usage.searches);
+    assert.equal(usage.searches, w.searches.length, "cumulative searches equal the observed deltas");
+    assert.equal(usage.reads, 0);
+    assert.equal(usage.judgments, 0);
+    assert.equal(usage.rounds, 2);
+
+    const snapshot = (await second.store.inspect(second.investigationRef)).committed.snapshot;
+    assert.equal(snapshot.rounds.length, 2, "both rounds are committed");
+    const perRound = snapshot.rounds.reduce((n, r) => n + r.usage.searches, 0);
+    assert.equal(perRound, usage.searches, "committed per-round usage sums to the cumulative ledger");
+  } finally {
+    try { await second?.handle.release(); }
+    finally { try { await first?.handle.release(); } finally { await fs.rm(root, { recursive: true, force: true }); } }
+  }
 });
 
 // ---------------------------------------------------------------------------

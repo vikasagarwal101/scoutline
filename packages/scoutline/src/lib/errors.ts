@@ -29,7 +29,18 @@ export type ScoutlineErrorCode =
   | "FILE_ERROR"
   | "UNKNOWN_ERROR"
   | "CONFIGURATION_ERROR"
-  | "TEST_ISOLATION_VIOLATION";
+  | "TEST_ISOLATION_VIOLATION"
+  // Retained investigation record store (caller-assisted engine).
+  | "STORE_CAPACITY"
+  | "OWNER_BUSY"
+  | "OWNER_UNCERTAIN"
+  | "EXPECTED_REVISION"
+  | "CORRUPT_RECORD"
+  | "CORRUPT_CONTENT"
+  | "INVALID_REFERENCE"
+  | "INVALID_RECORD_INPUT"
+  | "UNACKNOWLEDGED_INTERRUPTION"
+  | "DELETION_INCOMPLETE";
 
 export interface ScoutlineErrorOptions {
   statusCode?: number;

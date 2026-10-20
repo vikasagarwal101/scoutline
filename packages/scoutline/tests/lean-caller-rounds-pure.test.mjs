@@ -1493,3 +1493,46 @@ test("C7 failed extra has unknown physical work while measured committed subtota
  const next=await f.api.continueCallerRound({storeRoot:first.storeRoot,investigationRef:first.investigationRef,expectedRevision:1,deps:f.deps,nativeObservation:()=>c7Observation(3)});
  assert.equal(next.handoff.cumulativeUsage.physicalAttempts,null);assert.equal(next.handoff.cumulativeUsage.knownSubtotal.physicalAttempts,5);assert.deepEqual(next.handoff.cumulativeUsage.unknownStages,["acquisition","judge","producer"]);assert.equal(next.handoff.cumulativeUsage.rounds,3);assert.equal(next.handoff.cumulativeUsage.reads,1);
 });
+
+for (const disposition of ['positive', 'negative']) test('W2 selected later event owns the sole judgment ' + disposition, async () => {
+  const f = await fixture(true), first = await start(f, { representations: [
+    { format: 'text', content: 'Version 1.0.' }, { format: 'text', content: 'Version 2.4.' },
+  ] });
+  const earlier = first.handoff.evidence[0], selected = first.handoff.evidence[1], automatic = [], w = orderWorld(f);
+  w.state.support = disposition === 'positive';
+  f.deps.extract = async request => {
+    automatic.push(copy(request));
+    return { finishReason: 'stop', rawOutput: JSON.stringify({ version: { value: '1.0', quote: '1.0', charRange: [8, 11] } }), usage: null, observedCost: null };
+  };
+  const proposal = proposalFor(first, selected, { evidenceId: selected.evidenceId });
+  const next = await continueRound(f, first, { proposals: [proposal], roundLimits: { maxJudgeAttempts: 1 }, judgeIdentity: 'fixture', policyRevision: '1' });
+  const attempts = (await currentState(f, next.investigationRef)).state.checkpoint.history.flatMap(r => r.state.callerAttempts ?? []);
+  console.log(JSON.stringify({ case: 'W2-proposal-priority', disposition, selectedEvent: selected.evidenceId, automaticEvents: automatic.map(r => r.sourceId),
+    judgedCandidates: attempts.map(a => a.basis.candidate), usage: next.result.usage, data: next.result.data }));
+  assert.equal(automatic.length, 0, 'an explicitly selected field must abstain on the earlier event instead of spending its judgment');
+  assert.equal(w.state.candidates.length, 1); assert.equal(next.result.usage.candidateJudgeCalls, 1); assert.equal(next.result.usage.judgeCalls, 0);
+  assert.equal(attempts.length, 1);
+  assert.deepEqual(attempts[0].basis.candidate, { fieldId: 'version', evidenceId: selected.evidenceId, url: selected.url,
+    digest: selected.digest.slice(7), value: proposal.value, quote: proposal.quote, charRange: proposal.charRange });
+  assert.notEqual(attempts[0].basis.candidate.evidenceId, earlier.evidenceId);
+  assert.equal(next.result.requirements.version.status, disposition === 'positive' ? 'satisfied' : 'unresolved');
+  assert.equal(next.result.data.version, disposition === 'positive' ? '2.4' : undefined);
+  if (disposition === 'positive') {
+    assert.deepEqual(next.result.requirements.version.evidenceIds, []);
+    assert.deepEqual(next.result.requirements.version.provenance, { fieldId: 'version', sourceId: selected.evidenceId, sourceDigest: selected.digest.slice(7),
+      value: proposal.value, quote: proposal.quote, charRange: proposal.charRange });
+  } else assert.equal(next.result.requirements.version.provenance, undefined);
+  assert.equal(next.handoff.revision, 2); assert.equal(next.handoff.round.status, 'settled'); assert.equal(f.calls.begin.length, 2);
+  assert.deepEqual((await f.api.readCallerRecord(next.storeRoot, next.investigationRef)).payload.proposals, [proposal]);
+});
+
+test('W2 no proposal preserves automatic field extraction', async () => {
+  const f = await fixture(), first = await start(f, { representations: [{ format: 'text', content: 'Version 2.4.' }] });
+  const w = orderWorld(f), original = f.deps.extract, requests = [];
+  f.deps.extract = async (request, options) => { requests.push({ request, options }); return original(request, options); };
+  const next = await continueRound(f, first, { roundLimits: { maxJudgeAttempts: 1 }, judgeIdentity: 'fixture', policyRevision: '1' });
+  assert.equal(requests.length, 1); assert.equal(requests[0].request.sourceId, first.handoff.evidence[0].evidenceId);
+  assert.equal(requests[0].request.sourceText, 'Version 2.4.'); assert.deepEqual(requests[0].request.fields.map(f => f.id), ['version']);
+  assert.equal(next.result.data.version, '2.4'); assert.equal(w.state.candidates.length, 1); assert.equal(next.result.usage.candidateJudgeCalls, 1);
+  assert.equal(next.result.requirements.version.provenance.sourceId, first.handoff.evidence[0].evidenceId);
+});

@@ -486,7 +486,9 @@ async function execute(input: StartCallerRoundInput | ContinueCallerRoundInput, 
   if (stringBound.length > 0) deps.extract = async (request, options) => {
     const record = state.evidence.find(e => e.record.evidenceId === request.sourceId);
     const p = stringBound.find(p => p.fieldId === request.fields[0]?.id && p.evidenceId === request.sourceId && p.representationId === record?.body.bodyId);
-    if (!p && originalExtract) return originalExtract(request, options);
+    // Explicit field intent owns source selection; other events abstain.
+    const proposedField = stringBound.some(p => p.fieldId === request.fields[0]?.id);
+    if (!proposedField && originalExtract) return originalExtract(request, options);
     const entries = { [request.fields[0]!.id]: p ? { value: p.value, quote: p.quote, charRange: p.charRange } : { value: null, quote: null } };
     return { finishReason: "stop", rawOutput: JSON.stringify(entries), usage: null, observedCost: null, elapsedMs: 0, requestSha256: hash(canonical(entries)).slice(7) };
   };

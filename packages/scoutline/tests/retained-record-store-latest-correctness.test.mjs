@@ -266,6 +266,7 @@ test("injected pre-publication fault leaves no corrupt final-name state; retry i
   const dir = path.join(root, "investigations", ref);
   const base = JSON.parse(await fs.readFile(path.join(dir, "revisions", "r0.json"), "utf8"));
   let fail = false;
+  let stagingFaults = 0;
   const store = openStore({
     root,
     deps: {
@@ -273,7 +274,10 @@ test("injected pre-publication fault leaves no corrupt final-name state; retry i
         // Fire only on the publication STAGING name so the fault is scoped to
         // the actual revision materialization (never the publish/manifest
         // writes that follow a caught publication failure).
-        if (fail && f.includes(".stage.tmp")) throw Error("before revision materialization");
+        if (fail && /r1\.json\..*\.stage\.tmp$/.test(f)) {
+          stagingFaults += 1;
+          throw new Error("before revision materialization");
+        }
         await renameWrite(f, b);
       },
     },
@@ -284,9 +288,13 @@ test("injected pre-publication fault leaves no corrupt final-name state; retry i
     fail = true;
     // The fault fires at the staging write; the store must reject WITHOUT
     // leaving any corrupt sentinel at the final immutable name.
-    await assert.rejects(hh.commitRevision({ expectedRevision: 0, snapshot: { ...base, revision: 1, parentRevision: 0 } }));
+    await assert.rejects(
+      hh.commitRevision({ expectedRevision: 0, snapshot: { ...base, revision: 1, parentRevision: 0 } }),
+      (e) => e.name === "Error" && e.message === "before revision materialization",
+    );
+    assert.equal(stagingFaults, 1, "armed revision staging fault must fire exactly once");
     const p = path.join(dir, "revisions", "r1.json");
-    assert.equal(await fs.readFile(p, "utf8").catch(() => null), null, "final name holds sentinel junk");
+    await assert.rejects(fs.readFile(p, "utf8"), (e) => e.code === "ENOENT", "final name must be absent");
     // commitRevision left an interrupted round and a handle may begin only
     // one fresh round; acknowledge, re-acquire, and retry cleanly (no
     // retry-poison from the earlier fault).
@@ -456,7 +464,8 @@ test("over-cap damage refuses acknowledgment", async () => {
   assert.match(view.damage, /over-cap/);
   await assert.rejects(
     store.acknowledgeInterrupted(ref),
-    (e) => e.name === "StoreCapacityError" || e.name === "CorruptRecordError",
+    (e) => e.name === "StoreCapacityError" && e.code === "STORE_CAPACITY" &&
+      e.message === `Cannot acknowledge ${ref}: ${view.damage}.`,
   );
 });
 

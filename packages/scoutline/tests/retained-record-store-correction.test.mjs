@@ -74,15 +74,14 @@ test("correction: admission is held through materialization (second writer refus
   // Materialize the two advisory owner files through real public acquisitions
   // before fixing the bounded store's baseline. release removes these files;
   // add their exact sizes back, then assert the bounded acquisitions match.
-  const probe1 = await store.acquireOwnership(ref);
-  const probe2 = await store.acquireOwnership(second.investigationRef);
-  let ownerBytes;
+  let probe1, probe2, ownerBytes;
   try {
+    probe1 = await store.acquireOwnership(ref);
+    probe2 = await store.acquireOwnership(second.investigationRef);
     ownerBytes = await Promise.all([ref, second.investigationRef].map(async (recordRef) =>
       (await fs.stat(path.join(root, "investigations", recordRef, "owner.lock"))).size));
   } finally {
-    await probe1.release();
-    await probe2.release();
+    await Promise.all([probe1?.release(), probe2?.release()]);
   }
   const after = (await size(root)) + ownerBytes.reduce((sum, bytes) => sum + bytes, 0);
   let inWrite = 0;
@@ -96,35 +95,36 @@ test("correction: admission is held through materialization (second writer refus
   const CAP = after + 2 * RESERVE + 512 + 16000 + 2 * 8192 + 2 * recoveryFieldBound;
   const originalLink = fs.link;
   const creationPeaks = [];
-  fs.link = async (from, to) => {
-    await originalLink(from, to);
-    if (String(to).startsWith(root + path.sep) && /ack-.*\.record$/.test(to)) {
-      // Native placement really has two directory entries for this 8KiB
-      // allocation until the stage is removed; charge/measure both entries.
-      const staged = await fs.stat(from);
-      const final = await fs.stat(to);
-      assert.equal(staged.ino, final.ino);
-      assert.equal(staged.size, 8192);
-      creationPeaks.push(await size(root));
-    }
-  };
-  syncBuiltinESMExports();
-  const slow = openStore({
-    root,
-    caps: { storeMaxBytes: CAP, settlementReserveBytes: RESERVE },
-    deps: {
-      writeFileAtomic: async (p, c) => {
-        if (p.endsWith(".bin")) inWrite += 1;
-        const t = p + ".tmp-guard";
-        await fs.writeFile(t, c);
-        await fs.rename(t, p);
-      },
-    },
-  });
-  // Two DIFFERENT owned records; both try to materialize 16KiB bodies.
-  const j1 = await slow.acquireOwnership(ref);
-  const j2 = await slow.acquireOwnership(second.investigationRef);
+  let j1, j2;
   try {
+    fs.link = async (from, to) => {
+      await originalLink(from, to);
+      if (String(to).startsWith(root + path.sep) && /ack-.*\.record$/.test(to)) {
+        // Native placement really has two directory entries for this 8KiB
+        // allocation until the stage is removed; charge/measure both entries.
+        const staged = await fs.stat(from);
+        const final = await fs.stat(to);
+        assert.equal(staged.ino, final.ino);
+        assert.equal(staged.size, 8192);
+        creationPeaks.push(await size(root));
+      }
+    };
+    syncBuiltinESMExports();
+    const slow = openStore({
+      root,
+      caps: { storeMaxBytes: CAP, settlementReserveBytes: RESERVE },
+      deps: {
+        writeFileAtomic: async (p, c) => {
+          if (p.endsWith(".bin")) inWrite += 1;
+          const t = p + ".tmp-guard";
+          await fs.writeFile(t, c);
+          await fs.rename(t, p);
+        },
+      },
+    });
+    // Two DIFFERENT owned records; both try to materialize 16KiB bodies.
+    j1 = await slow.acquireOwnership(ref);
+    j2 = await slow.acquireOwnership(second.investigationRef);
     assert.deepEqual(await Promise.all([ref, second.investigationRef].map(async (recordRef) =>
       (await fs.stat(path.join(root, "investigations", recordRef, "owner.lock"))).size)), ownerBytes,
       "bounded acquisitions must retain the measured owner metadata baseline");
@@ -165,8 +165,7 @@ test("correction: admission is held through materialization (second writer refus
   } finally {
     fs.link = originalLink;
     syncBuiltinESMExports();
-    await j1.release().catch(() => {});
-    await j2.release().catch(() => {});
+    await Promise.all([j1?.release(), j2?.release()]);
   }
 });
 

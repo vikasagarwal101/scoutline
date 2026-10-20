@@ -85,9 +85,18 @@ function receiptName(marker) {
   return `ack-${crypto.createHash("sha256").update(tuple).digest("hex")}.record`;
 }
 
+const ownedRoots = new Set();
 function tempRoot() {
-  return fs.mkdtemp(path.join(os.tmpdir(), "rrs-ready-"));
+  return fs.mkdtemp(path.join(os.tmpdir(), "rrs-ready-")).then((root) => {
+    ownedRoots.add(root);
+    return root;
+  });
 }
+test.after(async () => {
+  const results = await Promise.allSettled([...ownedRoots].map((root) =>
+    fs.rm(root, { recursive: true, force: true })));
+  assert.deepEqual(results.filter((r) => r.status === "rejected"), [], "owned root cleanup failed");
+});
 
 async function treeSize(dir) {
   let total = 0;
@@ -287,7 +296,7 @@ test("reader: same-content regular-file substitution (different inode) is reject
 // Reserved-transition group (F1 + F2): one admission turn, honest native peak
 // ---------------------------------------------------------------------------
 
-test("settle: full-cap near-reserve settlement never materializes the marker-temp peak over the cap", async () => {
+test("settle: full-cap near-reserve settlement never materializes the marker-temp peak over the cap", async (t) => {
   // One retained envelope; the initial two-entry creation peak also fits.
   const cap = 16000 + 8192;
   const reserveBytes = 4096;
@@ -296,6 +305,7 @@ test("settle: full-cap near-reserve settlement never materializes the marker-tem
   const { investigationRef: ref } = await store.createInvestigation({ requirements: REQUIREMENTS });
   const dir = path.join(root, "investigations", ref);
   const h = await store.acquireOwnership(ref);
+  t.after(() => h.release());
   try {
     await h.beginRound({ roundId: "r", intent: "start" });
     assert.equal((await fs.stat(path.join(dir, "audit", JSON.parse(await fs.readFile(path.join(dir, "incomplete.json"))).recovery.name))).size, 8192);
@@ -336,17 +346,20 @@ test("settle: full-cap near-reserve settlement never materializes the marker-tem
   }
 });
 
-test("settle: reserve removal through the marker flip holds one admission turn â€” a sibling cannot spend the transfer", async () => {
+test("settle: reserve removal through the marker flip holds one admission turn â€” a sibling cannot spend the transfer", async (t) => {
   // Two retained envelopes; the second begin also admits its two-entry creation peak.
   const cap = 16000 + 2 * 8192;
   const reserveBytes = 4096;
+  let sibling = null;
   const root = await tempRoot();
   const store = openStore({ root, caps: { storeMaxBytes: cap, settlementReserveBytes: reserveBytes } });
   const a = (await store.createInvestigation({ requirements: REQUIREMENTS })).investigationRef;
   const b = (await store.createInvestigation({ requirements: REQUIREMENTS })).investigationRef;
   const aDir = path.join(root, "investigations", a);
   const h = await store.acquireOwnership(a);
+  t.after(() => h.release());
   const j = await store.acquireOwnership(b);
+  t.after(() => j.release());
   try {
     await h.beginRound({ roundId: "a", intent: "start" });
     await j.beginRound({ roundId: "b", intent: "start" });
@@ -360,7 +373,6 @@ test("settle: reserve removal through the marker flip holds one admission turn â
     const originalRm = fs.rm;
     let triggered = false;
     let markSeq = -1;
-    let sibling = null;
     fsp.rm = async (p, ...args) => {
       const value = await originalRm(p, ...args);
       if (p === path.join(aDir, "reserve.settlement") && !triggered) {
@@ -384,6 +396,7 @@ test("settle: reserve removal through the marker flip holds one admission turn â
       fsp.rm = originalRm;
       syncBuiltinESMExports();
       binds.restore();
+      await sibling?.joined;
     }
     assert.ok(triggered, "sibling boundary did not fire");
     assert.equal(error, null, `settlement failed: ${error && error.message}`);
@@ -416,16 +429,18 @@ test("settle: reserve removal through the marker flip holds one admission turn â
   }
 });
 
-test("settle: failed settlement rolls back marker and reserve under the same turn; sibling still fenced", async () => {
+test("settle: failed settlement rolls back marker and reserve under the same turn; sibling still fenced", async (t) => {
   // Two retained envelopes; the second begin also admits its two-entry creation peak.
   const cap = 16000 + 2 * 8192;
   const reserveBytes = 4096;
+  let sibling = null;
   const root = await tempRoot();
   const plain = openStore({ root, caps: { storeMaxBytes: cap, settlementReserveBytes: reserveBytes } });
   const a = (await plain.createInvestigation({ requirements: REQUIREMENTS })).investigationRef;
   const b = (await plain.createInvestigation({ requirements: REQUIREMENTS })).investigationRef;
   const aDir = path.join(root, "investigations", a);
   const j = await plain.acquireOwnership(b);
+  t.after(() => j.release());
   // The faulting funnel must live on the store whose handle OWNS the round:
   // a fresh acquire after release would carry a new owner identity and never
   // reach the settlement transition at all.
@@ -440,6 +455,7 @@ test("settle: failed settlement rolls back marker and reserve under the same tur
     },
   });
   const h = await failing.acquireOwnership(a);
+  t.after(() => h.release());
   try {
     await h.beginRound({ roundId: "a", intent: "start" });
     await j.beginRound({ roundId: "b", intent: "start" });
@@ -453,7 +469,6 @@ test("settle: failed settlement rolls back marker and reserve under the same tur
     const originalRm = fs.rm;
     let triggered = false;
     let markSeq = -1;
-    let sibling = null;
     fsp.rm = async (p, ...args) => {
       const value = await originalRm(p, ...args);
       if (p === path.join(aDir, "reserve.settlement") && !triggered) {
@@ -474,6 +489,7 @@ test("settle: failed settlement rolls back marker and reserve under the same tur
       fsp.rm = originalRm;
       syncBuiltinESMExports();
       binds.restore();
+      await sibling?.joined;
       await h.release().catch(() => {});
     }
     assert.ok(triggered, "sibling boundary did not fire");
@@ -500,17 +516,20 @@ test("settle: failed settlement rolls back marker and reserve under the same tur
   }
 });
 
-test("ack: reserve consumption through marker removal holds one admission turn; a fault preserves it and fences the sibling", async () => {
+test("ack: reserve consumption through marker removal holds one admission turn; a fault preserves it and fences the sibling", async (t) => {
   // Two retained envelopes; the second begin also admits its two-entry creation peak.
   const cap = 16000 + 2 * 8192;
   const reserveBytes = 4096;
+  let sibling = null;
   const root = await tempRoot();
   const plain = openStore({ root, caps: { storeMaxBytes: cap, settlementReserveBytes: reserveBytes } });
   const a = (await plain.createInvestigation({ requirements: REQUIREMENTS })).investigationRef;
   const b = (await plain.createInvestigation({ requirements: REQUIREMENTS })).investigationRef;
   const aDir = path.join(root, "investigations", a);
   const h = await plain.acquireOwnership(a);
+  t.after(() => h.release());
   const j = await plain.acquireOwnership(b);
+  t.after(() => j.release());
   let ackStore = null;
   try {
     await h.beginRound({ roundId: "a", intent: "start" });
@@ -530,7 +549,6 @@ test("ack: reserve consumption through marker removal holds one admission turn; 
     const originalOpen = fs.open;
     let triggered = false;
     let markSeq = -1;
-    let sibling = null;
     let ack = null;
     let error = null;
     // Payload durability fails BEFORE the seal. Reserve removal now follows
@@ -671,7 +689,7 @@ test("ack: reused round label under a different owner gets its own disposition a
 // physical bytes than the cap ever admitted (observed 16157 @ cap 16000).
 // The physical peak is measured after every mutating builtin call â€” no
 // artificial barrier that would deadlock against correct serial code.
-test("rollback: marker-then-reserve restore is serial; native temp peak stays under the cap", async () => {
+test("rollback: marker-then-reserve restore is serial; native temp peak stays under the cap", async (t) => {
   // One retained envelope; the initial two-entry creation peak also fits.
   const cap = 16000 + 8192;
   const reserveBytes = 4096;
@@ -690,6 +708,7 @@ test("rollback: marker-then-reserve restore is serial; native temp peak stays un
   const a = (await failing.createInvestigation({ requirements: REQUIREMENTS })).investigationRef;
   const aDir = path.join(root, "investigations", a);
   const h = await failing.acquireOwnership(a);
+  t.after(() => h.release());
   try {
     await h.beginRound({ roundId: "a", intent: "start" });
     const marker = JSON.parse(await fs.readFile(path.join(aDir, "incomplete.json")));

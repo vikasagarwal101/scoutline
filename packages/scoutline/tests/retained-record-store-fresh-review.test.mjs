@@ -65,9 +65,9 @@ async function size(d) {
   return n;
 }
 
-async function setup(name = "s", caps) {
+async function setup(caps) {
   const root = await tempRoot();
-  const store = openStore({ root, ...caps });
+  const store = openStore({ root, caps });
   const { investigationRef: ref } = await store.createInvestigation({ requirements: REQUIREMENTS });
   return { root, store, ref, dir: path.join(root, "investigations", ref) };
 }
@@ -153,7 +153,7 @@ test("F2a: settlement write fault preserves the reservation for retry", async ()
 // F2b: repeated settlement with the reserve consumed must be refused before
 // materializing temp bytes past the cap (verified-pressure-09, peak 105157>100000).
 test("F2b: re-settle without reserve refuses without materializing past the cap", async () => {
-  const { root, ref, dir } = await setup(null, { storeMaxBytes: 100000 });
+  const { root, ref, dir } = await setup({ storeMaxBytes: 100000 });
   let wroteSettlement = false;
   const store = openStore({
     root,
@@ -208,17 +208,17 @@ test("F2c: maximum bounded settlement plus marker succeeds at full store", async
 test("F2d: acknowledgment at full capacity seals the retained envelope without new allocation", async () => {
   const { root, ref, dir } = await setup();
   const h = await openStore({ root }).acquireOwnership(ref);
-  await h.beginRound({ roundId: "r", intent: "continue" });
-  await h.release();
-  const cap = 200000;
-  await ballastTo(root, dir, cap);
-  const limited = openStore({ root, caps: { storeMaxBytes: cap } });
   let ack = null;
   try {
+    await h.beginRound({ roundId: "r", intent: "continue" });
+    await h.release();
+    const cap = 200000;
+    await ballastTo(root, dir, cap);
+    const limited = openStore({ root, caps: { storeMaxBytes: cap } });
     ack = await limited.acknowledgeInterrupted(ref);
     assert.equal((await limited.inspect(ref)).incomplete, null);
   } finally {
-    await ack?.release();
+    await Promise.all([ack?.release(), h.release()]);
   }
 });
 
@@ -278,7 +278,7 @@ test("F3: partial marker rejected by stageBody, not only beginRound", async () =
 
 // F4: durable over-cap damage must be inspectable, not an ordinary view.
 test("F4: rollback-failed over-cap state surfaces as inspection damage", async () => {
-  const { root, ref, dir } = await setup(null, { storeMaxBytes: 120000 });
+  const { root, ref, dir } = await setup({ storeMaxBytes: 120000 });
   let armed = false;
   const bodyDir = path.join(dir, "bodies");
   const store = openStore({
@@ -342,7 +342,17 @@ test("F5: manifest with updatedAt:-1 is damage, not a verified view", async () =
   );
   const view = await store.inspect(ref);
   assert.equal(view.committed, null);
-  assert.ok(view.damage);
+  assert.equal(view.damage, "manifest-corrupt");
+  const h = await store.acquireOwnership(ref);
+  try {
+    await assert.rejects(
+      h.beginRound({ roundId: "invalid-manifest", intent: "continue" }),
+      (e) => e.name === "CorruptRecordError" && e.code === "CORRUPT_RECORD" &&
+        e.message === "Manifest updatedAt malformed.",
+    );
+  } finally {
+    await h.release();
+  }
 });
 
 // F6 (extra-3): reopen enforces the serialized snapshot ceiling.

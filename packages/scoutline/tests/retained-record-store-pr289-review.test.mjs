@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import fsp from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
+import { spawn } from "node:child_process";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
@@ -23,6 +24,180 @@ async function fixture(t, options = {}) {
   const store = openStore({ root, ...options });
   const { investigationRef: ref } = await store.createInvestigation({ requirements: REQUIREMENTS });
   return { root, store, ref, dir: path.join(root, "investigations", ref) };
+}
+
+// Exit at the real native placement boundaries; abrupt exit deliberately skips
+// createRecoveryHeld's finally. The parent owns and joins this exact child.
+async function crashRecoveryPreparation(t, root, ref, dir, phase) {
+  const script = `
+    import fsp from "node:fs/promises";
+    import { syncBuiltinESMExports } from "node:module";
+    const [root, ref, phase, moduleUrl] = process.argv.slice(1);
+    if (phase === "postlink") {
+      const link = fsp.link;
+      fsp.link = async (from, to) => {
+        await link(from, to);
+        if (String(from).endsWith(".reserve.tmp") && String(to).endsWith(".record")) process.exit(94);
+      };
+      syncBuiltinESMExports();
+    }
+    const { openStore } = await import(moduleUrl);
+    const store = openStore({ root, deps: { writeFileAtomic: async (file) => {
+      if (String(file).endsWith(".reserve.tmp")) {
+        if (phase === "prelink") process.exit(93);
+        return;
+      }
+      throw new Error("unexpected write funnel before recovery exit");
+    } } });
+    const handle = await store.acquireOwnership(ref);
+    try { await handle.beginRound({ roundId: "crashed-preparation", intent: "continue" }); }
+    finally { await handle.release(); }
+    throw new Error("native exit boundary not reached");
+  `;
+  t.diagnostic(`owned crash root ${root}; phase ${phase}`);
+  const child = spawn(process.execPath, ["--input-type=module", "-e", script, root, ref, phase,
+    new URL("../dist/lib/retained-record-store.js", import.meta.url).href],
+  { env: process.env, stdio: ["ignore", "ignore", "pipe"], timeout: 15000 });
+  let stderr = "";
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", (chunk) => { stderr = (stderr + chunk).slice(-4096); });
+  const exit = await new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", (code, signal) => resolve({ code, signal }));
+  });
+  assert.deepEqual(exit, { code: phase === "prelink" ? 93 : 94, signal: null }, stderr);
+  const auditDir = path.join(dir, "audit");
+  const stages = (await fs.readdir(auditDir)).filter((name) => name.endsWith(".reserve.tmp"));
+  assert.equal(stages.length, 1, "actual native allocation must survive child exit");
+  const stage = path.join(auditDir, stages[0]);
+  const bytes = await fs.readFile(stage);
+  assert.equal(bytes.length, 8192);
+  const final = path.join(auditDir, stages[0].match(/^\.(ack-[0-9a-f]{64}\.record)\./)[1]);
+  if (phase === "postlink") {
+    const [a, b] = await Promise.all([fs.lstat(stage, { bigint: true }), fs.lstat(final, { bigint: true })]);
+    assert.equal(a.dev, b.dev);
+    assert.equal(a.ino, b.ino, "actual native link must share the stage inode");
+  } else await assert.rejects(fs.lstat(final), { code: "ENOENT" });
+  await assert.rejects(fs.lstat(path.join(dir, "incomplete.json")), { code: "ENOENT" });
+  return { stage, final, bytes };
+}
+
+for (const phase of ["prelink", "postlink"]) {
+  test(`F1: next owner reclaims actual native ${phase} crash preparation`, async (t) => {
+    const { root, store, ref, dir } = await fixture(t);
+    const revision = await fs.readFile(path.join(dir, "revisions", "r0.json"));
+    const { stage, final } = await crashRecoveryPreparation(t, root, ref, dir, phase);
+    const handle = await store.acquireOwnership(ref);
+    try {
+      await handle.beginRound({ roundId: "successor", intent: "continue" });
+      await assert.rejects(fs.lstat(stage), { code: "ENOENT" }, "old native stage must be reclaimed");
+      await assert.rejects(fs.lstat(final), { code: "ENOENT" });
+      assert.deepEqual(await fs.readFile(path.join(dir, "revisions", "r0.json")), revision);
+    } finally { await handle.release(); }
+  });
+}
+
+for (const phase of ["prelink", "postlink"]) {
+  test(`F2: ${phase} cleanup reclaims each admitted directory entry and retry is idempotent`, async (t) => {
+    const { root, ref, dir } = await fixture(t);
+    const { stage, final } = await crashRecoveryPreparation(t, root, ref, dir, phase);
+    const revision = await fs.readFile(path.join(dir, "revisions", "r0.json"));
+    const auditDir = path.join(dir, "audit");
+    const ordinary = path.join(auditDir, "ordinary.txt");
+    const foreign = path.join(auditDir, ".ack-foreign.reserve.tmp");
+    const publication = path.join(dir, "revisions", ".r1.json.owned.stage.tmp");
+    for (const file of [ordinary, foreign, publication]) await fs.writeFile(file, "owned unrelated evidence");
+    const auditBytes = async () => {
+      let sum = 0;
+      for (const name of await fs.readdir(auditDir)) sum += (await fs.lstat(path.join(auditDir, name))).size;
+      return sum;
+    };
+    const originalUnlink = fsp.unlink;
+    const reclaimed = [];
+    let refuseFresh = true;
+    const freshFault = new Error("F2-fresh-preparation-refusal");
+    const store = openStore({ root, deps: { writeFileAtomic: async (file, bytes) => {
+      if (refuseFresh && file.endsWith(".reserve.tmp")) throw freshFault;
+      await atomicReplaceFile(file, bytes);
+    } } });
+    const handle = await store.acquireOwnership(ref);
+    try {
+      fsp.unlink = async (file) => {
+        if (file !== stage && file !== final) return originalUnlink(file);
+        const before = await auditBytes();
+        await originalUnlink(file);
+        reclaimed.push(before - await auditBytes());
+      };
+      syncBuiltinESMExports();
+      await assert.rejects(handle.beginRound({ roundId: "retry-cleanup", intent: "continue" }), (error) => error === freshFault);
+      assert.deepEqual(reclaimed, phase === "prelink" ? [8192] : [8192, 8192]);
+      assert.equal(reclaimed.reduce((a, b) => a + b, 0), phase === "prelink" ? 8192 : 16384);
+      for (const file of [stage, final]) await assert.rejects(fs.lstat(file), { code: "ENOENT" });
+      refuseFresh = false;
+      await handle.beginRound({ roundId: "retry-cleanup", intent: "continue" });
+      assert.equal(reclaimed.length, phase === "prelink" ? 1 : 2, "retry must not reclaim already removed paths");
+      assert.equal((await fs.readdir(auditDir)).filter((name) => name.endsWith(".record")).length, 1);
+      assert.deepEqual(await fs.readFile(path.join(dir, "revisions", "r0.json")), revision);
+      for (const file of [ordinary, foreign, publication]) assert.equal(await fs.readFile(file, "utf8"), "owned unrelated evidence");
+    } finally {
+      fsp.unlink = originalUnlink;
+      syncBuiltinESMExports();
+      await handle.release();
+    }
+  });
+}
+
+for (const variant of ["partial", "malformed", "tail", "future", "foreign-final", "symlink-final", "symlink-stage", "sealed-alias", "active-marker"]) {
+  test(`F2: unprovable ${variant} preparation preserves exact native paths and bytes`, async (t) => {
+    const { root, store, ref, dir } = await fixture(t);
+    let { stage, final, bytes } = await crashRecoveryPreparation(t, root, ref, dir, "prelink");
+    if (variant === "partial") await fs.truncate(stage, 3000);
+    if (variant === "malformed") { const changed = Buffer.from(bytes); changed[0] = 0x21; await fs.writeFile(stage, changed); }
+    if (variant === "tail") { const changed = Buffer.from(bytes); changed[8191] = 1; await fs.writeFile(stage, changed); }
+    if (variant === "future") {
+      const header = JSON.parse(bytes.subarray(0, bytes.indexOf(0)).toString());
+      header.revisionBase = 1;
+      const changed = Buffer.alloc(8192); Buffer.from(JSON.stringify(header)).copy(changed); await fs.writeFile(stage, changed);
+    }
+    if (variant === "foreign-final") await fs.writeFile(final, bytes, { flag: "wx" });
+    if (variant === "symlink-final") await fs.symlink(stage, final);
+    if (variant === "symlink-stage") { await fs.rename(stage, final); await fs.symlink(final, stage); }
+    if (variant === "sealed-alias" || variant === "active-marker") {
+      // A real interrupted round produces the sealed history / active marker.
+      await fs.unlink(stage);
+      const previous = await store.acquireOwnership(ref);
+      try { await previous.beginRound({ roundId: "history", intent: "continue" }); }
+      finally { await previous.release(); }
+      const marker = JSON.parse(await fs.readFile(path.join(dir, "incomplete.json"), "utf8"));
+      if (variant === "sealed-alias") {
+        const ack = await store.acknowledgeInterrupted(ref);
+        await ack.release();
+      }
+      // Bind the alias basename to the real history tuple: refusal must reach
+      // the pristine-image guard, rather than an unrelated name/hash mismatch.
+      stage = path.join(dir, "audit", path.basename(stage).replace(/^\.ack-[0-9a-f]{64}\.record\./, `.${marker.recovery.name}.`));
+      await fs.link(path.join(dir, "audit", marker.recovery.name), stage);
+    }
+    const names = await fs.readdir(path.join(dir, "audit"));
+    const before = await Promise.all(names.map(async (name) => {
+      const file = path.join(dir, "audit", name);
+      const stat = await fs.lstat(file, { bigint: true });
+      return { file, bytes: await fs.readFile(file), ino: stat.ino, dev: stat.dev, link: stat.isSymbolicLink() ? await fs.readlink(file) : null };
+    }));
+    const handle = await store.acquireOwnership(ref);
+    try {
+      await assert.rejects(handle.beginRound({ roundId: "must-refuse", intent: "continue" }), (error) =>
+        variant === "active-marker" ? error.code === "UNACKNOWLEDGED_INTERRUPTION" :
+          ["CORRUPT_RECORD", "CORRUPT_CONTENT", "INVALID_REFERENCE"].includes(error.code));
+      assert.deepEqual(await fs.readdir(path.join(dir, "audit")), names);
+      for (const item of before) {
+        const after = await fs.lstat(item.file, { bigint: true });
+        assert.equal(after.ino, item.ino); assert.equal(after.dev, item.dev);
+        assert.deepEqual(await fs.readFile(item.file), item.bytes);
+        if (item.link !== null) assert.equal(await fs.readlink(item.file), item.link);
+      }
+    } finally { await handle.release(); }
+  });
 }
 
 test("D: reserve above bounded reader ceiling refuses at construction", () => {
@@ -128,73 +303,145 @@ for (const reserveBytes of [256, SETTLEMENT_RESERVE_BYTES, SNAPSHOT_MAX_BYTES]) 
   });
 }
 
-for (const phase of ["pre", "post"]) {
-  test(`C: sibling deletion in ${phase}-write listed-leaf lstat window preserves unrelated write`, async (t) => {
-    const { root, store, ref: victimRef, dir: victimDir } = await fixture(t);
-    const { investigationRef: writerRef } = await store.createInvestigation({ requirements: REQUIREMENTS });
-    const writerDir = path.join(root, "investigations", writerRef);
-    const victimLeaf = path.join(victimDir, "requirements.json");
-    const manifestBefore = await fs.readFile(path.join(writerDir, "store.json"));
-    const revisionBefore = await fs.readFile(path.join(writerDir, "revisions", "r0.json"));
-    let bodyLanded = false;
-    const writerStore = openStore({ root, deps: { writeFileAtomic: async (file, bytes) => {
-      await atomicReplaceFile(file, bytes);
-      if (path.dirname(file) === path.join(writerDir, "bodies")) bodyLanded = true;
-    } } });
-    const handle = await writerStore.acquireOwnership(writerRef);
-    let allowRemoval;
-    const removeAllowed = new Promise((resolve) => { allowRemoval = resolve; });
-    let announceRemoval;
-    const removalReady = new Promise((resolve) => { announceRemoval = resolve; });
-    const deletionStore = openStore({ root, deps: { removeTree: async (dir) => {
+async function siblingDeletionSchedule(t, phase, scenario = { mode: "normal" }) {
+  const { root, store, ref: victimRef, dir: victimDir } = await fixture(t);
+  const { investigationRef: writerRef } = await store.createInvestigation({ requirements: REQUIREMENTS });
+  Object.assign(scenario, { root, writerRef, store });
+  const writerDir = path.join(root, "investigations", writerRef);
+  const victimLeaf = path.join(victimDir, "requirements.json");
+  const manifestBefore = await fs.readFile(path.join(writerDir, "store.json"));
+  const revisionBefore = await fs.readFile(path.join(writerDir, "revisions", "r0.json"));
+  let bodyLanded = false;
+  const writerStore = openStore({ root, deps: { writeFileAtomic: async (file, bytes) => {
+    await atomicReplaceFile(file, bytes);
+    if (path.dirname(file) === path.join(writerDir, "bodies")) bodyLanded = true;
+  } } });
+  const handle = await writerStore.acquireOwnership(writerRef);
+  scenario.handle = handle;
+  let allowRemoval;
+  const removeAllowed = new Promise((resolve) => { allowRemoval = resolve; });
+  let announceRemoval;
+  const removalReady = new Promise((resolve) => { announceRemoval = resolve; });
+  const earlyFault = new Error("F3-early-deletion-fault");
+  const deletionStore = openStore({ root, deps: {
+    ...(scenario.mode === "early" ? { gateFactory: async () => ({
+      isHeld: async () => false, tryAcquire: async () => { throw earlyFault; }, release: async () => {},
+    }) } : {}),
+    removeTree: async (dir) => {
       assert.equal(dir, victimDir);
+      if (scenario.mode === "complete") return;
+      scenario.announced = true;
       announceRemoval();
       await removeAllowed;
+      if (scenario.mode === "late") throw new Error("F4-post-announcement-removal-fault");
       await fs.rm(dir, { recursive: true, force: true });
-    } } });
-    let deletion;
+  } } });
+  let deletionOutcome;
+  let primaryError;
+  const originalReaddir = fsp.readdir;
+  const originalLstat = fsp.lstat;
+  let listed = false;
+  let intercepted = 0;
+  try {
+    await handle.beginRound({ roundId: `writer-${phase}`, intent: "continue" });
+    // Consume rejection immediately, including faults before removeTree can announce.
+    deletionOutcome = deletionStore.deleteInvestigation(victimRef).then(
+      (value) => ({ ok: true, value }),
+      (error) => { scenario.deletionError = error; return { ok: false, error }; },
+    );
+    await Promise.race([
+      removalReady,
+      deletionOutcome.then((outcome) => {
+        if (!outcome.ok) throw outcome.error;
+        throw new Error("deletion completed before the removal seam was announced");
+      }),
+    ]);
+    t.diagnostic(`listed-leaf schedule ${JSON.stringify({ phase, victimLeaf, writerDir })}`);
+    fsp.readdir = async (dir, ...args) => {
+      const entries = await originalReaddir(dir, ...args);
+      if (dir === victimDir && bodyLanded === (phase === "post")) {
+        listed = entries.some((entry) => typeof entry !== "string" && entry.name === "requirements.json" && entry.isFile());
+      }
+      return entries;
+    };
+    fsp.lstat = async (file, ...args) => {
+      if (file === victimLeaf && listed && bodyLanded === (phase === "post") && intercepted === 0) {
+        intercepted += 1;
+        allowRemoval();
+        const outcome = await deletionOutcome;
+        if (!outcome.ok) throw outcome.error;
+        // The REAL leaf lstat below now returns ENOENT after actual deletion.
+      }
+      return originalLstat(file, ...args);
+    };
+    syncBuiltinESMExports();
+    const content = `retained sibling body ${phase}`;
+    const staged = await handle.stageBody(content);
+    assert.equal(intercepted, 1, "actual listed-file/lstat deletion window must execute exactly once");
+    assert.equal(bodyLanded, true);
+    assert.deepEqual(await writerStore.readBody(writerRef, staged.bodyId), Buffer.from(content));
+    assert.deepEqual(await fs.readFile(path.join(writerDir, "store.json")), manifestBefore);
+    assert.deepEqual(await fs.readFile(path.join(writerDir, "revisions", "r0.json")), revisionBefore);
+    await assert.rejects(fs.lstat(victimDir), { code: "ENOENT" });
+  } catch (error) {
+    primaryError = error;
+    throw error;
+  } finally {
+    fsp.readdir = originalReaddir;
+    fsp.lstat = originalLstat;
+    syncBuiltinESMExports();
+    allowRemoval();
+    const cleanupErrors = [];
+    try {
+      const outcome = await deletionOutcome;
+      if (outcome && !outcome.ok && outcome.error !== primaryError) cleanupErrors.push(outcome.error);
+    } catch (error) {
+      if (error !== primaryError) cleanupErrors.push(error);
+    } finally {
+      try { await handle.release(); }
+      catch (error) { cleanupErrors.push(error); }
+    }
+    if (cleanupErrors.length > 0) {
+      if (primaryError !== undefined) throw new AggregateError([primaryError, ...cleanupErrors], "Sibling deletion and cleanup failed");
+      if (cleanupErrors.length === 1) throw cleanupErrors[0];
+      throw new AggregateError(cleanupErrors, "Sibling deletion cleanup failed");
+    }
+  }
+}
+
+for (const phase of ["pre", "post"]) {
+  test(`C: sibling deletion in ${phase}-write listed-leaf lstat window preserves unrelated write`, (t) => siblingDeletionSchedule(t, phase));
+}
+
+test("F3: early deletion fault fails promptly and releases the writer before the seam", { timeout: 1000 }, async (t) => {
+  const scenario = { mode: "early" };
+  const originalReaddir = fsp.readdir;
+  const originalLstat = fsp.lstat;
+  try {
+    await assert.rejects(siblingDeletionSchedule(t, "pre", scenario), (error) => error === scenario.deletionError && error.message === "F3-early-deletion-fault");
+    assert.notEqual(scenario.announced, true);
+    assert.equal(fsp.readdir, originalReaddir);
+    assert.equal(fsp.lstat, originalLstat);
+    const successor = await scenario.store.acquireOwnership(scenario.writerRef);
+    await successor.release();
+  } finally { await scenario.handle?.release(); }
+});
+
+for (const mode of ["late", "complete"]) {
+  test(`F4: ${mode} deletion outcome preserves the fault or seam witness and releases the writer`, { timeout: 1000 }, async (t) => {
+    const scenario = { mode };
     const originalReaddir = fsp.readdir;
     const originalLstat = fsp.lstat;
-    let listed = false;
-    let intercepted = 0;
     try {
-      await handle.beginRound({ roundId: `writer-${phase}`, intent: "continue" });
-      deletion = deletionStore.deleteInvestigation(victimRef);
-      await removalReady;
-      t.diagnostic(`listed-leaf schedule ${JSON.stringify({ phase, victimLeaf, writerDir })}`);
-      fsp.readdir = async (dir, ...args) => {
-        const entries = await originalReaddir(dir, ...args);
-        if (dir === victimDir && bodyLanded === (phase === "post")) {
-          listed = entries.some((entry) => typeof entry !== "string" && entry.name === "requirements.json" && entry.isFile());
-        }
-        return entries;
-      };
-      fsp.lstat = async (file, ...args) => {
-        if (file === victimLeaf && listed && bodyLanded === (phase === "post") && intercepted === 0) {
-          intercepted += 1;
-          allowRemoval();
-          await deletion;
-          // The REAL leaf lstat below now returns ENOENT after actual deletion.
-        }
-        return originalLstat(file, ...args);
-      };
-      syncBuiltinESMExports();
-      const content = `retained sibling body ${phase}`;
-      const staged = await handle.stageBody(content);
-      assert.equal(intercepted, 1, "actual listed-file/lstat deletion window must execute exactly once");
-      assert.equal(bodyLanded, true);
-      assert.deepEqual(await writerStore.readBody(writerRef, staged.bodyId), Buffer.from(content));
-      assert.deepEqual(await fs.readFile(path.join(writerDir, "store.json")), manifestBefore);
-      assert.deepEqual(await fs.readFile(path.join(writerDir, "revisions", "r0.json")), revisionBefore);
-      await assert.rejects(fs.lstat(victimDir), { code: "ENOENT" });
-    } finally {
-      fsp.readdir = originalReaddir;
-      fsp.lstat = originalLstat;
-      syncBuiltinESMExports();
-      allowRemoval();
-      if (deletion) await deletion;
-      await handle.release();
-    }
+      await assert.rejects(siblingDeletionSchedule(t, "pre", scenario), (error) => mode === "late" ?
+        error === scenario.deletionError && error.code === "DELETION_INCOMPLETE" && /F4-post-announcement-removal-fault/.test(error.message) :
+        error.message === "deletion completed before the removal seam was announced");
+      assert.equal(scenario.announced === true, mode === "late");
+      assert.equal(fsp.readdir, originalReaddir);
+      assert.equal(fsp.lstat, originalLstat);
+      const successor = await scenario.store.acquireOwnership(scenario.writerRef);
+      await successor.release();
+    } finally { await scenario.handle?.release(); }
   });
 }
 

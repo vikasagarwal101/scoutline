@@ -146,12 +146,14 @@ test("G2: instance-configured 128KiB reserve works end to end", async () => {
     // Reopen path: begin a fresh round under the same override — must accept
     // the 128KiB reserve file at every step.
     const h2 = await store.acquireOwnership(ref);
-    await h2.beginRound({ roundId: "r2", intent: "continue" });
-    await h2.settleRound("r2", SUMMARY);
-    await h2.release();
-  } catch (e) {
-    await h.release().catch(() => {});
-    throw e;
+    try {
+      await h2.beginRound({ roundId: "r2", intent: "continue" });
+      await h2.settleRound("r2", SUMMARY);
+    } finally {
+      await h2.release();
+    }
+  } finally {
+    await h.release();
   }
 });
 
@@ -277,6 +279,7 @@ test("G2n: malformed settlementReserveBytes cap fails before work", async () => 
   const root = await tempRoot();
   assert.throws(
     () => openStore({ root, caps: { settlementReserveBytes: 0 } }),
-    (e) => e.name === "InvalidRecordInputError" || /reserve/i.test(e.message),
+    (e) => e.name === "InvalidRecordInputError" &&
+      /^settlementReserveBytes must be a positive integer no greater than \d+, got 0\.$/.test(e.message),
   );
 });

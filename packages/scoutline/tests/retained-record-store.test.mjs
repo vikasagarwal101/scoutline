@@ -885,7 +885,7 @@ test("ordinary document writes and revision staging flow through writeFileAtomic
   });
   const h = await store.acquireOwnership(ref);
   await h.beginRound({ roundId: "r1", intent: "start" });
-  await h.stageBody("staged");
+  const staged = await h.stageBody("staged");
   await h.appendAudit({ at: 1, kind: "dispatch", detail: "x" });
   await h.settleRound("r1", { status: "complete", measured: { searches: 1, reads: 0, judgments: 0 }, uncertainty: null });
   const digest = (await store.inspect(ref)).committed.snapshot.requirementsDigest;
@@ -894,7 +894,7 @@ test("ordinary document writes and revision staging flow through writeFileAtomic
   await h.release();
   const rel = seen.map((p) => path.relative(path.join(root, "investigations", ref), p));
   assert.ok(rel.includes("requirements.json"));
-  assert.ok(rel.includes("bodies/<sha>.bin".replace("<sha>", "")) || rel.some((r) => r.startsWith("bodies/")));
+  assert.ok(rel.includes(`bodies/${staged.bodyId.slice(2)}.bin`), "exact staged body must reach the funnel");
   assert.ok(rel.includes("revisions/r0.json"));
   // Correction (2026-10-08 finding 8, updated 2026-10-09 latest-correctness P1):
   // immutable revision publication IS seam-visible — the store performs the

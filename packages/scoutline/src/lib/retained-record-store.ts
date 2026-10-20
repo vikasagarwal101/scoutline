@@ -839,6 +839,47 @@ async function sealRecovery(dir: string, marker: IncompleteMarker, at: number, p
   } finally { await handle.close(); }
 }
 
+/** Prove native, never-sealed preparations before the final-file cleanup can
+ * remove any competing canonical path. Partial/foreign/sealed bytes stay put. */
+async function cleanupOrphanRecoveryStages(dir: string, committed: number, entries: string[]): Promise<void> {
+  const auditDir = path.join(dir, "audit");
+  for (const name of entries) {
+    const match = /^\.(ack-[0-9a-f]{64}\.record)\.[1-9][0-9]{0,9}\.[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.reserve\.tmp$/.exec(name);
+    if (match === null) continue;
+    const stage = path.join(auditDir, name);
+    const opened = await openNativeOwnedFile(dir, stage, false);
+    try {
+      const bytes = await readNativeBounded(opened.handle, RECOVERY_BYTES);
+      let header: unknown;
+      try { header = JSON.parse(paddedText(bytes.subarray(0, RECOVERY_HEADER_BYTES))); }
+      catch { throw new CorruptRecordError("Orphan recovery stage header corrupt; preserving file."); }
+      if (!isPlainObject(header) || typeof header.roundId !== "string" || !ROUND_ID_RE.test(header.roundId) ||
+        typeof header.priorOwner !== "string" || header.priorOwner.length === 0 || Buffer.byteLength(header.priorOwner) > OWNER_ID_MAX_BYTES ||
+        !Number.isInteger(header.revisionBase) || (header.revisionBase as number) < 0 || (header.revisionBase as number) > committed) {
+        throw new CorruptRecordError("Orphan recovery stage instance cannot be verified.");
+      }
+      const identity = { roundId: header.roundId, ownerId: header.priorOwner, revisionBase: header.revisionBase as number };
+      if (match[1] !== recoveryName(identity)) throw new CorruptRecordError("Orphan recovery stage filename mismatch.");
+      const pristine = Buffer.alloc(RECOVERY_BYTES);
+      paddedJson(recoveryHeader(identity), RECOVERY_HEADER_BYTES).copy(pristine);
+      // Includes exact header encoding, allocation length, payload, seal AND tail.
+      if (!bytes.equals(pristine)) throw new CorruptRecordError("Orphan recovery stage is not pristine; preserving file.");
+      const final = path.join(auditDir, match[1]);
+      if (await entryExistsStrict(final)) {
+        const canonical = await openNativeOwnedFile(dir, final, false, opened.identity);
+        try {
+          if (!(await readNativeBounded(canonical.handle, RECOVERY_BYTES)).equals(pristine)) {
+            throw new CorruptRecordError("Orphan recovery canonical bytes changed; preserving preparation.");
+          }
+        } finally { await canonical.handle.close(); }
+      }
+      await assertNativeIdentity(stage, opened.identity);
+      await fs.unlink(stage);
+      await syncOwnedDirectory(auditDir);
+    } finally { await opened.handle.close(); }
+  }
+}
+
 /** Marker is absent, owner/admission held, and committed view verified. */
 async function cleanupPendingRecoveries(dir: string, committed: number, reserveBytes: number): Promise<void> {
   const auditDir = path.join(dir, "audit");
@@ -847,6 +888,7 @@ async function cleanupPendingRecoveries(dir: string, committed: number, reserveB
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw err;
   });
+  await cleanupOrphanRecoveryStages(dir, committed, entries);
   for (const name of entries) {
     if (!/^ack-[0-9a-f]{64}\.record$/.test(name)) continue;
     const file = path.join(auditDir, name);

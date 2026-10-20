@@ -360,6 +360,7 @@ async function hydrateCurrentEvidence(store: RetainedRecordStore, ref: string, b
 /** Read only verified content-addressed result history; no owner, runtime or directory creation. */
 export async function readCallerRecord(storeRoot: string, investigationRef: string, revision?: number): Promise<{
   snapshot: RevisionSnapshot; revision: number; roundId: string; intent: "start" | "continue"; contract: unknown;
+  baselineContract?: unknown;
   payload: RetainedCallerResult; history: readonly { revision: number; roundId: string; intent: string }[];
 }> {
   const store = openStore({ root: storeRoot });
@@ -367,7 +368,7 @@ export async function readCallerRecord(storeRoot: string, investigationRef: stri
   if (!snapshot) throw new CorruptRecordError("No verifiable committed caller view.");
   const pointer = await definitionPointer(store, investigationRef, snapshot);
   const stored = retainedJSON(await read(store, investigationRef, pointer.contract, snapshot)); storedContract(stored);
-  await retainedBaseline(store, investigationRef, pointer, snapshot, stored);
+  const baselineContract = await retainedBaseline(store, investigationRef, pointer, snapshot, stored);
   const state = retainedJSON(await read(store, investigationRef, pointer.state, snapshot)); storedState(state);
   if (!Array.isArray(state.results) || state.results.length !== snapshot.rounds.length) throw new CorruptRecordError("Complete caller result history unavailable.");
   validateProposals(stored, state.proposals, state.evidence, await retainedEvidence(store, investigationRef, state), CorruptRecordError, true);
@@ -384,7 +385,8 @@ export async function readCallerRecord(storeRoot: string, investigationRef: stri
     if (entry.revision === (revision ?? snapshot.revision)) selected = { entry, payload, contract };
   }
   if (!selected) throw new ExpectedRevisionError("Requested historical caller revision unavailable.");
-  return { snapshot, revision: selected.entry.revision, roundId: selected.entry.roundId, intent: selected.entry.intent, contract: selected.contract, payload: selected.payload, history };
+  return { snapshot, revision: selected.entry.revision, roundId: selected.entry.roundId, intent: selected.entry.intent, contract: selected.contract,
+    ...(selected.entry.revision === snapshot.revision ? { baselineContract } : {}), payload: selected.payload, history };
 }
 
 export async function startCallerRound(input: StartCallerRoundInput): Promise<CallerRoundOutcome> {

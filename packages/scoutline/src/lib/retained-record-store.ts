@@ -839,8 +839,6 @@ async function sealRecovery(dir: string, marker: IncompleteMarker, at: number, p
   } finally { await handle.close(); }
 }
 
-/** Prove native, never-sealed preparations before the final-file cleanup can
- * remove any competing canonical path. Partial/foreign/sealed bytes stay put. */
 /** Bind either orphan form to the same legacy string-domain instance. */
 function orphanRecoveryIdentity(
   bytes: Buffer, name: string, committed: number, context: "" | " stage",
@@ -859,6 +857,8 @@ function orphanRecoveryIdentity(
   return identity;
 }
 
+/** Prove native, never-sealed preparations before the final-file cleanup can
+ * remove any competing canonical path. Partial/foreign/sealed bytes stay put. */
 async function cleanupOrphanRecoveryStages(dir: string, committed: number, entries: string[]): Promise<void> {
   const auditDir = path.join(dir, "audit");
   for (const name of entries) {

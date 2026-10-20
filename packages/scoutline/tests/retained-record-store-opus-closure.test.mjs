@@ -77,9 +77,10 @@ function validateSealedReceipt(bytes, marker) {
   const payload = bytes.subarray(2048, 2048 + seal.bytes);
   assert.equal(crypto.createHash("sha256").update(payload).digest("hex"), seal.digest, "receipt seal checksum");
   const receipt = JSON.parse(payload.toString("utf8"));
-  assert.deepEqual(Object.keys(receipt).sort(), ["at", "kind", "priorOwner", "remoteWork", "revisionBase", "roundId", "schemaVersion"]);
+  assert.deepEqual(Object.keys(receipt).sort(), ["at", "kind", "priorOwner", "publicationState", "remoteWork", "revisionBase", "roundId", "schemaVersion", "work"]);
   assert.deepEqual({ ...receipt, at: 0 }, {
-    schemaVersion: 1, kind: "acknowledge-interrupted", roundId: marker.roundId,
+    schemaVersion: 2, kind: "acknowledge-interrupted", publicationState: "unpublished",
+    work: { schemaVersion: 1, measured: null, status: null, settledAt: null, unavailableReason: "unsettled" }, roundId: marker.roundId,
     priorOwner: marker.ownerId, revisionBase: marker.revisionBase, at: 0, remoteWork: "unknown",
   }, "receipt payload must match the exact interrupted tuple");
   assert.ok(Number.isFinite(receipt.at) && receipt.at >= 0);

@@ -48,6 +48,7 @@ import { ValidationError } from "./errors.js";
 import { COMPOSED_STOP_ROOTS, composedStopRootOf } from "./lean-composed-stop.js";
 import {
   validateCandidates,
+  candidateIdentity,
   acceptCandidate,
   assessCandidates,
   assertCandidateFieldSchema,
@@ -284,6 +285,191 @@ export interface LeanSeed {
   readonly identity?: string;
   readonly retainEvidence?: (record: LeanEvidenceRecord) => Promise<void>;
   readonly capture?: (state: LeanRoundCheckpoint) => void;
+  /** Internal composition: final actual counters, including failed runs.
+   *  The caller supplies a synchronous nonthrowing owned assignment. */
+  readonly captureUsage?: (usage: LeanUsage) => void;
+  readonly callerHistory?: LeanCallerHistory;
+}
+
+/** Internal caller composition: immutable candidate selectors, never labels. */
+export interface LeanCallerCandidate {
+  readonly fieldId: string; readonly evidenceId: string; readonly url: string;
+  readonly digest: string; readonly value: string; readonly quote: string;
+  readonly charRange: readonly [number, number];
+}
+export interface LeanCallerHistory {
+  readonly candidates: readonly LeanCallerCandidate[];
+  readonly continuous: boolean;
+}
+interface CallerAttemptBasis {
+  schemaVersion: 1; kind: "candidate" | "enum"; namespace: string;
+  context: { evidenceId: string; url: string; digest: string }[];
+  dependencies: Record<string, DepBinding>;
+  candidate: LeanCallerCandidate | null;
+}
+interface CallerAttempt {
+  basis: CallerAttemptBasis; auditIndex: number; auditDigest: string | null;
+  disposition?: { status: "satisfied"; value: string } | { status: "unresolved"; reason: string };
+}
+const callerJSON = (value: unknown): string => JSON.stringify(value, (_key, v) =>
+  v && typeof v === "object" && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : v);
+const callerDigest = (value: string): string => createHash("sha256").update(value, "utf8").digest("hex");
+const callerAuditDigest = (audit: { trusted: unknown; reason?: unknown; assessments: unknown }): string => callerDigest(callerJSON({ trusted: audit.trusted, reason: audit.reason, assessments: audit.assessments }));
+function callerDependencies(value: unknown): value is Record<string, DepBinding> {
+  return !!value && typeof value === "object" && !Array.isArray(value) && Object.values(value).every(v =>
+    !!v && typeof v === "object" && !Array.isArray(v) && Object.keys(v).every(k => ["value", "evidenceId", "sourceDigest"].includes(k)) &&
+    typeof v.value === "string" && typeof v.evidenceId === "string" && typeof v.sourceDigest === "string" && /^[a-f0-9]{64}$/.test(v.sourceDigest));
+}
+function callerCandidate(value: unknown): value is LeanCallerCandidate {
+  const v = value as LeanCallerCandidate;
+  return !!v && typeof v === "object" && !Array.isArray(v) && Object.keys(v).every(k => ["fieldId", "evidenceId", "url", "digest", "value", "quote", "charRange"].includes(k)) &&
+    [v.fieldId, v.evidenceId, v.url, v.digest, v.value, v.quote].every(x => typeof x === "string") && /^[a-f0-9]{64}$/.test(v.digest) &&
+    Array.isArray(v.charRange) && v.charRange.length === 2 && v.charRange.every(Number.isSafeInteger) && v.charRange[0] >= 0 && v.charRange[1] > v.charRange[0];
+}
+/** Pure prework validation; unavailable old authority is distinct from corruption. */
+export function prepareLeanCallerHistory(contract: unknown, evidence: readonly LeanEvidenceRecord[], history: readonly LeanFieldCheckpoint[],
+  candidates: readonly LeanCallerCandidate[], continuous: boolean, identity: string | undefined, semantic: boolean, coverageOrderUncertain = false): { history: LeanCallerHistory; unavailable: boolean } {
+  const compiled = compileLeanContract(contract);
+  const invalid = (): never => { throw new ValidationError("Malformed recognized caller attempt history."); };
+  const seen = new Set<string>();
+  for (const c of candidates) {
+    const source = evidence.find(e => e.evidenceId === c.evidenceId);
+    if (!callerCandidate(c) || seen.has(c.fieldId) || !compiled.fields.some(f => f.id === c.fieldId && f.schema.mode === "value") || !source || source.url !== c.url || callerDigest(source.content) !== c.digest || source.content.slice(...c.charRange) !== c.quote) invalid();
+    seen.add(c.fieldId);
+  }
+  for (const row of history) {
+    if (!row || typeof row.namespace !== "string" || typeof row.context !== "string" || !row.state || typeof row.state !== "object") invalid();
+    if (Object.hasOwn(row.state, "callerDependencyBasis") && !callerDependencies(row.state.callerDependencyBasis)) invalid();
+    if (Object.hasOwn(row.state, "callerGuardDigests") && (!row.state.callerGuardDigests || typeof row.state.callerGuardDigests !== "object" || Array.isArray(row.state.callerGuardDigests) || Object.values(row.state.callerGuardDigests).some(d => typeof d !== "string" || !/^[a-f0-9]{64}$/.test(d)))) invalid();
+    if (Object.hasOwn(row.state, "callerStability")) {
+      const domains = row.state.callerStability;
+      if (!Array.isArray(domains)) invalid();
+      for (const domain of domains as NonNullable<FieldState["callerStability"]>) {
+        if (!domain || Object.keys(domain).some(k => !["dependencies", "sides", "inconsistent"].includes(k)) || !callerDependencies(domain.dependencies) || !Number.isSafeInteger(domain.inconsistent) || domain.inconsistent < 0 || !Array.isArray(domain.sides)) invalid();
+        for (const side of domain.sides) if (!side || Object.keys(side).some(k => !["evidenceId", "digest", "flags"].includes(k)) || typeof side.evidenceId !== "string" || typeof side.digest !== "string" || !/^[a-f0-9]{64}$/.test(side.digest) || !Array.isArray(side.flags) || side.flags.length !== 3 || !side.flags.every(x => x === null || typeof x === "boolean")) invalid();
+      }
+    }
+    if (!Object.hasOwn(row.state, "callerAttempts")) continue;
+    const attempts = row.state.callerAttempts;
+    if (!Array.isArray(attempts) || !Array.isArray(row.state.attemptedRecords)) invalid();
+    for (const a of attempts as CallerAttempt[]) {
+      const b = a?.basis;
+      if (!a || Object.keys(a).some(k => !["basis", "auditIndex", "auditDigest", "disposition"].includes(k)) || !b || b.schemaVersion !== 1 || !["candidate", "enum"].includes(b.kind) || b.namespace !== row.namespace || !Array.isArray(b.context) || !callerDependencies(b.dependencies) ||
+        b.context.some(e => !e || Object.keys(e).some(k => !["evidenceId", "url", "digest"].includes(k)) || typeof e.evidenceId !== "string" || typeof e.url !== "string" || !/^[a-f0-9]{64}$/.test(e.digest)) || new Set(b.context.map(e => e.evidenceId)).size !== b.context.length ||
+        (b.kind === "candidate" ? !callerCandidate(b.candidate) || !b.context.some(e => e.evidenceId === b.candidate!.evidenceId && e.url === b.candidate!.url && e.digest === b.candidate!.digest) : b.candidate !== null) ||
+        !Number.isSafeInteger(a.auditIndex) || a.auditIndex < 0 || typeof a.auditDigest !== "string" || !/^[a-f0-9]{64}$/.test(a.auditDigest)) invalid();
+      if (Object.keys(b).some(k => !["schemaVersion", "kind", "namespace", "context", "dependencies", "candidate"].includes(k))) invalid();
+      const tuple = JSON.parse(b.namespace) as unknown[];
+      const req = tuple?.[2] as { id?: unknown; question?: unknown; criteria?: unknown; dependsOn?: unknown };
+      if (!Array.isArray(tuple) || tuple.length !== 5 || typeof tuple[0] !== "string" || !tuple[1] || typeof tuple[1] !== "object" || !req || typeof req.id !== "string" || typeof req.question !== "string" || !Array.isArray(req.criteria) || !req.criteria.every(x => typeof x === "string") || !Array.isArray(req.dependsOn) || !req.dependsOn.every(x => typeof x === "string") || !Array.isArray(tuple[3]) || !tuple[3].every(x => typeof x === "string") || !(tuple[4] === null || typeof tuple[4] === "string") || callerJSON(Object.keys(b.dependencies).sort()) !== callerJSON([...new Set(req.dependsOn)].sort())) invalid();
+      if (b.context.some(e => !evidence.some(live => live.evidenceId === e.evidenceId && live.url === e.url && callerDigest(live.content) === e.digest))) invalid();
+      const audit = (row.state.attemptedRecords as unknown[])[a.auditIndex];
+      if (!audit || callerAuditDigest(audit as { trusted: unknown; reason?: unknown; assessments: unknown }) !== a.auditDigest) invalid();
+      const record = audit as { trusted: boolean; reason?: string; assessments: Record<string, unknown>[] };
+      if (typeof record.trusted !== "boolean" || !Array.isArray(record.assessments) || (record.reason !== undefined && typeof record.reason !== "string")) invalid();
+      if (b.kind === "enum" && record.assessments.length) {
+        if (record.assessments.length !== b.context.length || new Set(record.assessments.map(d => d.evidenceId)).size !== record.assessments.length || record.assessments.some(d => !b.context.some(e => e.evidenceId === d.evidenceId) || ![d.relevant, d.supportsClaim, d.refutesClaim].every(x => x === null || typeof x === "boolean"))) invalid();
+      }
+      if (b.kind === "candidate" && record.assessments.length) {
+        const c = b.candidate!, source = evidence.find(e => e.evidenceId === c.evidenceId)!;
+        // candidateIdentity preserves insertion order. Reconstruct precisely
+        // the producer layout after validating all persisted keys/values.
+        const dependencies = Object.fromEntries((req.dependsOn as string[]).map(id => {
+          const { value, evidenceId, sourceDigest } = b.dependencies[id]!;
+          return [id, { value, evidenceId, sourceDigest }];
+        }));
+        const context = { fieldMeanings: { [String(req.id)]: [req.question, ...(req.criteria as string[]), ...(tuple[3] as string[])].join("\n") }, scope: tuple[1] as Record<string, string>, opposingContext: b.context.filter(e => e.evidenceId !== c.evidenceId).map(e => evidence.find(live => live.evidenceId === e.evidenceId)!), depBindings: dependencies };
+        const id = candidateIdentity(source, c.digest, c.fieldId, c.value, c.quote, c.charRange, { fieldMeaning: context.fieldMeanings[c.fieldId]!, scope: context.scope, opposingContext: context.opposingContext, depBindings: context.depBindings });
+        if (c.fieldId !== req.id || record.assessments.length !== 1 || record.assessments.some(d => d.fieldId !== c.fieldId || d.candidateId !== id || d.value !== c.value || ![d.support, d.conflict].every(x => x === null || typeof x === "boolean"))) invalid();
+      }
+      if (a.disposition && (a.disposition.status === "satisfied" ? typeof a.disposition.value !== "string" : a.disposition.status !== "unresolved" || typeof a.disposition.reason !== "string")) invalid();
+    }
+  }
+  // Legacy current positive proof can be reused only on an independently
+  // established live basis; no submitted value fills a missing prerequisite.
+  const namespace = (f: typeof compiled.fields[number]): string => JSON.stringify([compiled.question, compiled.scope, f, compiled.evidenceCriteria, identity ?? null]);
+  // Canonical persistence cannot turn the same paid meaning into a fresh
+  // namespace. Continuity attests the ledger, not its identity ordering.
+  // Empty known checkpoints are harmless; missing older authority is not
+  // proof of no attempt. Never merge or relabel the cumulative histories.
+  if (identity !== undefined && semantic) {
+    const current = new Map(compiled.fields.map(f => { const raw = namespace(f); return [callerJSON(JSON.parse(raw)), raw]; }));
+    const inert = (s: Record<string, unknown>): boolean =>
+      ["attemptedRecords", "trustedAccepts", "assessmentHistory", "judgeAttemptMeta", "sideHistory"].every(k => Array.isArray(s[k]) && s[k].length === 0) &&
+      s.judgmentCount === 0 && s.inconsistentJudgments === 0 && s.acceptedCandidate === null && s.pendingAccept === null &&
+      (s.callerAttempts === undefined || (Array.isArray(s.callerAttempts) && s.callerAttempts.length === 0)) &&
+      (s.callerStability === undefined || (Array.isArray(s.callerStability) && s.callerStability.length === 0));
+    for (const row of history) {
+      let tuple: unknown;
+      try { tuple = JSON.parse(row.namespace); } catch { continue; } // Unrelated opaque legacy namespace cannot assert a current match.
+      const raw = current.get(callerJSON(tuple));
+      if (raw === undefined || inert(row.state)) continue;
+      if (row.namespace !== raw || coverageOrderUncertain) return { history: { candidates, continuous }, unavailable: true };
+    }
+  }
+  const proven = new Map<string, DepBinding | null>(), visiting = new Set<string>();
+  const proofFor = (id: string): DepBinding | null => {
+    if (proven.has(id)) return proven.get(id)!;
+    if (visiting.has(id)) return null; visiting.add(id);
+    const f = compiled.fields.find(f => f.id === id), selected = candidates.find(c => c.fieldId === id);
+    if (!f) { visiting.delete(id); return null; }
+    const bindings: Record<string, DepBinding> = {};
+    for (const dep of f.dependsOn) { const p = proofFor(dep); if (!p) { visiting.delete(id); proven.set(id, null); return null; } bindings[dep] = { ...p }; }
+    if (f.schema.mode !== "value") {
+      for (const row of [...history].reverse().filter(r => r.namespace === namespace(f))) for (const a of (row.state.callerAttempts as CallerAttempt[] | undefined) ?? []) {
+        if (a.basis.kind !== "enum" || a.disposition?.status !== "satisfied" || !f.schema.enum!.includes(a.disposition.value) || callerJSON(a.basis.dependencies) !== callerJSON(bindings) || callerJSON(a.basis.context) !== callerJSON(evidence.map(e => ({ evidenceId: e.evidenceId, url: e.url, digest: callerDigest(e.content) }))) || row.state.ctrvIssued !== true || !Array.isArray(row.state.ctrvSources) || row.state.ctrvSources.length !== 0) continue;
+        const audit = (row.state.attemptedRecords as { trusted: boolean; assessments: LeanJudgeDocVerdict[] }[])[a.auditIndex]!;
+        if (!audit.trusted) continue;
+        const docs = audit.assessments;
+        const support = docs.some(d => d.relevant === true && d.supportsClaim === true), refute = docs.some(d => d.relevant === true && d.refutesClaim === true);
+        const value = support && refute ? "disputed" : support && !docs.some(d => d.relevant !== false && d.refutesClaim !== false) ? "supported" : refute && !docs.some(d => d.relevant !== false && d.supportsClaim !== false) ? "refuted" : null;
+        if (value !== a.disposition.value) continue;
+        const domain = (row.state.callerStability as FieldState["callerStability"])?.find(d => callerJSON(d.dependencies) === callerJSON(bindings));
+        if (!domain || docs.some(d => { const before = domain.sides.find(s => s.evidenceId === d.evidenceId && s.digest === callerDigest(evidence.find(e => e.evidenceId === d.evidenceId)!.content)); return before && before.flags.some((flag, axis) => flag !== null && flag !== [d.relevant, d.supportsClaim, d.refutesClaim][axis]); })) continue;
+        const source = evidence.find(e => e.evidenceId === docs.find(d => d.relevant === true)?.evidenceId);
+        if (!source) continue;
+        const binding = { value, evidenceId: source.evidenceId, sourceDigest: callerDigest(source.content) };
+        visiting.delete(id); proven.set(id, binding); return binding;
+      }
+      visiting.delete(id); proven.set(id, null); return null;
+    }
+    for (const row of [...history].reverse().filter(r => r.namespace === namespace(f))) {
+      const values = row.state.trustedAccepts;
+      if (!Array.isArray(values)) continue;
+      for (const t of values) {
+        if (!t || !t.outcome || !t.judgment || !t.provenance || !t.judgedContext || !Array.isArray(t.opposingIds) || !Array.isArray(t.opposingDigests)) continue;
+        const source = evidence.find(e => e.evidenceId === t.provenance.sourceId);
+        if (!source || callerDigest(source.content) !== t.sourceDigest || (selected && (selected.evidenceId !== source.evidenceId || selected.value !== t.provenance.value || selected.quote !== t.provenance.quote || callerJSON(selected.charRange) !== callerJSON(t.provenance.charRange)))) continue;
+        const opposition = evidence.filter(e => e.evidenceId !== source.evidenceId);
+        if (callerJSON(opposition.map(e => e.evidenceId)) !== callerJSON(t.opposingIds) || callerJSON(opposition.map(e => callerDigest(e.content))) !== callerJSON(t.opposingDigests)) continue;
+        if (callerJSON(t.judgedContext.depBindings ?? {}) !== callerJSON(bindings)) continue;
+        const outcome = acceptCandidate(t.outcome, t.judgment, source, callerDigest(source.content), { fieldMeanings: { [f.id]: [f.question, ...f.criteria, ...compiled.evidenceCriteria].join("\n") }, scope: compiled.scope, opposingContext: opposition, depBindings: bindings });
+        if (outcome.status === "accepted" && outcome.provenance) { visiting.delete(id); const binding = { value: outcome.provenance.value, evidenceId: outcome.provenance.sourceId, sourceDigest: outcome.provenance.sourceDigest }; proven.set(id, binding); return binding; }
+      }
+    }
+    visiting.delete(id); proven.set(id, null); return null;
+  };
+  const affected = new Set(candidates.map(c => c.fieldId));
+  for (let i = 0; i < compiled.fields.length; i++) for (const f of compiled.fields) if (f.dependsOn.some(d => affected.has(d))) affected.add(f.id);
+  const available = new Map<string, "positive" | "negative" | "blocked" | "unknown">();
+  const dispositionFor = (id: string): "positive" | "negative" | "blocked" | "unknown" => {
+    if (available.has(id)) return available.get(id)!;
+    if (proofFor(id)) { available.set(id, "positive"); return "positive"; }
+    const f = compiled.fields.find(f => f.id === id)!;
+    const dependencies = f.dependsOn.map(dispositionFor);
+    if (dependencies.some(d => d === "negative" || d === "blocked")) { available.set(id, "blocked"); return "blocked"; }
+    if (dependencies.some(d => d === "unknown")) { available.set(id, "unknown"); return "unknown"; }
+    const bindings = Object.fromEntries(f.dependsOn.map(dep => [dep, proofFor(dep)!]));
+    const selected = candidates.find(c => c.fieldId === id);
+    for (const row of history.filter(r => r.namespace === namespace(f))) for (const a of (row.state.callerAttempts as CallerAttempt[] | undefined) ?? []) {
+      if (a.disposition?.status !== "unresolved" || callerJSON(a.basis.dependencies) !== callerJSON(bindings) || callerJSON(a.basis.context) !== callerJSON(evidence.map(e => ({ evidenceId: e.evidenceId, url: e.url, digest: callerDigest(e.content) }))) || (selected ? callerJSON(a.basis.candidate) !== callerJSON(selected) : a.basis.kind !== "enum")) continue;
+      available.set(id, "negative"); return "negative";
+    }
+    available.set(id, "unknown"); return "unknown";
+  };
+  let unavailable = false;
+  if (!continuous && identity !== undefined && semantic) for (const id of affected) if (dispositionFor(id) === "unknown") { unavailable = true; break; }
+  return { history: { candidates, continuous }, unavailable };
 }
 
 export interface LeanFieldCheckpoint {
@@ -845,6 +1031,10 @@ interface FieldState {
     assessments: (LeanJudgeDocVerdict | Record<string, unknown>)[];
     metadata: unknown;
   }[];
+  callerAttempts?: CallerAttempt[];
+  callerDependencyBasis?: Record<string, DepBinding>;
+  callerGuardDigests?: Record<string, string>;
+  callerStability?: { dependencies: Record<string, DepBinding>; sides: { evidenceId: string; digest: string; flags: readonly [boolean | null, boolean | null, boolean | null] }[]; inconsistent: number }[];
   lastJudgedKey: string | null;
   relevantEvidenceIds: string[];
   terminal:
@@ -906,6 +1096,23 @@ interface QueryPlanEntry {
   readonly kind: "shared" | "primary" | "counterevidence";
 }
 
+/** Internal frozen plan shared with caller admission; no dispatch or state. */
+export function frozenLeanQueryPlan(compiled: LeanCompiledContract): QueryPlanEntry[] {
+  return [
+    { query: compiled.question, fieldId: null, kind: "shared" },
+    ...compiled.fields.map((f): QueryPlanEntry => ({
+      query: f.question,
+      fieldId: f.id,
+      kind: "primary",
+    })),
+    ...compiled.fields.map((f): QueryPlanEntry => ({
+      query: `${f.question} contrary evidence refuted`,
+      fieldId: f.id,
+      kind: "counterevidence",
+    })),
+  ];
+}
+
 /**
  * Run the lean investigation. `compileLeanContract` semantics apply
  * (throws ValidationError before any acquisition on bad input). All
@@ -926,19 +1133,7 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
   // under a shared search ceiling the interleaved order starved later
   // fields' contrary rounds; primaries-first gives every field its main
   // evidence before any contrary round). No runtime generative planner.
-  const plan: QueryPlanEntry[] = [
-    { query: compiled.question, fieldId: null, kind: "shared" },
-    ...compiled.fields.map((f): QueryPlanEntry => ({
-      query: f.question,
-      fieldId: f.id,
-      kind: "primary",
-    })),
-    ...compiled.fields.map((f): QueryPlanEntry => ({
-      query: `${f.question} contrary evidence refuted`,
-      fieldId: f.id,
-      kind: "counterevidence",
-    })),
-  ];
+  const plan = frozenLeanQueryPlan(compiled);
 
   const fields = new Map<string, FieldState>();
   for (const f of compiled.fields) {
@@ -1084,7 +1279,7 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
       if (seed.identity === undefined) continue;
       const matches = seed.history.filter((h) => h.namespace === namespaceOf(f));
       const exact = [...matches].reverse().find((h) => h.context === contextOf());
-      const latest = exact ?? matches.at(-1);
+      const latest = seed.callerHistory ? matches.at(-1) : exact ?? matches.at(-1);
       if (latest === undefined) continue;
       const state = structuredClone(latest.state);
       Object.assign(f, state, { id: f.id, req: f.req });
@@ -1128,7 +1323,7 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
       if (roundLocal && f.stopReason === null && runTypedStop === null) {
         reopenedContraryFields.add(f.id);
       }
-      if (exact === undefined || roundLocal || (seed.leads?.length ?? 0) > 0) {
+      if (exact === undefined || roundLocal || (seed.leads?.length ?? 0) > 0 || seed.callerHistory?.candidates.some(c => c.fieldId === f.id)) {
         f.terminal = null;
         f.lastJudgedKey = null;
         f.depBindingKey = null;
@@ -1564,6 +1759,8 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
       if (liveOpposingDigests.some((d) => d === null)) return null;
       if (!t.opposingDigests.every((d, i) => liveOpposingDigests[i] === d)) return null;
       if (t.outcome === undefined || t.judgedContext === undefined) return null;
+      const selected = seed?.callerHistory?.candidates.find(c => c.fieldId === t.outcome.fieldId);
+      if (selected && (selected.evidenceId !== t.provenance.sourceId || selected.digest !== t.sourceDigest || selected.value !== t.provenance.value || selected.quote !== t.provenance.quote || callerJSON(selected.charRange) !== callerJSON(t.provenance.charRange))) return null;
       const liveSource = evidence.find((e) => e.evidenceId === t.provenance.sourceId);
       if (liveSource === undefined) return null;
       const liveOpposingRecords = t.opposingIds
@@ -1639,7 +1836,117 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
     let valueTurn = 0;
     const pendingValueTurns = new Map<string, { basis: string; visited: Set<string> }>();
 
+    const callerTransitions = new Set<string>();
+    const newCallerAttempts = new Set<CallerAttempt>();
+    const selectedCaller = (f: FieldState): LeanCallerCandidate | undefined => seed?.callerHistory?.candidates.find(c => c.fieldId === f.id);
+    const callerBasis = (f: FieldState, candidate: LeanCallerCandidate | null): CallerAttemptBasis => ({
+      schemaVersion: 1, kind: candidate === null ? "enum" : "candidate", namespace: namespaceOf(f),
+      context: evidence.map(e => ({ evidenceId: e.evidenceId, url: e.url, digest: callerDigest(e.content) })),
+      dependencies: structuredClone(depBindingsFor(f)), candidate: candidate === null ? null : structuredClone(candidate),
+    });
+    const reserveCallerAttempt = (f: FieldState, basis: CallerAttemptBasis): void => {
+      if (!seed?.callerHistory) return;
+      const attempt: CallerAttempt = { basis, auditIndex: f.attemptedRecords.length, auditDigest: null };
+      (f.callerAttempts ??= []).push(attempt); newCallerAttempts.add(attempt);
+    };
+    const callerAttempt = (f: FieldState, basis: CallerAttemptBasis): CallerAttempt | undefined =>
+      [...(f.callerAttempts ?? [])].reverse().find(a => callerJSON(a.basis) === callerJSON(basis));
+    const saveCallerStability = (f: FieldState): void => {
+      if (!f.callerDependencyBasis || f.req.schema.mode === "value") return;
+      const domain = { dependencies: structuredClone(f.callerDependencyBasis), sides: [...f.sideHistory].flatMap(([evidenceId, flags]) => {
+        const digest = f.callerGuardDigests?.[evidenceId];
+        return digest === undefined ? [] : [{ evidenceId, digest, flags }];
+      }), inconsistent: f.inconsistentJudgments };
+      f.callerStability = [...(f.callerStability ?? []).filter(s => callerJSON(s.dependencies) !== callerJSON(domain.dependencies)), domain];
+    };
+    const activateCallerStability = (f: FieldState, dependencies: Record<string, DepBinding>): void => {
+      if (f.req.schema.mode === "value" || callerJSON(f.callerDependencyBasis) === callerJSON(dependencies)) return;
+      saveCallerStability(f);
+      const domain = f.callerStability?.find(s => callerJSON(s.dependencies) === callerJSON(dependencies));
+      // Dependency basis partitions stability; candidate and opposition do not.
+      // An absent domain is new semantics, never an empty prerequisite proof.
+      f.sideHistory.clear(); f.callerGuardDigests = {};
+      for (const side of domain?.sides ?? []) {
+        if (evidence.some(e => e.evidenceId === side.evidenceId && callerDigest(e.content) === side.digest)) {
+          f.sideHistory.set(side.evidenceId, side.flags); f.callerGuardDigests[side.evidenceId] = side.digest;
+        }
+      }
+      f.inconsistentJudgments = domain?.inconsistent ?? 0;
+      f.pendingAccept = null; f.pendingSinceKey = null; f.disputedSinceKey = null;
+      f.callerDependencyBasis = structuredClone(dependencies);
+    };
+    const refreshCallerSelections = (): void => {
+      if (!seed?.callerHistory || seed.identity === undefined) return;
+      for (const f of fields.values()) {
+        const deps = depBindingsFor(f), selected = selectedCaller(f);
+        if (!f.req.dependsOn.every(d => Object.hasOwn(deps, d))) {
+          if (f.req.dependsOn.length) { f.terminal = null; f.lastJudgedKey = null; f.acceptedCandidate = null; }
+          continue;
+        }
+        const quiescent = noMoreAcquisition();
+        const transition = callerJSON([namespaceOf(f), contextOf(), deps, selected ?? null, quiescent]);
+        if (callerTransitions.has(transition)) continue;
+        callerTransitions.add(transition);
+        if (f.req.schema.mode === "value") {
+          const proof = (f.acceptedCandidate !== null ? standingProofOf(f) : null) ?? retainedProofOf(f);
+          if (proof !== null) {
+            // Exact semantics stay visited while acquisition runs. Publication
+            // still waits for actual coverage, stops and live proof guards.
+            f.acceptedCandidate = { provenance: proof.provenance, judgment: proof.judgment };
+            f.terminal = quiescent && runTypedStop === null && f.ctrvIssued && f.ctrvSources.size === 0
+              ? { status: "satisfied", value: proof.provenance.value } : null;
+            f.lastJudgedKey = evidenceKey(); f.depBindingKey = depBindingKeyOf(f);
+            continue;
+          }
+          if (selected) {
+            const old = callerAttempt(f, callerBasis(f, selected));
+            if (old) {
+              f.lastJudgedKey = evidenceKey(); f.depBindingKey = depBindingKeyOf(f);
+              if (old.disposition) {
+                f.terminal = quiescent && old.disposition.status === "unresolved" ? { ...old.disposition } : null;
+                f.acceptedCandidate = null;
+              }
+              continue;
+            }
+            // Only active eligibility is reopened; all disposition and audit
+            // history, including other candidates, stays cumulative.
+            f.terminal = null; f.lastJudgedKey = null; f.acceptedCandidate = null;
+            f.judgeUnavailable = false; f.judgeIndeterminate = false; f.stopReason = null;
+          } else if (f.req.dependsOn.length && f.depBindingKey !== depBindingKeyOf(f)) {
+            f.terminal = null; f.lastJudgedKey = null; f.acceptedCandidate = null;
+          }
+        } else {
+          activateCallerStability(f, deps);
+          const old = callerAttempt(f, callerBasis(f, null));
+          if (old) {
+            f.lastJudgedKey = evidenceKey(); f.depBindingKey = depBindingKeyOf(f);
+            if (old.disposition) {
+              const audit = f.attemptedRecords[old.auditIndex]!;
+              const docs = audit.assessments as LeanJudgeDocVerdict[];
+              const compatible = !audit.trusted || docs.every(d => {
+                const prior = f.sideHistory.get(d.evidenceId);
+                return !prior || prior.every((before, axis) => before === null || before === [d.relevant, d.supportsClaim, d.refutesClaim][axis]);
+              });
+              const covered = runTypedStop === null && f.ctrvIssued && f.ctrvSources.size === 0;
+              f.terminal = !quiescent ? null : !compatible ? { status: "unresolved", reason: "inconsistent_judgments" }
+                : old.disposition.status === "satisfied" && !covered ? null : { ...old.disposition };
+              f.pendingAccept = compatible && runTypedStop === null && old.disposition.status === "satisfied" ? old.disposition.value : null;
+              f.pendingSinceKey = f.pendingAccept === null ? null : evidenceKey();
+              f.relevantEvidenceIds = docs.filter(d => d.relevant === true).map(d => d.evidenceId);
+            }
+            continue;
+          }
+          if (f.depBindingKey !== depBindingKeyOf(f)) {
+            f.terminal = null; f.lastJudgedKey = null;
+            f.pendingAccept = null; f.pendingSinceKey = null; f.disputedSinceKey = null;
+            f.judgeUnavailable = false; f.judgeIndeterminate = false; f.stopReason = null;
+          }
+        }
+      }
+    };
+
     const eligibleFields = (): FieldState[] => {
+      refreshCallerSelections();
       const out: FieldState[] = [];
       // A prerequisite is unblocking when it is terminally satisfied OR
       // carries a provisional accepted candidate on the current context
@@ -2369,7 +2676,7 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
                 // final accept can change the binding after the evidence
                 // stopped changing).
                 (x.lastJudgedKey !== key ||
-                  (x.req.schema.mode === "value" && x.depBindingKey !== depBindingKeyOf(x))),
+                  ((x.req.schema.mode === "value" || seed?.callerHistory !== undefined) && x.depBindingKey !== depBindingKeyOf(x))),
             )
           : liveEligible.findIndex(
               // Budget gone: only fields needing NO semantic dispatch
@@ -2412,14 +2719,15 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
           // current-context pairs once unblocked; re-enter while any current
           // pair is unjudged and budget remains.
           const bindings0 = depBindingsFor(f);
-          const pairsComplete = evidence.every((src) => {
+          const selected = selectedCaller(f);
+          const pairsComplete = selected ? callerAttempt(f, callerBasis(f, selected)) !== undefined || f.trustedAccepts.some(t => liveIdentityOf(t)) : evidence.every((src) => {
             const opp = evidence
               .filter((e) => e.evidenceId !== src.evidenceId)
               .map((e) => e.evidenceId)
               .join(",");
             const ck = `${extractionKey(src, f, bindings0)}|${opp}`;
             return (
-              f.judgedSourceKeys.has(ck) ||
+              (!seed?.callerHistory?.candidates.some(c => c.fieldId === f.id) && f.judgedSourceKeys.has(ck)) ||
               (f.req.schema.pattern === undefined &&
                 f.trustedAccepts.some((t) => liveIdentityOf(t)))
             );
@@ -2534,7 +2842,7 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
             // IDENTICAL pair (same source, same opposing set) in a later
             // iteration.
             const sourceJudgeKey = `${ck}|${opposing.map((e) => e.evidenceId).join(",")}`;
-            if (f.judgedSourceKeys.has(sourceJudgeKey)) continue;
+            if (!seed?.callerHistory?.candidates.some(c => c.fieldId === f.id) && f.judgedSourceKeys.has(sourceJudgeKey)) continue;
             let validation = extractionCache.get(ck);
             if (validation === undefined) {
               if (expired()) break;
@@ -2667,6 +2975,8 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
             // Whole-run deadline: reserve before dispatch (an extraction
             // earlier in this iteration may have consumed the remainder).
             if (expired()) break;
+            reserveCallerAttempt(f, callerBasis(f, { fieldId: f.id, evidenceId: source.evidenceId, url: source.url,
+              digest: callerDigest(source.content), value: outcome.value!, quote: outcome.quote!, charRange: outcome.charRange! }));
             candidateJudgeCalls += 1;
             f.judgmentCount += 1;
             // Only an ACTUAL dispatch of this source's context records the
@@ -2914,6 +3224,11 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
             continue;
           }
           if (expired()) continue;
+          if (seed?.callerHistory) {
+            activateCallerStability(f, depBindingsFor(f));
+            f.depBindingKey = depBindingKeyOf(f);
+            reserveCallerAttempt(f, callerBasis(f, null));
+          }
           judgeCalls += 1;
           f.judgmentCount += 1;
           pushLog("judge", `${f.id} over [${key}]`);
@@ -3084,6 +3399,10 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
         }
         for (const d of docVerdicts) {
           f.sideHistory.set(d.evidenceId, [d.relevant, d.supportsClaim, d.refutesClaim]);
+          if (seed?.callerHistory) {
+            const source = evidence.find(e => e.evidenceId === d.evidenceId)!;
+            (f.callerGuardDigests ??= {})[d.evidenceId] = callerDigest(source.content);
+          }
         }
         f.assessmentHistory.push(docVerdicts.map((d) => ({ ...d })));
         const meta = (response as unknown as Record<symbol, unknown> | null | undefined)?.[
@@ -3250,6 +3569,8 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
         }
       }
     }
+
+    refreshCallerSelections();
 
     // Final projection: acquisition is over, so every provisional accept
     // still standing is projected onto the FINAL trusted context. A
@@ -3499,6 +3820,9 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
             f.acceptedCandidate = { provenance: proof.provenance, judgment: proof.judgment };
             f.terminal = { status: "satisfied", value: proof.provenance.value };
           }
+          if (seed?.callerHistory && f.req.schema.mode !== "value" && f.depBindingKey !== depBindingKeyOf(f)) {
+            f.terminal = { status: "unresolved", reason: "prerequisite_binding_changed" }; withdrew = true; continue;
+          }
           // (b) dependency closure, every satisfied dependent.
           const depBroken = f.req.dependsOn.some((dep) => {
             const d = fields.get(dep);
@@ -3582,13 +3906,23 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
           };
         }
       }
+      if (seed?.callerHistory) for (const f of fields.values()) saveCallerStability(f);
+      if (seed?.callerHistory) for (const f of fields.values()) for (const a of f.callerAttempts ?? []) {
+        if (!newCallerAttempts.has(a)) continue;
+        const audit = f.attemptedRecords[a.auditIndex];
+        if (audit) a.auditDigest = callerAuditDigest(audit);
+        const selected = selectedCaller(f);
+        if (f.terminal !== null && callerJSON(a.basis.context) === callerJSON(evidence.map(e => ({ evidenceId: e.evidenceId, url: e.url, digest: callerDigest(e.content) }))) &&
+          callerJSON(a.basis.dependencies) === callerJSON(depBindingsFor(f)) &&
+          (a.basis.kind === "enum" || selected === undefined || callerJSON(a.basis.candidate) === callerJSON(selected))) a.disposition = { ...f.terminal };
+      }
       if (seed?.capture !== undefined) {
         // Coverage (issued queries / unread leads) persists for EVERY round —
         // it is acquisition bookkeeping, not judgment history. Field-state
         // history persists ONLY under a caller-pinned judge/policy identity;
         // an unknown identity never records reusable proof state.
         const history: LeanFieldCheckpoint[] =
-          seed.identity === undefined
+          seed.identity === undefined && seed.callerHistory === undefined
             ? [...(seed.history ?? [])]
             : (() => {
                 const out = [...(seed.history ?? [])];
@@ -3657,7 +3991,11 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
       };
     }
   } finally {
-    releaseRunResources();
-    runAbort.abort();
+    try {
+      releaseRunResources();
+      runAbort.abort();
+    } finally {
+      seed?.captureUsage?.({ searches, readAttempts, readsRetained, judgeCalls, extractorCalls, extractorCacheHits, candidateJudgeCalls });
+    }
   }
 }

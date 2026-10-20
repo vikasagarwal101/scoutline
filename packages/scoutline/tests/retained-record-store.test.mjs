@@ -146,7 +146,8 @@ function verifyRecovery(bytes, marker, sealed) {
   const { at, ...identity } = receipt;
   assert.ok(Number.isFinite(at) && at >= 0);
   assert.deepEqual(identity, {
-    schemaVersion: 1, kind: "acknowledge-interrupted", roundId: marker.roundId,
+    schemaVersion: 2, kind: "acknowledge-interrupted", publicationState: "unpublished",
+    work: { schemaVersion: 1, measured: null, status: null, settledAt: null, unavailableReason: "unsettled" }, roundId: marker.roundId,
     priorOwner: marker.ownerId, revisionBase: marker.revisionBase, remoteWork: "unknown",
   });
 }

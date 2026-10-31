@@ -101,7 +101,7 @@ export const EXPERIMENTAL_MAX_PHYSICAL_ATTEMPTS = 48;
  *  lower integer. Present-but-invalid is a typed preflight failure. */
 function physicalAttemptCeiling(env: NodeJS.ProcessEnv | undefined): number {
   const raw = env?.SCOUTLINE_REQUIREMENTS_MAX_PHYSICAL;
-  if (raw === undefined || raw === "") return EXPERIMENTAL_MAX_PHYSICAL_ATTEMPTS;
+  if (raw === undefined) return EXPERIMENTAL_MAX_PHYSICAL_ATTEMPTS;
   const reject = (why: string): never => {
     throw new ValidationError(
       `SCOUTLINE_REQUIREMENTS_MAX_PHYSICAL must be a base-10 integer between 1 and ${EXPERIMENTAL_MAX_PHYSICAL_ATTEMPTS} (experimental ceiling); got ${JSON.stringify(raw)} (${why}).`,
@@ -210,13 +210,10 @@ export interface RequirementsEngineDeps {
   readonly extract?: ((request: unknown, options?: unknown) => Promise<unknown>) | null;
   readonly candidateJudge?: RequirementsJudgeFn | null;
   readonly extractorRevision?: string;
-  /**
-   * Optional declared producer attempt metadata. When a producer
-   * publishes a count up front (rather than per response), the handler
-   * validates it at composition time — before any dispatch — so a
-   * malformed declaration is a typed measurement error even if the
-   * producer never runs. Absent (the common case) means unknown.
-   */
+  /** Trusted nonnegative safe-integer measurement PER ACTUAL extract call,
+   * applied once on success or rejection; no call contributes zero. Mutually
+   * exclusive with a configured producer observer. Matching selected result
+   * telemetry corroborates once; conflicts reject. Never grants admission. */
   readonly declaredProducerAttempts?: number;
   readonly now?: () => number;
 }
@@ -534,6 +531,8 @@ interface PhysicalTotals {
   /** Measurement is available from the observer, declared seam, or
    *  valid returned telemetry; it does not establish admission. */
   producerObserved: boolean;
+  /** Any unmeasured opaque call keeps this stage incomplete. */
+  producerTelemetryMissing: boolean;
   /** Participation in the existing shared pre-dispatch seam, separate
    *  from retrospective physical-attempt measurements. */
   producerAdmissionShared: boolean;
@@ -561,30 +560,23 @@ interface PhysicalTotals {
  * turn a declared-but-broken measurement into a silent unknown.
  */
 function attemptsOf(response: unknown): number | undefined {
-  const meta = (response as { [k: symbol]: unknown } | null | undefined)?.[
-    Symbol.for("leanJevAttemptMeta")
-  ] as { attempts?: unknown } | undefined;
-  if (meta !== undefined && "attempts" in meta) {
-    const value = meta.attempts;
+  try {
+    const carrier = response as { [k: symbol]: unknown; attempts?: unknown } | null | undefined;
+    const meta = carrier?.[Symbol.for("leanJevAttemptMeta")];
+    if (meta !== undefined && (meta === null || typeof meta !== "object" || Array.isArray(meta))) throw new Error();
+    const value = meta !== undefined && "attempts" in meta
+      ? (meta as {attempts?: unknown}).attempts : carrier?.attempts;
     if (value === undefined || value === null) return undefined;
-    return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
-      ? value
-      : Number.NaN; // present but invalid — the caller must diagnose
+    assertMeasuredCount(value);
+    return value as number;
+  } catch {
+    throw Object.assign(new ValidationError("Invalid physical-attempt measurement; counts must be nonnegative safe integers."), {fatalMeasurement:true});
   }
-  const direct = (response as { attempts?: unknown } | null | undefined)?.attempts;
-  if (direct === undefined || direct === null) return undefined;
-  return typeof direct === "number" && Number.isSafeInteger(direct) && direct >= 0
-    ? direct
-    : Number.NaN;
 }
 
-/** Declared-but-malformed measurements are typed errors at the shared
- *  measurement boundary (root 4), never silently zero or unknown. */
-function assertMeasuredCount(count: number, stage: string): void {
-  if (Number.isSafeInteger(count) && count >= 0) return;
-  throw new ValidationError(
-    `${stage} declared an invalid physical-attempt measurement (${String(count)}); counts must be nonnegative safe integers.`,
-  );
+function assertMeasuredCount(count: unknown): asserts count is number {
+  if (typeof count === "number" && Number.isSafeInteger(count) && count >= 0) return;
+  throw Object.assign(new ValidationError("Invalid physical-attempt measurement; counts must be nonnegative safe integers."), {fatalMeasurement:true});
 }
 
 function sha256Hex(value: string): string {
@@ -758,10 +750,34 @@ async function runWithRuntime(
     judgeDispatches: 0,
     producerDispatches: 0,
     producerObserved: false,
+    producerTelemetryMissing: false,
     producerAdmissionShared: false,
     producerConfigured: false,
     judgeAdmission: "not-configured",
     judgeTelemetryMissing: false,
+  };
+  let measurementError: ValidationError | undefined;
+  const failMeasurement = (message = "Invalid physical-attempt measurement; counts must be nonnegative safe integers."): never => {
+    measurementError ??= Object.assign(new ValidationError(message), {fatalMeasurement:true});
+    throw measurementError;
+  };
+  const safeSum = (...counts: number[]): number => {
+    let total = 0;
+    for (const count of counts) {
+      if (!Number.isSafeInteger(count) || count < 0 || count > Number.MAX_SAFE_INTEGER-total) failMeasurement("Physical-attempt measurement exceeds the safe-integer bound.");
+      total += count;
+    }
+    return total;
+  };
+  const addProducer = (count: number): void => {
+    const next = safeSum(physical.producerDispatches,count);
+    safeSum(physical.acquisitionAttempts,physical.judgeDispatches,next);
+    physical.producerDispatches = next;
+  };
+  const addJudge = (count: number): void => {
+    const next = safeSum(physical.judgeDispatches,count);
+    safeSum(physical.acquisitionAttempts,next,physical.producerDispatches);
+    physical.judgeDispatches = next;
   };
   const provenance: LeanReadProvenance[] = [];
   const now = deps.now;
@@ -823,7 +839,7 @@ async function runWithRuntime(
     // add a second count.
     observeProducerDispatch: () => {
       reservePhysicalAttempt();
-      physical.producerDispatches += 1;
+      addProducer(1);
       physical.producerObserved = true;
       physical.producerAdmissionShared = true;
     },
@@ -858,6 +874,7 @@ async function runWithRuntime(
       acquisitionOptions.onReadProvenance?.(record);
     },
     onPhysicalLedger: (ledger) => {
+      safeSum(ledger.attempts,physical.judgeDispatches,physical.producerDispatches);
       physical.acquisitionAttempts = ledger.attempts;
       physical.perAttempt = ledger.perAttempt;
       // Shared closure owns refusal accounting across every stage; bridge ledger overlaps it.
@@ -893,19 +910,15 @@ async function runWithRuntime(
   };
   const wrappedJudge = countingSeam(
     engineDeps.judge,
-    (count) => {
-      assertMeasuredCount(count, "judge");
-      physical.judgeDispatches += count;
-    },
+    addJudge,
     markJudgeTelemetryMissing,
+    failMeasurement,
   );
   const wrappedCandidateJudge = countingSeam(
     engineDeps.candidateJudge,
-    (count) => {
-      assertMeasuredCount(count, "candidate judge");
-      physical.judgeDispatches += count;
-    },
+    addJudge,
     markJudgeTelemetryMissing,
+    failMeasurement,
   );
   // Producer (extractor) physical accounting (cold-review finding 1):
   // ONLY observed dispatches count — the runtime hands the producer an
@@ -919,13 +932,11 @@ async function runWithRuntime(
   // only when a response happens to arrive (root 4): a producer that
   // ships a malformed declared count is a measurement error from the
   // moment it is configured, before any dispatch. Absent stays absent.
-  if (engineDeps.declaredProducerAttempts !== undefined) {
-    const declared = engineDeps.declaredProducerAttempts;
-    if (!Number.isSafeInteger(declared) || declared < 0) {
-      throw new ValidationError(
-        `producer declared an invalid physical-attempt measurement (${String(declared)}); counts must be nonnegative safe integers.`,
-      );
-    }
+  const declared = engineDeps.declaredProducerAttempts;
+  if (declared !== undefined) {
+    try { assertMeasuredCount(declared); } catch { failMeasurement(); }
+    if (composed.producerPhysical !== undefined) failMeasurement("Declared producer measurement cannot combine with a configured producer observer.");
+    physical.producerObserved = true;
   }
   // Observation is per-stage and evidence-based: the runtime declares a
   // producer physical seam (reserve) when its producer is wired for
@@ -951,27 +962,21 @@ async function runWithRuntime(
           // (unknown), never zero. A producer that neither observes nor
           // reports leaves the stage explicitly unbounded/unknown.
           const observedBefore = physical.producerDispatches;
-          const response = await extractFn(request, options);
-          const count = attemptsOf(response);
-          if (count !== undefined && !Number.isSafeInteger(count)) {
-            // Declared but malformed (fractional, negative, NaN,
-            // unsafe, non-numeric): a measurement error, not a total and
-            // not an absent value. It is marked fatal so the ENGINE's
-            // failed-extraction absorb arm rethrows it instead of
-            // silently terminalizing the field — a broken measurement
-            // must not hide as an unresolved field.
-            throw Object.assign(
-              new ValidationError(
-                `producer declared an invalid physical-attempt measurement (${String((response as { attempts?: unknown }).attempts)}); counts must be nonnegative safe integers.`,
-              ),
-              { fatalMeasurement: true },
-            );
+          let response: unknown, rejected = false;
+          try { response = await extractFn(request, options); }
+          catch (error) { response = error; rejected = true; }
+          let count: number | undefined;
+          try { count = attemptsOf(response); } catch { failMeasurement(); }
+          if (declared !== undefined) {
+            if (count !== undefined && count !== declared) failMeasurement("Conflicting producer physical-attempt measurements.");
+            addProducer(declared);
+          } else if (physical.producerDispatches === observedBefore && composed.producerPhysical === undefined) {
+            if (count !== undefined) {
+              addProducer(count);
+              physical.producerObserved = true;
+            } else physical.producerTelemetryMissing = true;
           }
-          if (physical.producerDispatches > observedBefore) return response;
-          if (count !== undefined) {
-            physical.producerDispatches += count;
-            physical.producerObserved = true;
-          }
+          if (rejected) throw response;
           return response;
         }
       : undefined;
@@ -1002,9 +1007,11 @@ async function runWithRuntime(
   // so an abort stops NEW work even when a dependency ignores it; the
   // caller's `settle()` then turns the cancelled run into exit 130.
   const observation = (): CallerPhysicalSnapshot => {
+    if (measurementError) throw measurementError;
     const judge = physical.judgeTelemetryMissing ? null : physical.judgeDispatches;
-    const producer = physical.producerConfigured && !physical.producerObserved ? null : physical.producerDispatches;
-    const knownSubtotal = physical.acquisitionAttempts + (judge ?? 0) + (producer ?? 0);
+    const producer = physical.producerConfigured && (!physical.producerObserved || physical.producerTelemetryMissing) ? null : physical.producerDispatches;
+    const knownSubtotal = safeSum(physical.acquisitionAttempts,judge ?? 0,producer ?? 0);
+    if ([physical.acquisitionAttempts,judge,producer,knownSubtotal,physical.refused].some(n => n !== null && n > 100000)) failMeasurement("Physical-attempt measurement exceeds the caller native bound of 100000.");
     const snapshot: CallerPhysicalSnapshot = { schemaVersion: 1, source: "handler-owned-native-ledger", cutoff: "locally-settled",
       stages: { acquisition: physical.acquisitionAttempts, judge, producer }, knownSubtotal,
       total: judge === null || producer === null || physical.perAttempt.some(a => a.outcome === "unknown") ? null : knownSubtotal,
@@ -1014,7 +1021,11 @@ async function runWithRuntime(
     };
     validateCallerPhysical(snapshot); return JSON.parse(JSON.stringify(snapshot)) as CallerPhysicalSnapshot;
   };
-  const result = await execute(input, unified, observation);
+  let result: LeanResult;
+  try { result = await execute(input, unified, observation); }
+  catch (error) { throw measurementError ?? error; }
+  if (measurementError) throw measurementError;
+  safeSum(physical.acquisitionAttempts,physical.judgeDispatches,physical.producerDispatches);
   const secretList = [...(composed.secrets ?? [])];
   return { result, secrets: secretList, physical, provenance };
 }
@@ -1026,22 +1037,20 @@ async function runWithRuntime(
 function countingSeam(
   fn: RequirementsJudgeFn | ((request: unknown, options?: unknown) => Promise<unknown>) | null | undefined,
   onCount: (count: number) => void,
-  onMissingTelemetry?: () => void,
+  onMissingTelemetry: () => void,
+  onMeasurementError: () => never,
 ): ((input: unknown, options?: unknown) => Promise<unknown>) | undefined {
   if (typeof fn !== "function") return undefined;
   return async (input: unknown, options?: unknown) => {
-    try {
-      const response = await fn(input, options);
-      const count = attemptsOf(response);
-      if (count !== undefined) onCount(count);
-      else onMissingTelemetry?.(); // ran, reported nothing: unknown, not zero
-      return response;
-    } catch (error) {
-      const count = (error as { attempts?: unknown }).attempts;
-      if (Number.isSafeInteger(count)) onCount(count as number);
-      else onMissingTelemetry?.(); // failed attempt without telemetry
-      throw error;
-    }
+    let response: unknown, rejected = false;
+    try { response = await fn(input, options); }
+    catch (error) { response = error; rejected = true; }
+    // Parse outside the collaborator catch: validation never charges itself.
+    let count: number | undefined;
+    try { count = attemptsOf(response); } catch { onMeasurementError(); }
+    if (count === undefined) onMissingTelemetry(); else onCount(count);
+    if (rejected) throw response;
+    return response;
   };
 }
 
@@ -1309,8 +1318,10 @@ function projectResult(
           }
         : {}),
       physicalHttpAttempts: physical.acquisitionAttempts + physical.judgeDispatches + physical.producerDispatches,
-      ...(physical.producerConfigured && !physical.producerObserved
-        ? { physicalHttpAttemptsUnknown: "producer dispatches unobserved — this total covers acquisition and judge stages only" }
+      ...(physical.producerConfigured && (!physical.producerObserved || physical.producerTelemetryMissing)
+        ? { physicalHttpAttemptsUnknown: physical.producerDispatches === 0
+            ? "producer dispatches unobserved — this total covers acquisition and judge stages only"
+            : "producer telemetry incomplete — this measured subtotal includes reported work only, not a complete total" }
         : {}),
     },
     acquisition: {

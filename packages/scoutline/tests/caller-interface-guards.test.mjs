@@ -295,3 +295,56 @@ test('review P2 actual completed pages are fixed points through existing invocat
   console.log(JSON.stringify({case:'P2 completed-page reach',normalEvidenceAndRange:2,unsafeManifestUnavailable:!!underProfile.error,unsafeEvidenceRangeReached,unsafeEvidenceRangeUnreached:!!underProfile.error}));
   await assert.rejects(run({schemaVersion:1,operation:'inspect',investigationRef:h.investigationRef},{...options,secrets:['sha256:']}),unavailable,'actual computed digest collision is exact typed unavailability');assert.equal(w.calls.length,calls);
 });
+
+test('PR291 E forged pinned cursor cannot start inside surrogate pair',async()=>{
+  const x=await repairP1World('a😀b'),request={schemaVersion:1,operation:'readEvidence',investigationRef:x.h.investigationRef,representationId:x.e.representationId,evidenceId:x.e.evidenceId,digest:x.e.digest,maxChars:2048};
+  const cursor=Buffer.from(JSON.stringify({v:1,r:x.h.committedRevision,h:x.h.revision,b:x.h.redactionBasis,c:x.e.representationId,d:x.e.digest,e:x.e.evidenceId,o:2})).toString('base64url');
+  await assert.rejects(run({...request,cursor},x.options),e=>e.code==='VALIDATION_ERROR'&&e.message==='Cursor offset splits a surrogate-pair character.');
+});
+test('PR291 E oversized displayed tail binding refuses before lower round',async()=>{
+  const x=await repairP1World('hidden alpha-secret; GREEN',['alpha-secret']),display=(await body(x.h,x.e,x.options)).all,a=display.indexOf('GREEN');
+  const r=await repairP1Submit(x,[a,display.length+1],'GREEN');
+  assert.equal(r.error?.code,'VALIDATION_ERROR');assert.equal(r.error?.message,'Display quote/range does not bind unchanged evidence.');
+  assert.equal(r.callsAfter,r.callsBefore);assert.deepEqual(r.after,r.before);
+});
+
+test('PR291 compatibility E adjacent surrogate offsets, exact end and metadata boundary',async()=>{
+  const x=await repairP1World('a😀b'),base={schemaVersion:1,operation:'readEvidence',investigationRef:x.h.investigationRef,representationId:x.e.representationId,evidenceId:x.e.evidenceId,digest:x.e.digest,maxChars:2048};
+  for(const [o,content] of [[1,'😀b'],[3,'b'],[4,'']]){const cursor=Buffer.from(JSON.stringify({v:1,r:x.h.committedRevision,h:x.h.revision,b:x.h.redactionBasis,c:x.e.representationId,d:x.e.digest,e:x.e.evidenceId,o})).toString('base64url'),p=await run({...base,cursor},x.options);assert.equal(p.content,content);assert.deepEqual(p.range,[o,4]);assert.equal(p.cursor,null);}
+  assert.equal((await run({...base,range:[0,4]},x.options)).content,'a😀b');
+  const y=await setup({requirements:{schemaVersion:1,question:'metadata 😀 question',requirements:{value:{question:'Value?',schema:{type:'string'}}}}}),text=(await collection(y.h,'changes',y.options)).text,o=text.indexOf('😀')+1;assert(o>0);
+  const cursor=Buffer.from(JSON.stringify({v:1,r:y.h.committedRevision,h:y.h.revision,b:y.h.redactionBasis,c:'changes',o})).toString('base64url');await assert.rejects(run({schemaVersion:1,operation:'inspect',investigationRef:y.h.investigationRef,collection:'changes',cursor},y.options),e=>e.code==='VALIDATION_ERROR'&&e.message==='Cursor offset splits a surrogate-pair character.');
+  const z=await repairP1World('hidden alpha-secret; GREEN',['alpha-secret']),display=(await body(z.h,z.e,z.options)).all,a=display.indexOf('GREEN'),r=await repairP1Submit(z,[a,display.length],'GREEN');assert.equal(r.error,undefined);assert.equal(r.after.revision,r.before.revision+1);
+});
+
+
+async function deletePreflightCase(profile) {
+  const {rm}=await import('node:fs/promises');
+  const {readCallerRecord}=await import('../dist/lib/lean-caller-rounds.js');
+  const s=await sandbox(),w=localWorld(),options={storeRoot:s.env.SCOUTLINE_INVESTIGATIONS_DIR,deps:w.deps,secrets:[]};
+  try {
+    const h=await run({schemaVersion:1,operation:'start',requirements:contract,dataScope:'synthetic'},options);
+    const before=await readCallerRecord(options.storeRoot,h.investigationRef),callsBefore=w.calls.length;
+    let response,error,after,readError;
+    try {response=await run({schemaVersion:1,operation:'delete',investigationRef:h.investigationRef},{...options,secrets:profile(h)});} catch(e) {error=e;}
+    try {after=await readCallerRecord(options.storeRoot,h.investigationRef);} catch(e) {readError=e;}
+    const callsAfter=w.calls.length;
+    console.log(JSON.stringify({case:'delete preflight',profile:profile.name,error:error?.code,message:error?.message,beforeRevision:before?.revision,afterRevision:after?.revision,afterAvailable:!!after,readError:readError?.code,callsBefore,callsAfter}));
+    return {h,before,after,error,response,readError,callsBefore,callsAfter};
+  } finally {await rm(s.path,{recursive:true,force:true});await rm(s.home,{recursive:true,force:true});}
+}
+test('PR291 delete refusal preserves record for colliding fixed kind',async()=>{
+  const x=await deletePreflightCase(function fixedKind(){return ['caller'];});
+  assert.equal(x.error?.name,'ValidationError');assert.equal(x.error?.code,'VALIDATION_ERROR');assert.equal(x.error?.message,'Caller view unavailable under the active redaction profile.');
+  assert.ok(x.after,'existing retained record must survive refused acknowledgement');assert.equal(x.after.revision,x.before.revision);assert.deepEqual(x.after,x.before);assert.equal(x.callsAfter,x.callsBefore);
+});
+test('PR291 delete refusal preserves record for colliding reference',async()=>{
+  const x=await deletePreflightCase(function reference(h){return [h.investigationRef];});
+  assert.equal(x.error?.name,'ValidationError');assert.equal(x.error?.code,'VALIDATION_ERROR');assert.equal(x.error?.message,'Caller view unavailable under the active redaction profile.');
+  assert.ok(x.after,'existing retained record must survive refused acknowledgement');assert.equal(x.after.revision,x.before.revision);assert.deepEqual(x.after,x.before);assert.equal(x.callsAfter,x.callsBefore);
+});
+test('PR291 delete acknowledgement follows actual successful deletion',async()=>{
+  const x=await deletePreflightCase(function normal(){return [];});
+  assert.equal(x.error,undefined);assert.deepEqual(x.response,{kind:'caller-assisted-investigation',schemaVersion:2,investigationRef:x.h.investigationRef,deleted:true});
+  assert.equal(x.after,undefined);assert.ok(x.readError,'deleted retained record must be unavailable');assert.equal(x.callsAfter,x.callsBefore);
+});

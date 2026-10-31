@@ -9,7 +9,7 @@ const scratch=await mkdtemp(join(tmpdir(),'caller-demo-'));
 try {
 await mkdir(join(scratch,'home'));
 const env={PATH:process.env.PATH,NODE_OPTIONS:process.env.NODE_OPTIONS,TMPDIR:process.env.TMPDIR,HOME:join(scratch,'home'),SCOUTLINE_CONFIG_DIR:join(scratch,'config'),SCOUTLINE_INVESTIGATIONS_DIR:join(scratch,'records'),SCOUTLINE_CACHE_DIR:join(scratch,'cache'),SCOUTLINE_ARTIFACTS_DIR:join(scratch,'artifacts'),TAVILY_API_KEY:'synthetic-acquisition-key',TYPESAFE_API_KEY:'synthetic-judge-key',SCOUTLINE_JUDGE_TRANSMIT:'1',SCOUTLINE_NO_AGENT_CHECK:'1'};
-function call(request){const child=spawnSync(process.execPath,['--import',join(root,'tests/helpers/caller-native-preload.mjs'),join(root,'bin/scoutline.js'),'investigate','--provider','tavily','--no-cache','--output','data','--caller-request-json',JSON.stringify(request)],{env,encoding:'utf8',timeout:30000});
+function call(request){const child=spawnSync(process.execPath,['--import',join(root,'tests/helpers/caller-native-preload.mjs'),join(root,'bin/scoutline.js'),'investigate','--provider','tavily','--no-cache','--caller-request-json',JSON.stringify(request)],{env,encoding:'utf8',timeout:30000});
  if(!child.stdout)throw new Error(child.stderr||String(child.error));const data=JSON.parse(child.stdout);assert.ok([0,1].includes(child.status),child.stderr);return data;}
 function request(operation,extra={}){return {schemaVersion:1,operation,...extra};}
 const requirements={schemaVersion:1,question:'What version?',requirements:{version:{question:'What version?',schema:{type:'string'}}},limits:{maxSearchAttempts:1,deadlineMs:5000}};

@@ -487,8 +487,8 @@ revision/round identity, accepted values, every outcome row, evidence
 with original/display digests and cursors for the seven collection
 pages. `start/continue` use the same executable suppliers, provider
 precedence, judge consent pair, and shared physical ceiling as
-requirements mode. A created investigation retains complete verified
-results locally; `continue` validates `expectedRevision`; proposals
+requirements mode. A created investigation keeps complete retained
+results locally; caller-supplied representations have unverified provenance; `continue` validates `expectedRevision`; proposals
 bind only to current accessible redacted evidence and map to the
 original retained quote. Duplicate content requires an exact `evidenceId` to
 select its retained event; evidence cursors pin that event. Public responses
@@ -500,7 +500,12 @@ available and a compatible full replacement enables continuation.
 Output paging is bounded with
 `maxChars` (1024..65536; mutating headers require at least 8192);
 whole metadata/body redaction runs before paging, and changed
-secret bases invalidate old cursors rather than mixing pages.
+secret bases invalidate old cursors rather than mixing pages. Offline
+`inspect` and `readEvidence` discover configured secrets from local settings
+without provider runtime or HTTP; unreadable or corrupt settings yield a fixed
+view-unavailable response. `delete` bypasses discovery. Caller accounting
+retains complete validated stages; partial prefixes from unknown stages are
+omitted, so `knownSubtotal` is not a complete HTTP total.
 `--provider`/`--no-cache` carry over.
 
 ```bash

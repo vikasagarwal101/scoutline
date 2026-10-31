@@ -187,6 +187,12 @@ function makeRequirementsRuntime({
   });
 }
 
+
+// Capture actual return values before any assertion can discard a counterfactual witness.
+const assertionErrorDocument = text => { try { return JSON.parse(text.trim().split('\n').at(-1)); } catch { return null; } };
+const assertionStdout = text => { try { return {envelope: JSON.parse(text), parseError: null}; } catch(error) { return {envelope: null, parseError: error.message}; } };
+const assertionSnapshot = (purpose, observed) => console.log(JSON.stringify({assertionEvidence: 1, purpose, ...observed}));
+
 function makeAdapter({ stdin = "" } = {}) {
   const stdout = [];
   const stderr = [];
@@ -217,7 +223,7 @@ async function runMain(argv, { runtime, env = { ...ENV }, stdin = "" } = {}) {
   } catch {
     parsed = null;
   }
-  return { code, stdout: text, stderr: stderr.join(""), parsed };
+  return { code, stdout: text, stderr: stderr.join(""), stderrChunks: [...stderr], parsed };
 }
 
 test("requirements mode: three input routes produce the complete envelope", async () => {
@@ -302,11 +308,19 @@ test("requirements mode: mode conflicts reject before any HTTP (typed, exit 1)",
     { argv: ["investigate", "--requirements", "-", "--max-chars", "4000"], stdin: JSON.stringify(CONTRACT) },
     { argv: ["investigate", "--requirements", "-", "--context", "notes.md"], stdin: JSON.stringify(CONTRACT) },
   ];
-  for (const c of conflicts) {
-    const { code, stderr } = await runMain(c.argv, { runtime, stdin: c.stdin ?? "" });
-    assert.equal(code, 1, `expected typed exit 1 for ${c.argv.join(" ")}`);
-    assert.ok(stderr.includes("VALIDATION_ERROR") || stderr.length > 0);
+  const failures=[];
+  for (const [row,c] of conflicts.entries()) {
+    const result = await runMain(c.argv, { runtime, stdin: c.stdin ?? "" });
+    const error=assertionErrorDocument(result.stderr);
+    assertionSnapshot('conflict',{row,argv:c.argv,...result,error,httpLog:[...httpLog],httpCount:httpLog.length});
+    try {
+      assert.equal(result.code, 1, `expected typed exit 1 for ${c.argv.join(" ")}`);
+      assert.equal(result.stdout,'');assert.equal(error?.success,false);assert.equal(error?.code,'VALIDATION_ERROR');
+      const reason=row===0?'--requirements and --requirements-json are mutually exclusive.':row===1?"investigate --requirements does not accept a positional question; the requirements document's question is authoritative.":`--${['verify','synthesize','sources','max-chars','context'][row-2]} is a plain-mode (EvidencePack) control and cannot combine with --requirements.`;
+      assert.equal(error.error,reason);assert.equal(httpLog.length,0,'no HTTP on row '+row);
+    } catch(error) { failures.push(new Error(c.argv.join(' '),{cause:error})); }
   }
+  if(failures.length) throw new AggregateError(failures,'mode conflict rows failed');
   assert.equal(httpLog.length, 0, "no HTTP dispatch may happen on a mode conflict");
 });
 
@@ -417,10 +431,19 @@ test("requirements mode: a raised or malformed cap override rejects before any H
     assert.equal(httpLog.length, 0, `cap ${value} dispatched before rejecting`);
   }
   // A valid lowering is accepted (1 is inside the range).
+  const loweringHTTP=[];
   const lowering = await runMain(
     ["investigate", "--provider", "tavily", "--requirements-json", JSON.stringify(CONTRACT)],
-    { runtime: makeRequirementsRuntime(), env: { ...ENV, SCOUTLINE_REQUIREMENTS_MAX_PHYSICAL: "1" } },
+    { runtime: makeRequirementsRuntime({hooks:{httpLog:loweringHTTP}}), env: { ...ENV, SCOUTLINE_REQUIREMENTS_MAX_PHYSICAL: "1" } },
   );
+  assertionSnapshot('cap',{...lowering,httpLog:loweringHTTP,httpCount:loweringHTTP.length,ledgerLength:lowering.parsed?.acquisition?.physicalAttempts?.length??null,physicalTotal:lowering.parsed?.usage?.physicalHttpAttempts??null,judgeTelemetryUnknown:lowering.parsed?.usage?.judgeTelemetryUnknown??null,physicalHttpAttemptsUnknown:lowering.parsed?.usage?.physicalHttpAttemptsUnknown??null,parseError:assertionStdout(lowering.stdout).parseError});
+  const n=loweringHTTP.length;assert.ok(n>0&&n<=1,'actual acquisition dispatches must be positive and <=1');
+  assert.ok(lowering.parsed);assert.equal(lowering.parsed.kind,'requirements-investigation');assert.equal(lowering.parsed.schemaVersion,1);assert.equal(lowering.parsed.question,CONTRACT.question);
+  assert.ok(Array.isArray(lowering.parsed.acquisition.physicalAttempts));// Refused/not-started audit rows did not dispatch.
+  assert.equal(lowering.parsed.acquisition.physicalAttempts.filter(row=>row.outcome!=="refused"&&row.outcome!=="not-started").length,n);
+  const usage=lowering.parsed.usage;assert.ok(Number.isSafeInteger(usage.physicalHttpAttempts)&&usage.physicalHttpAttempts>=n);
+  if(usage.judgeTelemetryUnknown===undefined&&usage.physicalHttpAttemptsUnknown===undefined)assert.ok(usage.physicalHttpAttempts<=1);
+  assert.doesNotMatch(lowering.stderr,/SCOUTLINE_REQUIREMENTS_MAX_PHYSICAL/);
   assert.ok(lowering.code === 0 || lowering.code === 1);
 });
 
@@ -452,16 +475,17 @@ test("requirements mode: valueless/malformed --requirements rejects typed", asyn
   assert.equal(emptyInline.code, 1);
 });
 
-test("plain investigate question: byte-compatible EvidencePack path is untouched", async () => {
-  // Plain mode with no provider configured → the existing typed
-  // configuration error, byte-identical shape (no requirements drift).
-  const { code, stderr, parsed } = await runMain(["investigate", "some plain question"], {
-    runtime: makeRequirementsRuntime(),
-    env: {},
+test("plain investigate question: no-provider error preserves the plain route", async () => {
+  const factory=makeRequirementsRuntime();let factoryCalls=0;
+  const result=await runMain(["investigate", "some plain question"],{
+    runtime:context=>{factoryCalls++;return factory(context);},env:{},
   });
-  assert.notEqual(code, 0);
-  assert.equal(parsed, null);
-  assert.ok(stderr.includes("success") === false || stderr.includes("requirements") === false);
+  const error=assertionErrorDocument(result.stderrChunks.at(-1)??'');
+  assertionSnapshot('plain',{...result,error,factoryCalls});
+  assert.equal(factoryCalls,0,'plain route must not construct a requirements runtime');
+  assert.equal(result.stdout,'');assert.notEqual(result.code,0);assert.equal(result.parsed,null);
+  assert.equal(result.code,1);assert.equal(error?.success,false);assert.equal(error?.code,'UNSUPPORTED_CAPABILITY');
+  assert.equal(error.error,'Provider "(none)" does not support capability "search"');
 });
 
 
@@ -593,4 +617,176 @@ test('L7 F plain mode delivers positive EvidencePack bytes despite a supplied re
   console.log(JSON.stringify({case:'corrected-positive-plain-pack',stdout:r.stdout}));
   assert.equal(r.code,0,'plain question must still emit its actual EvidencePack');assert(r.stdout.length>0);assert(r.parsed);assert.equal(r.parsed.schemaVersion,1);assert.equal(r.parsed.question,'ExampleApp release 2.4.0');assert(Array.isArray(r.parsed.sources)&&r.parsed.sources.length>0);assert(r.stdout.includes(URL_USEFUL));const useful=r.parsed.sources.find(source=>source.url===URL_USEFUL);assert(useful&&Array.isArray(useful.passages)&&useful.passages.length>0);const release=useful.passages.find(p=>p.quote.includes('ExampleApp release 2.4.0.'));assert(release,'requested release sentence must be retained from the useful source');assert.deepEqual(release.charRange,[TEXT.indexOf(release.quote),TEXT.indexOf(release.quote)+release.quote.length]);assert.equal(TEXT.slice(...release.charRange),release.quote,'selected passage binds exact known normalized fixture content');assert(log.length>0,'positive real plain acquisition fixture ran');assert.notEqual(r.parsed.kind,'requirements-investigation');
  }finally{globalThis.fetch=original;}
+});
+
+test('PR291 G present empty physical cap refuses before runtime composition', async () => {
+  let composed = 0;
+  const r = await runMain(['investigate', '--requirements-json', JSON.stringify(CONTRACT)], {
+    env: { ...ENV, SCOUTLINE_REQUIREMENTS_MAX_PHYSICAL: '' },
+    runtime: context => { composed++; return makeRequirementsRuntime({withJudge:false})(context); },
+  });
+  assert.equal(r.stdout, '');
+  assert.equal(JSON.parse(r.stderr).code, 'VALIDATION_ERROR');
+  assert.match(JSON.parse(r.stderr).error, /SCOUTLINE_REQUIREMENTS_MAX_PHYSICAL must be a base-10 integer/);
+  assert.equal(composed, 0);
+});
+
+test('PR291 G caller rejects positive cache and output tokens before input', async () => {
+  for (const flags of [['--cache'], ['--cache','--no-cache'], ['--output','result.json'], ['--no-output']]) {
+    const {adapter, stdout, stderr} = makeAdapter(); let reads = 0, config = 0, runtime = 0;
+    adapter.readStdin = async () => { reads++; return '{}'; };
+    const code = await main(['investigate','--caller-request','-',...flags], hermeticMainDeps({
+      invocation:adapter, env:{}, loadScoutlineConfig:async()=>{config++;return {version:1,providers:{}};},
+      requirementsRuntime:()=>{runtime++;throw new Error('unexpected runtime');},
+    }));
+    assert.equal(code, 1); assert.equal(stdout.join(''), '');
+    assert.equal(reads, 0, 'unsupported '+flags.join(' ')+' must refuse before input');
+    assert.equal(config, 0); assert.equal(runtime, 0);
+    assert.equal(JSON.parse(stderr.join('')).code, 'VALIDATION_ERROR');
+    assert.match(JSON.parse(stderr.join('')).error, /cannot combine with caller-assisted operations/);
+  }
+});
+
+test('PR291 G requirements main forwards its injected clock', async () => {
+  const {adapter} = makeAdapter(); let calls = 0;
+  const code = await main(['investigate','--requirements-json',JSON.stringify(CONTRACT)],hermeticMainDeps({
+    invocation:adapter, env:{...ENV}, now:()=>{calls++;return 12345;},
+    requirementsRuntime:makeRequirementsRuntime({withJudge:false}),
+  }));
+  assert.ok([0,1].includes(code));
+  assert.ok(calls > 0, 'requirements engine must receive the main invocation clock');
+});
+
+// Exercise the real public runtime wrapper; injected opaque collaborators are
+// system boundaries. The final result still comes from the actual engine.
+async function pr291Telemetry({extractRows=[],declared,observer=false,judgeRows=[],candidateRows=[],native=true,afterCalls,executeError,emptyAcquisition=false}={}) {
+  const {withRequirementsRuntime}=await import('../dist/commands/investigate-requirements.js');
+  const {runLeanInvestigation}=await import('../dist/lib/lean-investigation.js');
+  let extracts=0,judges=0,candidates=0,entered=0,releases=0,interrupt;const caught=[];
+  const settle=row=>{if(row?.reject)throw row.value;return row?.value;};
+  const base=makeRequirementsRuntime({withJudge:false});
+  const runtime=context=>({...base(context),...(observer?{producerPhysical:{reserve:()=>{}}}:{}),engineDeps:{
+    judge:judgeRows.length?async()=>settle(judgeRows[judges++]):null,
+    candidateJudge:candidateRows.length?async()=>settle(candidateRows[candidates++]):null,
+    extract:async()=>settle(extractRows[extracts++]),
+    ...(declared!==undefined?{declaredProducerAttempts:declared}:{}),
+  }});
+  const result=await withRequirementsRuntime(CONTRACT,{readFile:async()=>{throw new Error('no input');},readStdin:async()=>{throw new Error('no input');},now:()=>0,requirementsRuntime:runtime,registerUserInterrupt:fn=>{interrupt=fn;return()=>{releases++;};}},
+    {env:{...ENV},provider:'tavily',noCache:true,cache:{get:async()=>null,set:async()=>{}},sleep:async()=>{},random:()=>0},
+    async(input,unified,observation)=>{entered++;for(const [rows,fn] of [[extractRows,unified.extract],[judgeRows,unified.judge],[candidateRows,unified.candidateJudge]])for(const _row of rows){try{await fn({fields:[]});}catch(e){caught.push(e);}}
+      await afterCalls?.({interrupt,caught,unified,observation});if(executeError!==undefined)throw executeError;
+      const result=await runLeanInvestigation(input,{...unified,extract:undefined,judge:null,candidateJudge:null,...(emptyAcquisition?{search:async()=>[]}: {})});
+      return {result,value:{snapshot:native?observation():null,caught,extracts,judges,candidates,entered}};
+    });
+  return {...result,releases};
+}
+for(const [name,extractRows] of [
+  ['reported then missing',[{value:{attempts:3}},{value:{}}]],
+  ['missing then reported',[{value:{}},{value:{attempts:3}}]],
+  ['reported then missing rejection',[{value:{attempts:3}},{reject:true,value:new Error('opaque rejection')}]],
+])test('PR291 B producer unknown is monotonic: '+name,async()=>{
+  const r=await pr291Telemetry({extractRows}),snapshot=r.value.snapshot,usage=r.projected.data.usage;
+  assert.equal(r.value.extracts,2);assert.match(usage.physicalHttpAttemptsUnknown,/producer/);
+  assert.equal(snapshot.stages.producer,null);assert.equal(snapshot.total,null);
+  assert.equal(snapshot.knownSubtotal,snapshot.stages.acquisition,'caller subset excludes unknown-stage prefix');
+  assert.equal(usage.physicalHttpAttempts,snapshot.stages.acquisition+3,'requirements retains measured prefix');assert.equal(r.releases,1);
+});
+
+const pr291Malformed=e=>e?.code==='VALIDATION_ERROR'&&e.message==='Invalid physical-attempt measurement; counts must be nonnegative safe integers.';
+test('PR291 C declaration counts each actual producer settlement',async()=>{
+  const r=await pr291Telemetry({declared:2,extractRows:[{value:{}},{reject:true,value:new Error('opaque producer failure')}]});
+  assert.equal(r.value.extracts,2);assert.equal(r.value.snapshot.stages.producer,4);assert.equal(r.value.snapshot.total,r.value.snapshot.stages.acquisition+4);assert.equal(r.projected.data.usage.physicalHttpAttemptsUnknown,undefined);
+});
+for(const stage of ['judgeRows','candidateRows'])test('PR291 C rejected malformed '+stage+' remains typed after absorption',async()=>{
+  await assert.rejects(pr291Telemetry({[stage]:[{reject:true,value:Object.assign(new Error('untrusted payload'),{attempts:1.5})}]}),pr291Malformed);
+});
+test('PR291 C native unrepresentable measurement is typed before observation',async()=>{
+  await assert.rejects(pr291Telemetry({extractRows:[{value:{attempts:100001}}],emptyAcquisition:true}),e=>e?.code==='VALIDATION_ERROR'&&e.message==='Physical-attempt measurement exceeds the caller native bound of 100000.');
+});
+
+function pr291EngineFault(stage,{malformed=true,cancel=true}={}) {
+  let delivered=false,interrupted=false,interrupt,calls=0,releases=0;
+  const now=()=>{if(delivered&&cancel&&!interrupted){interrupted=true;interrupt();}return 0;};
+  const base=makeRequirementsRuntime(),runtime=context=>{
+    const composed=base(context),key=stage==='classification'?'judge':'candidateJudge',original=composed.engineDeps[key];
+    return {...composed,engineDeps:{...composed.engineDeps,[key]:async input=>{calls++;const response=await original(input);delivered=true;return {...response,attempts:malformed?1.5:1};}}};
+  };
+  const requirements={schemaVersion:1,question:'ExampleApp release?',requirements:stage==='classification'?{csv:CONTRACT.requirements.csv}:{version:CONTRACT.requirements.version},limits:{maxSearchAttempts:1,maxUniqueReads:2,maxJudgeAttempts:2}};
+  return {requirements,runtime,now,register:fn=>{interrupt=fn;return()=>{releases++;};},counts:()=>({calls,releases,interrupted})};
+}
+for(const stage of ['classification','candidate'])for(const malformed of [true,false])test('PR291 D actual requirements settlement '+stage+' malformed='+malformed,async()=>{
+  const x=pr291EngineFault(stage,{malformed}),{adapter,stdout,stderr}=makeAdapter();
+  const code=await main(['investigate','--requirements-json',JSON.stringify(x.requirements)],hermeticMainDeps({env:{...ENV},invocation:adapter,requirementsRuntime:x.runtime,now:x.now,requirementsUserInterrupt:x.register}));
+  assert.equal(stdout.join(''),'');const error=JSON.parse(stderr.join(''));
+  assert.ok(x.counts().calls>0);assert.equal(x.counts().interrupted,true,'actual engine consulted clock after collaborator settled');assert.equal(x.counts().releases,1);
+  if(malformed){assert.equal(code,1);assert.equal(error.code,'VALIDATION_ERROR');assert.equal(error.error,'Invalid physical-attempt measurement; counts must be nonnegative safe integers.');}
+  else {assert.equal(code,130);assert.match(error.error,/interrupted/);}
+});
+for(const stage of ['classification','candidate'])for(const cancel of [false,true])test('PR291 D actual native continuation fences '+stage+' cancel='+cancel,async()=>{
+  const {sandbox}=await import('./helpers/caller-review-harness.mjs'),{executeCallerInvestigation}=await import('../dist/lib/caller-investigation.js'),{handleInvestigateCaller}=await import('../dist/commands/investigate-caller.js'),{readCallerRecord}=await import('../dist/lib/lean-caller-rounds.js'),{openStore}=await import('../dist/lib/retained-record-store.js');
+  const s=await sandbox(),x=pr291EngineFault(stage,{cancel}),storeRoot=s.env.SCOUTLINE_INVESTIGATIONS_DIR;
+  const made=await executeCallerInvestigation({schemaVersion:1,operation:'start',requirements:x.requirements,dataScope:'synthetic',representations:[{format:'text',content:TEXT,label:'D retained native source'}]},{storeRoot,deps:{search:async()=>[],read:async()=>{throw new Error('no setup read');},judge:null,now:()=>0}});
+  const before=await readCallerRecord(storeRoot,made.investigationRef);
+  await assert.rejects(handleInvestigateCaller({schemaVersion:1,operation:'continue',investigationRef:made.investigationRef,expectedRevision:made.revision,dataScope:'synthetic'},storeRoot,{readFile:async()=>{throw new Error('no file');},readStdin:async()=>{throw new Error('no stdin');},now:x.now,requirementsRuntime:x.runtime,registerUserInterrupt:x.register},{env:{...ENV},provider:'tavily',noCache:true,cache:{get:async()=>null,set:async()=>{}},sleep:async()=>{},random:()=>0}),pr291Malformed);
+  const after=await readCallerRecord(storeRoot,made.investigationRef);assert.equal(after.revision,before.revision);assert.deepEqual(after.payload,before.payload,'failed publication must retain the complete prior result view');assert.ok(x.counts().calls>0);assert.equal(x.counts().interrupted,cancel);assert.equal(x.counts().releases,1);
+  const handle=await openStore({root:storeRoot}).acknowledgeInterrupted(made.investigationRef);let records=[];
+  try {let cursor;do{const page=await handle.readRecoveryPage(cursor?{cursor}:{});records.push(...page.records);cursor=page.cursor;}while(cursor);}finally{await handle.release();}
+  assert(records.some(r=>r.publicationState==='unpublished'&&r.work.status==='failed'&&r.work.measured?.judgments>0),'actual failed native settlement retains paid logical judge work and releases ownership');
+});
+
+test('PR291 compatibility C selected telemetry table on all success and rejection seams',async()=>{
+  const symbol=Symbol.for('leanJevAttemptMeta');
+  const rows=[
+    ['direct zero',{attempts:0},0],['direct count',{attempts:2},2],['absent',{},null],['direct null',{attempts:null},null],['direct undefined',{attempts:undefined},null],
+    ['symbol authoritative',{[symbol]:{attempts:3},attempts:9},3],['symbol null suppresses direct',{[symbol]:{attempts:null},attempts:9},null],['symbol undefined suppresses direct',{[symbol]:{attempts:undefined},attempts:9},null],['symbol empty falls back',{[symbol]:{},attempts:2},2],
+  ];
+  for(const [label,value,count] of rows)for(const stage of ['extractRows','judgeRows','candidateRows'])for(const reject of [false,true]){
+    const r=await pr291Telemetry({[stage]:[{value,reject}],emptyAcquisition:true}),snap=r.value.snapshot,key=stage==='extractRows'?'producer':'judge';
+    assert.equal(snap.stages[key],count,label+' '+stage+' reject='+reject);
+    assert.equal(r.projected.data.usage.physicalHttpAttempts,count??0,'each selected count joins once');
+    if(reject)assert.equal(r.value.caught[0],value,'original rejected carrier identity');
+  }
+  const bad=[-1,0.5,'2',NaN,Infinity,Number.MAX_SAFE_INTEGER+1,true,{},Symbol('opaque')].map(attempts=>({attempts}));
+  for(const meta of [null,1,'opaque',[],()=>{}])bad.push({[symbol]:meta});
+  bad.push(Object.defineProperty({},'attempts',{get(){throw new Error('untrusted getter payload');}}));
+  bad.push(Object.defineProperty({},symbol,{get(){throw new Error('untrusted symbol getter payload');}}));
+  bad.push({[symbol]:Object.defineProperty({},'attempts',{get(){throw new Error('untrusted nested getter payload');}})});
+  for(const value of bad)for(const stage of ['extractRows','judgeRows','candidateRows'])for(const reject of [false,true])await assert.rejects(pr291Telemetry({[stage]:[{value,reject}],emptyAcquisition:true}),pr291Malformed,stage+' reject='+reject);
+  for(const value of ['original primitive rejection',null,undefined,17]){
+    const r=await pr291Telemetry({judgeRows:[{value,reject:true}],emptyAcquisition:true});assert.equal(r.value.caught[0],value);assert.equal(r.value.snapshot.stages.judge,null);
+  }
+});
+test('PR291 compatibility C declarations, observers and no-call accounting',async()=>{
+  for(const declared of [0,3])for(const calls of [0,1,2]){
+    const r=await pr291Telemetry({declared,extractRows:Array.from({length:calls},(_,i)=>i%2?{value:new Error('original failure'),reject:true}:{value:{attempts:declared}}),emptyAcquisition:true});
+    assert.equal(r.value.snapshot.stages.producer,declared*calls);assert.equal(r.projected.data.usage.physicalHttpAttempts,declared*calls);assert.equal(r.projected.data.admission.producer,'unknown','measurement is not admission');
+  }
+  for(const declared of [-1,0.5,'2',NaN,Infinity,Number.MAX_SAFE_INTEGER+1])await assert.rejects(pr291Telemetry({declared}),pr291Malformed);
+  await assert.rejects(pr291Telemetry({declared:2,extractRows:[{value:{attempts:3}}]}),e=>e.code==='VALIDATION_ERROR'&&e.message==='Conflicting producer physical-attempt measurements.');
+  await assert.rejects(pr291Telemetry({declared:2,extractRows:[{value:{attempts:NaN}}]}),pr291Malformed);
+  let entered=false;await assert.rejects(pr291Telemetry({declared:0,observer:true,afterCalls:()=>{entered=true;}}),e=>e.code==='VALIDATION_ERROR'&&e.message==='Declared producer measurement cannot combine with a configured producer observer.');assert.equal(entered,false,'configured observer-zero conflict refuses before engine callback');
+  const zero=await pr291Telemetry({observer:true,extractRows:[{value:{}}],emptyAcquisition:true});assert.equal(zero.value.snapshot.stages.producer,0);assert.equal(zero.value.snapshot.total,0);assert.equal(zero.projected.data.admission.producer,'shared');
+  const measured=await pr291Telemetry({extractRows:[{value:{attempts:2}},{value:{attempts:3},reject:true}],emptyAcquisition:true});assert.equal(measured.value.snapshot.stages.producer,5);assert.equal(measured.value.snapshot.total,5);
+});
+test('PR291 compatibility C safe sums, native limit and first-fault precedence',async()=>{
+  const overflow=e=>e?.code==='VALIDATION_ERROR'&&e.message==='Physical-attempt measurement exceeds the safe-integer bound.';
+  const representable=e=>e?.code==='VALIDATION_ERROR'&&e.message==='Physical-attempt measurement exceeds the caller native bound of 100000.';
+  const exact=await pr291Telemetry({extractRows:[{value:{attempts:100000}}],emptyAcquisition:true});assert.equal(exact.value.snapshot.total,100000);
+  const large=await pr291Telemetry({extractRows:[{value:{attempts:100001}}],native:false,emptyAcquisition:true});assert.equal(large.projected.data.usage.physicalHttpAttempts,100001);
+  const max=await pr291Telemetry({extractRows:[{value:{attempts:Number.MAX_SAFE_INTEGER}}],native:false,emptyAcquisition:true});assert.equal(max.projected.data.usage.physicalHttpAttempts,Number.MAX_SAFE_INTEGER);
+  for(const stage of ['extractRows','judgeRows','candidateRows'])await assert.rejects(pr291Telemetry({[stage]:[{value:{attempts:Number.MAX_SAFE_INTEGER}},{value:{attempts:1}}],native:false,emptyAcquisition:true}),overflow);
+  await assert.rejects(pr291Telemetry({extractRows:[{value:{attempts:Number.MAX_SAFE_INTEGER}}],judgeRows:[{value:{attempts:1}}],native:false,emptyAcquisition:true}),overflow);
+  await assert.rejects(pr291Telemetry({judgeRows:[{value:{attempts:NaN}}],executeError:new Error('later execute failure')}),pr291Malformed);
+  await assert.rejects(pr291Telemetry({extractRows:[{value:{attempts:100001}}],judgeRows:[{value:{attempts:NaN}}],emptyAcquisition:true}),pr291Malformed);
+  const judgeRows=[{value:{attempts:0}}];await assert.rejects(pr291Telemetry({extractRows:[{value:{attempts:100001}}],judgeRows,emptyAcquisition:true,afterCalls:async({unified,observation})=>{assert.throws(observation,representable);judgeRows.push({value:{attempts:NaN}});try{await unified.judge({});}catch{}throw new Error('later execute failure');}}),representable);
+});
+test('PR291 compatibility G cap table, no-cache/global flags and clocks',async()=>{
+  for(const raw of ['0','49','1.5','banana','-1']){
+    let runtime=0;const r=await runMain(['investigate','--requirements-json',JSON.stringify(CONTRACT)],{env:{...ENV,SCOUTLINE_REQUIREMENTS_MAX_PHYSICAL:raw},runtime:()=>{runtime++;throw new Error('no runtime');}});assert.equal(r.stdout,'');assert.equal(JSON.parse(r.stderr).code,'VALIDATION_ERROR');assert.equal(runtime,0);
+  }
+  for(const cap of [undefined,'1','48']){const r=await runMain(['investigate','--requirements-json',JSON.stringify(CONTRACT)],{env:{...ENV,...(cap===undefined?{}:{SCOUTLINE_REQUIREMENTS_MAX_PHYSICAL:cap})},runtime:makeRequirementsRuntime({withJudge:false})});assert(r.parsed);assert(r.parsed.usage.physicalHttpAttempts<=(cap===undefined?48:Number(cap)));}
+  for(const flags of [['--cache=true','--no-cache'],['--output=ignored'],['--no-output']]){
+    let reads=0;const {adapter,stderr}=makeAdapter();adapter.readStdin=async()=>{reads++;return '{}';};await main(['investigate','--caller-request','-',...flags],hermeticMainDeps({env:{},invocation:adapter}));assert.equal(reads,0);assert.match(JSON.parse(stderr.join('')).error,/cannot combine with caller-assisted operations/);
+  }
+  for(const clock of [()=>9000,(()=>{let n=0;return()=>++n;})()]){let calls=0;const {adapter,stdout}=makeAdapter();await main(['investigate','--requirements-json',JSON.stringify(CONTRACT),'--no-cache','--provider','tavily','--output-format','data'],hermeticMainDeps({env:{...ENV},invocation:adapter,requirementsRuntime:makeRequirementsRuntime({withJudge:false}),now:()=>{calls++;return clock();}}));assert(calls>0);assert.equal(JSON.parse(stdout.join('')).kind,'requirements-investigation');}
 });

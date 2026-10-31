@@ -8,6 +8,11 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { createTavilyDescriptor } from '../dist/providers/tavily/adapter.js';
 import { createLeanAcquisitionDeps } from '../dist/lib/lean-acquisition-bridge.js';
+
+// Capture actual return values before any assertion can discard a counterfactual witness.
+const assertionErrorDocument = text => { try { return JSON.parse(text.trim().split('\n').at(-1)); } catch { return null; } };
+const assertionStdout = text => { try { return {envelope: JSON.parse(text), parseError: null}; } catch(error) { return {envelope: null, parseError: error.message}; } };
+const assertionSnapshot = (purpose, observed) => console.log(JSON.stringify({assertionEvidence: 1, purpose, ...observed}));
 const root = fileURLToPath(new URL('..', import.meta.url));
 const script = join(root, 'bin', 'scoutline.js');
 const json = (v, status = 200) => new Response(JSON.stringify(v), { status });
@@ -68,6 +73,12 @@ test('actual authorized main pipe parses valid requirements through its real inc
 
 test('Search/Reader consent does not activate an ambient complete judge profile',async()=>{
  const r=await child([script,'investigate','--requirements-json',JSON.stringify(input())],{TYPESAFE_API_KEY:'synthetic-judge-key'});
+ const error=assertionErrorDocument(r.stderr);
+ assertionSnapshot('consent-correction',{...r,...assertionStdout(r.stdout),error,httpMarkers:r.stderr.match(/HTTP [^\n]*/g)??[]});
+ assert.equal(r.code,1);assert.equal(r.stdout,'');
+ assert.equal(error?.success,false);assert.equal(error?.code,'VALIDATION_ERROR');
+ assert.equal(error.error,"requirements-mode judge selection is incomplete: TYPESAFE_API_KEY and SCOUTLINE_JUDGE_TRANSMIT=1 must be supplied together (credentials alone are not consent; consent alone has no judge).");
+ assert.doesNotMatch(r.stderr,/HTTP /,'incomplete selection refuses before any HTTP');
  assert.doesNotMatch(r.stderr,/HTTP offline.test/,'no separately authorized judge transmission');
  assert.ok(r.code!==0);
 });

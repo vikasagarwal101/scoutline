@@ -2,6 +2,7 @@
 import { createTavilyDescriptor } from "../../dist/providers/tavily/adapter.js";
 import { createTypesafeJudge } from "../../dist/lib/lean-typesafe-judge.js";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 
 export function nativeRuntime({
   noJudge = false,
@@ -92,6 +93,9 @@ export function nativeRuntime({
           rawOutput: JSON.stringify(rawOutput),
           usage: { inputTokens: 11, outputTokens: 3 },
           observedCost: null,
+          // Synthetic fixture audit, not provider latency or semantic attestation.
+          elapsedMs: 0,
+          requestSha256: createHash("sha256").update(JSON.stringify(req), "utf8").digest("hex"),
         };
       };
   return {

@@ -11,7 +11,9 @@ type Collection = typeof COLLECTIONS[number];
 type Obj = Record<string, any>;
 export interface CallerInvestigationOptions {
   storeRoot: string; deps?: LeanDeps; secrets?: readonly string[]; judgeIdentity?: string; policyRevision?: string;
-  /** Internal handler adapter only; absent library instrumentation remains unknown. */
+  /** Internal handler adapter only; absent library instrumentation remains unknown.
+   * Unknown stages remain null. The closed native carrier drops partial counts
+   * within an unknown stage; knownSubtotal sums complete stages only. */
   nativeObservation?: () => import("./caller-physical.js").CallerPhysicalSnapshot;
 }
 const digest = (text: string): string => `sha256:${createHash("sha256").update(text).digest("hex")}`;
@@ -212,7 +214,7 @@ async function view(options: CallerInvestigationOptions, ref: string, revision?:
       reservationsRefused:record.payload.physical.reservationsRefused,admission:record.payload.physical.admission,
       attempts:record.payload.physical.attempts.length,
       detail:'summary',detailLocation:'assessments',detailIncomplete:true,
-      detailNote:'Attempt rows are omitted here; the complete validated native ledger is retained in the paged assessments collection.'}} : {}), cumulativeUsage:record.payload.accounting??null,
+      detailNote:'Attempt rows are paged in assessments. Unknown-stage prefixes are omitted; knownSubtotal sums complete stages only.'}} : {}), cumulativeUsage:record.payload.accounting??null,
     ...(record.payload.accounting === undefined ? {accountingUnavailable:"not-retained"} : {}),
     metadataIncomplete:true, contentIncomplete:evidence.length>0,
     collectionIncomplete:Object.fromEntries(COLLECTIONS.map(c=>[c,collections[c].length>0])),
@@ -232,6 +234,7 @@ function cut(text: string, start: number, size: number): string {
 }
 function page(base: Obj, text: string, offset: number, maxChars: number, next: (offset:number)=>string, secrets: readonly string[]): Obj {
   if (!Number.isSafeInteger(offset) || offset<0 || offset>text.length) throw new ValidationError("Invalid cursor offset.");
+  if (offset>0 && offset<text.length && /[\uD800-\uDBFF]/.test(text[offset-1]!) && /[\uDC00-\uDFFF]/.test(text[offset]!)) throw new ValidationError("Cursor offset splits a surrogate-pair character.");
   let low=0,high=text.length-offset,best:Obj|undefined;
   while(low<=high){const size=Math.floor((low+high)/2),content=cut(text,offset,size),end=offset+content.length;
     const candidate={...base,content,range:[offset,end],totalChars:text.length,contentIncomplete:end<text.length,cursor:end<text.length?next(end):null};
@@ -243,7 +246,7 @@ function page(base: Obj, text: string, offset: number, maxChars: number, next: (
 /** Five explicit operations over the approved round/store; no automatic producer or parser. */
 export async function executeCallerInvestigation(request: unknown, options: CallerInvestigationOptions): Promise<Obj> {
   validateCallerRequest(request); const req=request as Obj; const maxChars=req.maxChars??16384; const secrets=options.secrets??[];
-  if(req.operation==="delete") {await openStore({root:options.storeRoot}).deleteInvestigation(req.investigationRef);return stablePage({kind:"caller-assisted-investigation",schemaVersion:2,investigationRef:req.investigationRef,deleted:true},secrets);}
+  if(req.operation==="delete") {const response=stablePage({kind:"caller-assisted-investigation",schemaVersion:2,investigationRef:req.investigationRef,deleted:true},secrets);await openStore({root:options.storeRoot}).deleteInvestigation(req.investigationRef);return response;}
   let ref=req.investigationRef;
   if(["start","continue"].includes(req.operation)){
     if (req.requirements !== undefined) validateDefinitionIdentities(req.requirements,secrets);
@@ -261,7 +264,7 @@ export async function executeCallerInvestigation(request: unknown, options: Call
         const item:CallerProposal={fieldId:p.requirementId,definitionRevision:p.definitionRevision,mode:p.mode,value:p.value};
         if(p.binding){const e=selectEvidence(old.evidence,p.binding.representationId,p.binding.digest,p.binding.evidenceId);
           const [a,b]=p.binding.range,quote=p.binding.quote;
-          if(e.content.slice(a,b)!==quote || quote.includes("[REDACTED]"))throw new ValidationError("Display quote/range does not bind unchanged evidence.");
+          if(b>e.content.length || e.content.slice(a,b)!==quote || quote.includes("[REDACTED]"))throw new ValidationError("Display quote/range does not bind unchanged evidence.");
           const original=old.record.payload.result.evidence.find(r=>r.evidenceId===e.evidenceId)!.content;
           validateDisplayInterval(e.content,original,a,b,options.secrets??[]);
           const identity=e.content===original, start=identity?a:original.indexOf(quote);

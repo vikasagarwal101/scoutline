@@ -105,7 +105,7 @@ import {
   type RequirementsRuntimeFactory,
   type InvestigateRequirementsDeps,
 } from "./commands/investigate-requirements.js";
-import { handleInvestigateCaller, readCallerRequest, INVESTIGATE_CALLER_HELP } from "./commands/investigate-caller.js";
+import { handleInvestigateCaller, readCallerRequest, CallerInputInterruptedError, INVESTIGATE_CALLER_HELP } from "./commands/investigate-caller.js";
 import { ZaiApiClient } from "./lib/api-client.js";
 import {
   buildProviderCacheKey,
@@ -5133,7 +5133,7 @@ async function handleInvestigate(
                 return () => process.removeListener("SIGINT", onInterrupt);
               },
             } : {}),
-        now: () => Date.now(),
+        now: deps.now ?? Date.now,
         ...(deps.requirementsRuntime !== undefined ? { requirementsRuntime: deps.requirementsRuntime } : {}),
       };
       // Requirements-mode selection inputs (correction finding 1): the
@@ -6761,19 +6761,37 @@ export async function main(
       if (f["caller-request"] !== undefined && f["caller-request-json"] !== undefined) throw new ValidationError("Caller request sources are mutually exclusive.");
       const stdin = f["caller-request"] === true && parsed.positional.length === 1 && parsed.positional[0] === "-";
       if (parsed.positional.length && !stdin) throw new ValidationError("Caller request does not accept a positional question.");
-      const allowed = new Set(["caller-request", "caller-request-json", "no-cache", "cache", "output"]);
+      for (const flag of ["cache", "output", "no-output"]) {
+        if (commandArgs.includes(`--${flag}`)) throw new ValidationError(`--${flag} cannot combine with caller-assisted operations.`);
+      }
+      const allowed = new Set(["caller-request", "caller-request-json", "no-cache", "cache"]);
       for (const k of Object.keys(f)) if (!allowed.has(k)) throw new ValidationError(`--${k} cannot combine with caller-assisted operations.`);
       const inline = f["caller-request-json"], file = f["caller-request"];
       const source = inline !== undefined ? (() => { if (typeof inline !== "string" || !inline) throw new ValidationError("--caller-request-json requires JSON."); return {kind:"inline" as const,value:inline}; })()
         : stdin ? {kind:"stdin" as const} : (() => { if(typeof file!=="string"||!file)throw new ValidationError("--caller-request requires a file or '-'.");return {kind:"file" as const,path:file};})();
       callerRequest = await readCallerRequest(source, signal => invocation.readStdin(MAX_REQUIREMENTS_BYTES_HANDLER,signal),callerInterrupt.signal);
-      if(callerInterrupt.signal.aborted)throw Object.assign(new ValidationError("Caller operation interrupted."),{exitCode:130});
+      if(callerInterrupt.signal.aborted)throw new CallerInputInterruptedError();
       if (!["start","continue"].includes((callerRequest as {operation:string}).operation)) {
+        if ((callerRequest as {operation:string}).operation !== "delete") {
+          try {
+            let viewConfig: ScoutlineConfig;
+            if (loadScoutlineConfig) viewConfig = await loadScoutlineConfig();
+            else {
+              const inspection = await inspectConfig({filePath:path.join(resolveConfigRootPure(env,{homedir:os.homedir()}),"config.json")});
+              if (inspection.status === "corrupt") throw new ValidationError("Caller view unavailable under the active redaction profile.");
+              viewConfig = inspection.status === "absent" ? {version:1,providers:{}} : inspection.config;
+            }
+            const viewEnv = resolveEnvFromConfig(env,viewConfig,providerDescriptors);
+            for (const secret of configuredSecrets(viewEnv)) if (!envSecrets.includes(secret)) envSecrets.push(secret);
+          } catch {
+            throw new ValidationError("Caller view unavailable under the active redaction profile.");
+          }
+        }
         const root = env.SCOUTLINE_INVESTIGATIONS_DIR ?? path.join(resolveConfigRootPure(env,{homedir:os.homedir()}),"investigations");
         const exit = await invokeCommand(invocation,()=>handleInvestigateCaller(callerRequest,root,{readFile: p=>readRequirementsFileBounded(p,MAX_REQUIREMENTS_BYTES_HANDLER),readStdin:s=>invocation.readStdin(MAX_REQUIREMENTS_BYTES_HANDLER,s),now:Date.now},{env,secrets:envSecrets}),outputMode,undefined,envSecrets);
         callerRelease();return exit;
       }
-    } catch(error) {callerRelease();if(callerInterrupt.signal.aborted)error=Object.assign(new ValidationError("Caller operation interrupted before record creation."),{exitCode:130});invocation.writeStderr(formatErrorOutput(error,outputMode,envSecrets));return getErrorExitCode(error);}
+    } catch(error) {callerRelease();invocation.writeStderr(formatErrorOutput(error,outputMode,envSecrets));return getErrorExitCode(error);}
   }
 
   try {

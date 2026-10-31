@@ -7,6 +7,11 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createTavilyDescriptor } from '../dist/providers/tavily/adapter.js';
 import { createLeanAcquisitionDeps } from '../dist/lib/lean-acquisition-bridge.js';
+
+// Capture actual return values before any assertion can discard a counterfactual witness.
+const assertionErrorDocument = text => { try { return JSON.parse(text.trim().split('\n').at(-1)); } catch { return null; } };
+const assertionStdout = text => { try { return {envelope: JSON.parse(text), parseError: null}; } catch(error) { return {envelope: null, parseError: error.message}; } };
+const assertionSnapshot = (purpose, observed) => console.log(JSON.stringify({assertionEvidence: 1, purpose, ...observed}));
 const root = fileURLToPath(new URL('..', import.meta.url));
 const script = join(root, 'bin', 'scoutline.js');
 const json = value => new Response(JSON.stringify(value), { status: 200 });
@@ -47,11 +52,19 @@ function child(args, extra = {}, stdin = '') {
 
 test('actual stdin pipe is read and validated, not treated as a zero-length regular file', async () => {
   const result = await child([script, 'investigate', '--requirements', '-'], {}, JSON.stringify(input()));
+  const document=assertionStdout(result.stdout);
+  assertionSnapshot('pipe-cold',{...result,...document});
+  assert.ok(result.stdout.length);assert.equal(document.parseError,null);
+  assert.equal(document.envelope.kind,'requirements-investigation');assert.equal(document.envelope.schemaVersion,1);assert.equal(document.envelope.question,'Check release');
   assert.doesNotMatch(result.stderr, /not valid JSON|Unexpected end of JSON input/, 'valid pipe bytes must not disappear');
 });
 
 test('judge credentials without transmit consent fail closed before acquisition, not deterministic-only downgrade', async () => {
   const result = await child([script, 'investigate', '--requirements-json', JSON.stringify(input())], { TYPESAFE_API_KEY: 'synthetic-partial-key' });
+  const error=assertionErrorDocument(result.stderr);
+  assertionSnapshot('consent-cold',{...result,...assertionStdout(result.stdout),error,httpMarkers:result.stderr.match(/OFFLINE_HTTP_ATTEMPT/g)??[]});
+  assert.equal(result.code,1);assert.equal(result.stdout,'');assert.equal(error?.success,false);assert.equal(error?.code,'VALIDATION_ERROR');
+  assert.equal(error.error,"requirements-mode judge selection is incomplete: TYPESAFE_API_KEY and SCOUTLINE_JUDGE_TRANSMIT=1 must be supplied together (credentials alone are not consent; consent alone has no judge).");
   assert.equal(result.calls, 0);
   assert.doesNotMatch(result.stdout, /deterministic-only/);
 });

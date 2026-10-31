@@ -14,12 +14,28 @@ EXPERIMENTAL caller-assisted operations:
   maxChars defaults to 16384 (1024..65536; mutating header minimum 8192).
   Records: SCOUTLINE_INVESTIGATIONS_DIR or <config-root>/investigations.
 `;
+/** Selected owned cancellation; a later abort must not replace a file error. */
+export class CallerInputInterruptedError extends ValidationError {
+  constructor() { super("Caller operation interrupted before record creation."); Object.assign(this,{exitCode:130}); }
+}
+function raceCallerInput(work:()=>Promise<string>,signal?:AbortSignal):Promise<string> {
+  return new Promise((resolve,reject)=>{
+    let selected=false;
+    const finish=(complete:(value:any)=>void,value:unknown):void=>{
+      if(selected)return;selected=true;signal?.removeEventListener("abort",onAbort);complete(value);
+    };
+    const onAbort=():void=>finish(reject,new CallerInputInterruptedError());
+    signal?.addEventListener("abort",onAbort,{once:true});
+    if(signal?.aborted){onAbort();return;}
+    // Start lazily after listener registration. Both late outcomes remain observed.
+    try { Promise.resolve(work()).then(value=>finish(resolve,value),error=>finish(reject,error)); }
+    catch(error) { finish(reject,error); }
+  });
+}
 export async function readCallerRequest(source: {kind:"file";path:string}|{kind:"stdin"}|{kind:"inline";value:string},
   readStdin:(signal?:AbortSignal)=>Promise<string>, signal?:AbortSignal):Promise<unknown>{
-  let text:string;
-  if(source.kind==="inline")text=source.value;
-  else if(source.kind==="file")text=await readRequirementsFileBounded(source.path,MAX_REQUIREMENTS_BYTES);
-  else text=await readStdin(signal);
+  const text=await raceCallerInput(()=>source.kind==="inline"?Promise.resolve(source.value)
+    :source.kind==="file"?readRequirementsFileBounded(source.path,MAX_REQUIREMENTS_BYTES):readStdin(signal),signal);
   if(Buffer.byteLength(text)>MAX_REQUIREMENTS_BYTES)throw new ValidationError("Caller input exceeds 1 MiB.");
   let request:unknown;try{request=JSON.parse(text);}catch{throw new ValidationError("Caller request is not valid JSON.");}
   validateCallerRequest(request);return request;

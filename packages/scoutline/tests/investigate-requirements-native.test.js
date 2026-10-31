@@ -19,6 +19,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 
 import { main } from "../dist/index.js";
 import { createTypesafeJudge } from "../dist/lib/lean-typesafe-judge.js";
@@ -89,6 +90,7 @@ function world({ retry = false, opaqueJudge = false, producer = false } = {}) {
   const runtime = nativeRuntime({ producer });
   const calls = [];
   const events = [];
+  const extractRequests = [];
   const factory = (context) => {
     const v = runtime.factory(context);
     const transport = v.acquisitionOptions.transports.tavily;
@@ -129,6 +131,7 @@ function world({ retry = false, opaqueJudge = false, producer = false } = {}) {
       v.engineDeps.extract = async (...args) => {
         context.observeProducerDispatch();
         calls.push("producer");
+        extractRequests.push(structuredClone(args[0]));
         return extract(...args);
       };
       v.producerPhysical = { reserve: context.observeProducerDispatch };
@@ -146,7 +149,7 @@ function world({ retry = false, opaqueJudge = false, producer = false } = {}) {
     }
     return v;
   };
-  return { calls, events, factory };
+  return { calls, events, factory, extractRequests };
 }
 
 test("native admission: cap2 refuses the judge's first request before dispatch", async () => {
@@ -272,6 +275,88 @@ test("native admission: mixed full run reports the exact observed total", async 
 });
 
 
+// Exact fixture metadata, checked on the delivered native envelope rather than
+// on a parser-only return. These elapsed values describe synthetic work only.
+async function deliveredExtractorAudit() {
+  const w = world({ producer: true });
+  const r = await runMain(MIXED, w.factory, 48);
+  assert.equal(r.exit, 0, JSON.stringify(r.data ?? null));
+  assert.equal(r.data.usage.physicalHttpAttempts, w.calls.length);
+  assert.deepEqual(r.data.data, { version: "2.4.0", csv: "supported" });
+  const audits = r.data.requirements.version.attemptedRecords;
+  const records = audits.filter((record) => record.metadata?.kind === "extraction");
+  assert.equal(w.extractRequests.length, 1, "one actual complete extraction request");
+  assert.equal(records.length, 1, `one delivered extraction audit record: ${JSON.stringify(audits)}`);
+  assert.equal(records[0].trusted, true, `trusted extraction audit: ${JSON.stringify(audits)}`);
+  return { record: records[0].metadata, request: w.extractRequests[0] };
+}
+
+test("extractor audit: delivered synthetic elapsedMs is exactly zero", async () => {
+  const { record } = await deliveredExtractorAudit();
+  assert.equal(record.elapsedMs, 0, "delivered extraction elapsedMs");
+});
+
+test("extractor audit: delivered request digest binds the complete actual request", async () => {
+  const { record, request } = await deliveredExtractorAudit();
+  const expected = createHash("sha256").update(JSON.stringify(request), "utf8").digest("hex");
+  assert.equal(record.requestSha256, expected, "delivered complete-request SHA256");
+});
+
+
+test("extractor request binding: scope and dependency snapshots change the exact digest", async () => {
+  const extract = nativeRuntime({ producer: true }).factory({ noCache: true }).engineDeps.extract;
+  const base = {
+    sourceId: "synthetic-source",
+    sourceText: "Its exact release is 2.4.0.",
+    fields: [{ id: "version", description: "Exact release", depBindings: { product: "A" } }],
+    scope: { product: "A" },
+    depBindings: { product: "A" },
+  };
+  const requests = [base, { ...base, scope: { product: "B" } }, { ...base, depBindings: { product: "B" } }];
+  const digests = [];
+  for (const req of requests) {
+    const result = await extract(req);
+    const expected = createHash("sha256").update(JSON.stringify(req), "utf8").digest("hex");
+    assert.equal(result.requestSha256, expected, "fixture digest must include complete scope/dependency request");
+    digests.push(result.requestSha256);
+  }
+  assert.equal(new Set(digests).size, requests.length, "scope-only and dependency-only changes must each alter digest");
+});
+
+let callerFetch;
+async function callerFixtureFetch() {
+  if (!callerFetch) {
+    const previous = globalThis.fetch;
+    try {
+      await import("./helpers/caller-native-preload.mjs");
+      callerFetch = globalThis.fetch;
+    } finally {
+      globalThis.fetch = previous;
+    }
+  }
+  return callerFetch;
+}
+
+test("caller fake route: wrong same-origin path and query refuse", async () => {
+  const fetch = await callerFixtureFetch();
+  for (const url of ["https://api.typesafe.ai/v1/wrong", "https://api.typesafe.ai/v1/systemone?wrong=1"])
+    await assert.rejects(fetch(url, { method: "POST", body: "{}" }), /Unexpected synthetic HTTP route:/);
+});
+
+test("caller fake route: wrong method refuses", async () => {
+  const fetch = await callerFixtureFetch();
+  await assert.rejects(fetch("https://api.typesafe.ai/v1/systemone", { method: "GET", body: "{}" }), /Unexpected synthetic HTTP route:/);
+});
+
+test("caller fake route: exact POST works and unrelated origin refuses", async () => {
+  const fetch = await callerFixtureFetch();
+  const response = await fetch("https://api.typesafe.ai/v1/systemone", { method: "POST", body: JSON.stringify({ questions: { supported: {} } }) });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).model, "jev-1.13.0");
+  await assert.rejects(fetch("https://elsewhere.test/v1/systemone", { method: "POST", body: "{}" }), /Unexpected synthetic HTTP route:/);
+});
+
+
 // ---------------------------------------------------------------------------
 // Compiled-bin OS guards: hermetic children, scrubbed env, fake-only HTTP
 // via the same --import preload the reviewer guards use (ported local).
@@ -279,10 +364,42 @@ test("native admission: mixed full run reports the exact observed total", async 
 
 const ROOT = new URL("..", import.meta.url).pathname;
 const FAKE_HTTP = `${SCRATCH}/fake-http.mjs`;
-import { writeFileSync } from "node:fs";
+import { writeFileSync, appendFileSync } from "node:fs";
 writeFileSync(
   FAKE_HTTP,
   `import { appendFileSync } from "node:fs";
+// Deliberate private startup stimulus; readiness must still come from next().
+if (process.env.COLD_STARTUP_DELAY_MS)
+  await new Promise(resolve => setTimeout(resolve, Number(process.env.COLD_STARTUP_DELAY_MS)));
+// Transparently delegate the real stdin iterator. The marker is emitted only
+// after an actual first next() remains pending through a microtask checkpoint.
+const originalIterator = process.stdin[Symbol.asyncIterator];
+process.stdin[Symbol.asyncIterator] = function (...args) {
+  const iterator = Reflect.apply(originalIterator, this, args);
+  let first = true;
+  return new Proxy(iterator, {
+    get(target, key) {
+      if (key === "next") return (...nextArgs) => {
+        const pending = Reflect.apply(target.next, target, nextArgs);
+        if (first) {
+          first = false;
+          let settled = false;
+          Promise.resolve(pending).then(step => {
+            settled = true;
+            if (step.done) appendFileSync(process.env.COLD_TRACE, JSON.stringify({ event: "stdin-eof" }) + "\\n");
+          }, () => { settled = true; });
+          queueMicrotask(() => {
+            if (!settled && process.env.COLD_SUPPRESS_PENDING_MARKER !== "1")
+              appendFileSync(process.env.COLD_TRACE, JSON.stringify({ event: "stdin-next-pending" }) + "\\n");
+          });
+        }
+        return pending;
+      };
+      const value = Reflect.get(target, key, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+};
 if (process.env.COLD_OBSERVE_SIGINT === "1")
   process.on("SIGINT", () =>
     appendFileSync(process.env.COLD_TRACE, JSON.stringify({ event: "sigint-observed" }) + "\\n"),
@@ -337,74 +454,152 @@ function childEnv(extra) {
   return env;
 }
 
-function runBin(args, extraEnv, { killSignal, afterDispatch, stdinChunk, stdinDelayMs = 2000, afterMs } = {}) {
+function runBin(args, extraEnv, { killSignal, afterDispatch, stdinChunk, waitForPendingStdin = false, lifetimeMs = 15000, onChild } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(
-      process.execPath,
-      ["--import", FAKE_HTTP, join(ROOT, "bin", "scoutline.js"), ...args],
-      {
-        cwd: ROOT,
-        env: childEnv(extraEnv),
-        stdio: ["pipe", "pipe", "pipe"],
-        // Strip inherited inspector/debug execArgv: under the full-glob
-        // runner each test file gets its own inspected process, and a
-        // child inheriting the same debug port hangs at startup.
-        execArgv: [],
-      },
-    );
-    // A pending stdin READ proves both interrupt registrars are armed
-    // (the lane one at dispatch; the handler's immediately before its
-    // read) — but the read only becomes pending once bytes arrive. The
-    // write is DELAYED so module load + preflight finish first even
-    // under runner contention; writing earlier would let a fast SIGINT
-    // land before arming.
-    if (stdinChunk !== undefined) {
-      setTimeout(() => {
-        child.stdin.write(stdinChunk); // never end(): the read stays pending
-      }, stdinDelayMs);
+    const env = childEnv(extraEnv);
+    let child;
+    try {
+      child = spawn(process.execPath, ["--import", FAKE_HTTP, join(ROOT, "bin", "scoutline.js"), ...args], {
+        cwd: ROOT, env, stdio: ["pipe", "pipe", "pipe"], execArgv: [],
+      });
+    } catch {
+      reject(Object.assign(new Error("native fixture spawn failed"), { code: "NATIVE_FIXTURE_SPAWN" }));
+      return;
     }
-    let out = "";
-    let err = "";
-    child.stdout.on("data", (s) => (out += s));
-    child.stderr.on("data", (s) => (err += s));
-    child.on("error", reject);
-    child.on("close", (code, signal) => resolve({ code, signal, out, err, child }));
-    if (afterDispatch !== undefined) {
-      const poll = setInterval(async () => {
-        try {
-          const trace = await readFile(childEnv(extraEnv).COLD_TRACE, "utf8").catch(() => "");
-          if (trace.includes(afterDispatch)) {
-            clearInterval(poll);
-            if (killSignal !== undefined) child.kill(killSignal);
-          }
-        } catch {
-          /* keep polling */
-        }
-      }, 15);
-      child.on("exit", () => clearInterval(poll));
-    }
-    if (afterMs !== undefined) {
-      const timer = setTimeout(() => {
-        if (killSignal !== undefined) child.kill(killSignal);
-      }, afterMs);
-      child.on("exit", () => clearTimeout(timer));
-    }
+    let out = "", err = "", failure, closed = false, settled = false, pollTimer;
+    let polling = Promise.resolve();
+    const fail = (code) => {
+      if (closed || failure) return;
+      failure = Object.assign(new Error(`native fixture failure: ${code}`), { code, childPid: child.pid });
+      child.kill("SIGKILL");
+    };
+    // This lifetime owner is independent of readiness/dispatch polls.
+    const watchdog = setTimeout(() => fail("NATIVE_FIXTURE_WATCHDOG"), lifetimeMs);
+    child.stdout.on("data", data => { out += data; });
+    child.stderr.on("data", data => { err += data; });
+    child.on("error", () => fail("NATIVE_FIXTURE_SPAWN"));
+    for (const stream of [child.stdin, child.stdout, child.stderr])
+      stream.on("error", () => fail("NATIVE_FIXTURE_STREAM"));
+    child.once("close", async (code, signal) => {
+      closed = true;
+      clearTimeout(watchdog);
+      clearTimeout(pollTimer);
+      // Join every in-flight poll/write continuation before settlement.
+      await polling;
+      if (settled) return;
+      settled = true;
+      if (failure) reject(failure);
+      else resolve({ code, signal, out, err, child });
+    });
+    const mark = event => appendFileSync(env.COLD_TRACE, JSON.stringify({ event }) + "\n");
+    const act = async () => {
+      if (closed || failure) return;
+      if (stdinChunk !== undefined) {
+        mark("parent-stdin-write");
+        await new Promise((done, failed) => child.stdin.write(stdinChunk, error => error ? failed(error) : done()));
+        // Never end(): the partial JSON leaves the real read pending.
+      }
+      if (closed || failure) return;
+      if (killSignal !== undefined) {
+        mark("parent-signal");
+        if (!child.kill(killSignal)) fail("NATIVE_FIXTURE_SIGNAL");
+      }
+    };
+    const poll = async () => {
+      if (closed || failure) return;
+      let text;
+      try { text = await readFile(env.COLD_TRACE, "utf8"); }
+      catch (error) {
+        if (error.code !== "ENOENT") throw error;
+        text = ""; // Only initial trace creation is allowed to wait.
+      }
+      if (closed || failure) return;
+      const trace = text.trim().split("\n").filter(Boolean).map(JSON.parse);
+      const ready = waitForPendingStdin
+        ? trace.some(event => event.event === "stdin-next-pending")
+        : trace.some(event => typeof event.url === "string" && event.url.includes(afterDispatch));
+      if (ready) await act();
+      else if (!closed && !failure) pollTimer = setTimeout(startPoll, 15);
+    };
+    const startPoll = () => {
+      if (closed || failure) return;
+      polling = poll().catch(() => fail("NATIVE_FIXTURE_TRACE_OR_WRITE"));
+    };
+    try { onChild?.(child); }
+    catch { fail("NATIVE_FIXTURE_OUTER_HOOK"); }
+    if (waitForPendingStdin || afterDispatch !== undefined) startPoll();
+    else polling = act().catch(() => fail("NATIVE_FIXTURE_WRITE"));
   });
 }
 
-test("compiled bin: SIGINT on an open stdin pipe (no EOF) settles 130 without forced kill", async () => {
+// The outer owner stays active even when a counterfactual disables the helper
+// watchdog. It always joins the exact child and helper outcome before returning.
+async function runBinWithOuter(args, extraEnv, options, outerMs = 2000) {
+  let child, closed, outerExpired = false;
+  const timer = setTimeout(() => {
+    outerExpired = true;
+    if (child && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+  }, outerMs);
+  let observed;
+  try {
+    observed = runBin(args, extraEnv, { ...options, onChild: (owned) => {
+      child = owned;
+      closed = new Promise((resolve) => owned.once("close", (code, signal) => resolve({ code, signal })));
+    } }).then(result => ({ result }), error => ({ error }));
+    const outcome = await observed;
+    const close = await closed;
+    return { ...outcome, outerExpired, close, pid: child.pid };
+  } finally {
+    clearTimeout(timer);
+    if (child && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    await closed;
+    await observed;
+  }
+}
 
+test("compiled helper watchdog: missing dispatch fails boundedly and joins its exact child", async () => {
   await writeFile(childEnv({}).COLD_TRACE, "");
-  const childPromise = runBin(
-    ["investigate", "--provider", "tavily", "--requirements", "-"],
-    {},
-    // stdin written at 2s (arming guaranteed under glob contention),
-    // SIGINT 500ms later with the read provably pending.
-    { killSignal: "SIGINT", stdinChunk: '{"schemaVersion":1,', stdinDelayMs: 2000, afterMs: 2500 },
+  const r = await runBinWithOuter(
+    ["investigate", "--provider", "tavily", "--requirements", "-"], {},
+    { afterDispatch: "deliberately-impossible-dispatch", killSignal: "SIGINT", lifetimeMs: 200 },
   );
-  // Feed a partial line and NEVER close stdin: the read stays pending.
-  const r = await childPromise;
-  if (r.code !== 130) console.error("CHILD STDERR:", r.err.slice(0, 300));
+  assert.equal(r.error?.code, "NATIVE_FIXTURE_WATCHDOG", "helper must own the bounded failure diagnostic before outer cleanup");
+  assert.equal(r.outerExpired, false, "helper reaps before independent outer deadline");
+  assert.equal(r.error.childPid, r.pid, "diagnostic identifies exact owned child");
+  assert.deepEqual(r.close, { code: null, signal: "SIGKILL" }, "forced cleanup is joined and cannot qualify as natural130");
+});
+
+
+test("compiled helper watchdog: missing pending marker is a fixed bounded fixture failure", async () => {
+  await writeFile(childEnv({}).COLD_TRACE, "");
+  const r = await runBinWithOuter(
+    ["investigate", "--provider", "tavily", "--requirements", "-"],
+    { COLD_SUPPRESS_PENDING_MARKER: "1" },
+    { waitForPendingStdin: true, stdinChunk: '{"schemaVersion":1,', killSignal: "SIGINT", lifetimeMs: 300 },
+  );
+  assert.equal(r.error?.code, "NATIVE_FIXTURE_WATCHDOG", "missing marker must be bounded by the helper owner");
+  assert.equal(r.error.childPid, r.pid);
+  assert.equal(r.outerExpired, false);
+  assert.deepEqual(r.close, { code: null, signal: "SIGKILL" });
+});
+
+test("compiled bin: SIGINT on an open stdin pipe (no EOF) settles 130 without forced kill", async () => {
+  await writeFile(childEnv({}).COLD_TRACE, "");
+  const owned = await runBinWithOuter(
+    ["investigate", "--provider", "tavily", "--requirements", "-"],
+    { COLD_STARTUP_DELAY_MS: "3500" },
+    { killSignal: "SIGINT", stdinChunk: '{"schemaVersion":1,', waitForPendingStdin: true },
+    12000,
+  );
+  assert.equal(owned.outerExpired, false, "independent outer cleanup must not be needed");
+  if (owned.error) throw owned.error;
+  const r = owned.result;
+  const trace = (await readFile(childEnv({}).COLD_TRACE, "utf8")).trim().split("\n").filter(Boolean).map(JSON.parse);
+  const pending = trace.findIndex(e => e.event === "stdin-next-pending");
+  const write = trace.findIndex(e => e.event === "parent-stdin-write");
+  const signal = trace.findIndex(e => e.event === "parent-signal");
+  assert.ok(pending >= 0 && write > pending && signal > write, `actual pending-next must precede partial input and SIGINT: ${JSON.stringify(trace)}`);
+  assert.equal(trace.some(e => e.event === "stdin-eof"), false, "no EOF was delivered");
   assert.equal(r.signal, null, "no raw signal death");
   assert.equal(r.code, 130, `expected owned 130, got ${r.code}`);
 });
@@ -467,13 +662,20 @@ test("reader: signalled conversion failure closes the iterator and preserves the
         next: async () => ({ done: false, value: { bogus: true } }),
         return: async () => {
           returns += 1;
-          return { done: true, value: undefined };
+          throw new Error("distinct synthetic cleanup failure");
         },
       };
     },
   };
-  await assert.rejects(readBytesBounded(iter, 1024, controller.signal), /bogus|Cannot|invalid/i);
-  assert.equal(returns, 1, "iterator closed exactly once on conversion failure");
+  try {
+    await assert.rejects(readBytesBounded(iter, 1024, controller.signal), (error) => {
+      assert.ok(error instanceof TypeError, "conversion TypeError must remain primary over cleanup rejection");
+      assert.equal(error.code, "ERR_INVALID_ARG_TYPE", "exact primary conversion error code");
+      return true;
+    });
+  } finally {
+    assert.equal(returns, 1, "iterator closed exactly once on conversion failure");
+  }
 });
 
 test("reader: signalled PassThrough cap crossing returns the bytes AND destroys the stream", async () => {

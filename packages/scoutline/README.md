@@ -626,7 +626,7 @@ observer seam leaves its physical count explicitly unknown.
 ```bash
 scoutline investigate --requirements reqs.json
 cat reqs.json | scoutline investigate --requirements -
-scoutline investigate --requirements-json '{"schemaVersion":1,...}'
+scoutline investigate --requirements-json '{"schemaVersion":1,"question":"What version?","requirements":{"version":{"question":"What version?","schema":{"type":"string"}}}}'
 ```
 
 #### Caller-assisted Investigation (EXPERIMENTAL)
@@ -651,7 +651,9 @@ collections (`evidence`, `outcomes`, `proposals`, `assessments`,
 `changes`, `gaps`, `rounds`). The handoff header carries a compact
 physical-attempt summary (stage counts, admission, total) with the
 attempt rows marked incomplete and located in the paged `assessments`
-collection, which retains the complete validated native ledger. The
+collection, which retains complete validated stages of the native ledger. Partial
+prefixes from unknown stages are omitted; `knownSubtotal` is not a
+complete HTTP total. The
 caller proposes values only against
 accessible current redacted evidence; bindings must be UTF-16 half-open
 ranges whose exact quote binds an original retained range. Unchanged displays
@@ -670,13 +672,16 @@ compatible explicit replacement for continuation. `continue`
 requires the current `expectedRevision` and may acknowledge an
 interrupted settled round. Whole metadata/body redaction runs before
 bounded paging; changed secret bases invalidate old cursors rather
-than mixing pages. Local records are retained until explicit safe-owned
+than mixing pages. Offline `inspect` and `readEvidence` discover configured
+secrets from local settings without provider runtime or HTTP. Unreadable or
+corrupt settings yield a fixed view-unavailable response; `delete` bypasses
+secret discovery. Local records are retained until explicit safe-owned
 deletion and are stored under `SCOUTLINE_INVESTIGATIONS_DIR` or
 `<config-root>/investigations`.
 
 ```bash
 cat request.json | scoutline investigate --caller-request -
-scoutline investigate --caller-request-json '{"schemaVersion":1,"operation":"start",...}'
+scoutline investigate --caller-request-json '{"schemaVersion":1,"operation":"start","dataScope":"synthetic","requirements":{"schemaVersion":1,"question":"What version?","requirements":{"version":{"question":"What version?","schema":{"type":"string"}}}}}'
 ```
 
 ## Usage

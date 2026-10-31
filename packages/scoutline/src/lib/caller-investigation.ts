@@ -1,12 +1,18 @@
 import { createHash } from "node:crypto";
 import { ValidationError } from "./errors.js";
 import { redactSecrets } from "./redact.js";
+import { formatErrorOutput } from "./output.js";
 import { openStore, ExpectedRevisionError, CorruptRecordError } from "./retained-record-store.js";
 import { startCallerRound, continueCallerRound, readCallerRecord, type CallerProposal } from "./lean-caller-rounds.js";
 import { compileLeanContract, type LeanDeps } from "./lean-investigation.js";
 import { preflightRequirements } from "../commands/investigate-requirements.js";
 
 const COLLECTIONS = ["evidence", "outcomes", "proposals", "assessments", "changes", "gaps", "rounds"] as const;
+const HANDOFF_KIND = "caller-assisted-investigation";
+const SETTLED = "settled";
+const ASSESSMENTS = "assessments";
+const CHANGES = "changes";
+const COMMITTED_MESSAGE = "Caller round committed; do not repeat the mutation.";
 type Collection = typeof COLLECTIONS[number];
 type Obj = Record<string, any>;
 export interface CallerInvestigationOptions {
@@ -78,6 +84,9 @@ export function validateCallerRequest(value: unknown): asserts value is Obj {
     if (v.acknowledgeInterruptedRound !== undefined && typeof v.acknowledgeInterruptedRound !== "boolean") throw new ValidationError("Invalid interrupted-round acknowledgment.");
   }
   if (v.operation === "start" || v.requirements !== undefined) { preflightRequirements(v.requirements); compileLeanContract(v.requirements); validateCallerRequirementIds(v.requirements); }
+  if (v.operation === "start" && Object.keys(v.requirements.requirements).some(id => !/^[A-Za-z0-9_-]{1,64}$/.test(id))) {
+    throw new ValidationError("Caller start requirement IDs must match [A-Za-z0-9_-]{1,64}.");
+  }
   if (v.roundLimits !== undefined) {
     object(v.roundLimits, ["maxSearchAttempts", "maxJudgeAttempts", "readBatchSize", "maxUniqueReads", "deadlineMs"], "round limits");
     for (const n of Object.values(v.roundLimits)) positive(n, "lower round limit");
@@ -126,8 +135,9 @@ function validateDisplayInterval(display: string, original: string, a: number, b
     if (overlaps) throw new ValidationError("Display binding unavailable under the active redaction profile.");
   }
 }
+class CallerProjectionError extends ValidationError {}
 function unavailableView(): never {
-  throw new ValidationError("Caller view unavailable under the active redaction profile.");
+  throw new CallerProjectionError("Caller view unavailable under the active redaction profile.");
 }
 function requireVisibleIdentity(value: string, secrets: readonly string[]): void {
   if (safe(value, secrets) !== value) unavailableView();
@@ -148,6 +158,43 @@ function stablePage(value: Obj, secrets: readonly string[]): Obj {
   // Validate the completed page, including fragment context and computed digest. Never rewrite it.
   if (JSON.stringify(safe(value, secrets)) !== JSON.stringify(value)) unavailableView();
   return value;
+}
+function recoveryHelp(investigationRef: string, revision: number): string {
+  return JSON.stringify({ investigationRef, revision, operation: "inspect" });
+}
+function admitInvariantProfile(intent: "start" | "continue", secrets: readonly string[]): void {
+  stablePage({ kind: HANDOFF_KIND, round: { status: SETTLED, intent },
+    stopReasonLocation: ASSESSMENTS, definitionsLocation: CHANGES, usageLocation: ASSESSMENTS }, secrets);
+}
+function admitContinueProfile(ref: string, revision: number, secrets: readonly string[]): void {
+  if (!Number.isSafeInteger(revision) || revision < 1) throw new ValidationError("Caller revision cannot be advanced safely.");
+  admitInvariantProfile("continue", secrets);
+  requireVisibleIdentity(ref, secrets);
+  const error = new ValidationError(COMMITTED_MESSAGE, recoveryHelp(ref, revision));
+  const formatted = JSON.parse(formatErrorOutput(error, "data", [...secrets]));
+  if (formatted.error !== error.message || formatted.help !== error.help) unavailableView();
+}
+function admitStartProfile(secrets: readonly string[]): void {
+  admitInvariantProfile("start", secrets);
+  requireVisibleIdentity(COMMITTED_MESSAGE, secrets);
+  const ref = `inv_${"0".repeat(32)}`, template = recoveryHelp(ref, 1);
+  const variableStart = template.indexOf(ref) + 4, variableEnd = variableStart + 32;
+  // The whole help template (including boundaries) is checked against all
+  // native-shaped refs, a conservative superset of UUID-derived output.
+  // Its fixed JSON/message and lowercase-hex positions contain no intrinsic
+  // credential introducer. With no first literal match, ordered replacements
+  // cannot insert a marker that triggers another secret.
+  for (const secret of secrets) {
+    if (typeof secret !== "string" || !secret || !secret.trim()) continue;
+    for (let offset = 0; offset + secret.length <= template.length; offset++) {
+      let match = true;
+      for (let i = 0; i < secret.length; i++) {
+        const at = offset + i, c = secret[i]!;
+        if (at >= variableStart && at < variableEnd ? !/[0-9a-f]/.test(c) : template[at] !== c) { match = false; break; }
+      }
+      if (match) unavailableView();
+    }
+  }
 }
 function cursor(value: Obj): string { return Buffer.from(JSON.stringify(value)).toString("base64url"); }
 function decode(text: string): Obj {
@@ -204,12 +251,12 @@ async function view(options: CallerInvestigationOptions, ref: string, revision?:
     } else collections[c] = safe(collections[c], secrets);
   }
   const id = digest(JSON.stringify([record.snapshot.revision, record.revision, basis, evidence.map(e => e.digest), collections]));
-  const header = { kind: "caller-assisted-investigation", schemaVersion: 2, investigationRef: ref,
+  const header = { kind: HANDOFF_KIND, schemaVersion: 2, investigationRef: ref,
     revision: record.revision, committedRevision: record.snapshot.revision, viewId:id, redactionBasis:basis,
-    round:{id:record.roundId,status:"settled",intent:record.intent}, status:result.status,stopReason,stopReasonIncomplete,stopReasonLocation:"assessments",
+    round:{id:record.roundId,status:SETTLED,intent:record.intent}, status:result.status,stopReason,stopReasonIncomplete,stopReasonLocation:ASSESSMENTS,
     fulfillment:{satisfied:Object.values(result.requirements).filter(r=>r.status==="satisfied").length,total:Object.keys(result.requirements).length},
-    definitionViewId:digest(JSON.stringify(definitionBlock)),definitionsLocation:"changes",
-    usage,usageIncomplete,usageLocation:"assessments", ...(record.payload.physical ? {physical:{schemaVersion:1,source:record.payload.physical.source,cutoff:record.payload.physical.cutoff,
+    definitionViewId:digest(JSON.stringify(definitionBlock)),definitionsLocation:CHANGES,
+    usage,usageIncomplete,usageLocation:ASSESSMENTS, ...(record.payload.physical ? {physical:{schemaVersion:1,source:record.payload.physical.source,cutoff:record.payload.physical.cutoff,
       stages:record.payload.physical.stages,knownSubtotal:record.payload.physical.knownSubtotal,total:record.payload.physical.total,
       reservationsRefused:record.payload.physical.reservationsRefused,admission:record.payload.physical.admission,
       attempts:record.payload.physical.attempts.length,
@@ -225,7 +272,7 @@ async function view(options: CallerInvestigationOptions, ref: string, revision?:
 }
 function bounded(value: Obj, maxChars: number, secrets: readonly string[]): Obj {
   const resultSha256 = digest(JSON.stringify(value)); const output = {...value,resultSha256};
-  if (JSON.stringify(output).length > maxChars) throw new ValidationError("maxChars cannot fit this caller page header.");
+  if (JSON.stringify(output).length > maxChars) throw new CallerProjectionError("maxChars cannot fit this caller page header.");
   return stablePage(output,secrets);
 }
 function cut(text: string, start: number, size: number): string {
@@ -245,10 +292,15 @@ function page(base: Obj, text: string, offset: number, maxChars: number, next: (
 }
 /** Five explicit operations over the approved round/store; no automatic producer or parser. */
 export async function executeCallerInvestigation(request: unknown, options: CallerInvestigationOptions): Promise<Obj> {
-  validateCallerRequest(request); const req=request as Obj; const maxChars=req.maxChars??16384; const secrets=options.secrets??[];
+  validateCallerRequest(request); const req=request as Obj; const maxChars=req.maxChars??16384; const secrets=Object.freeze([...(options.secrets??[])]);
+  options={...options,secrets};
+  let committed: { investigationRef: string; revision: number } | undefined;
+  try {
   if(req.operation==="delete") {const response=stablePage({kind:"caller-assisted-investigation",schemaVersion:2,investigationRef:req.investigationRef,deleted:true},secrets);await openStore({root:options.storeRoot}).deleteInvestigation(req.investigationRef);return response;}
   let ref=req.investigationRef;
   if(["start","continue"].includes(req.operation)){
+    if(req.operation==="start") admitStartProfile(secrets);
+    else admitContinueProfile(ref,req.expectedRevision+1,secrets);
     if (req.requirements !== undefined) validateDefinitionIdentities(req.requirements,secrets);
     for (const proposal of req.proposals??[]) {
       requireVisibleIdentity(proposal.requirementId,secrets);
@@ -275,6 +327,9 @@ export async function executeCallerInvestigation(request: unknown, options: Call
     }
     const args={storeRoot:options.storeRoot,contract:req.requirements,deps:options.deps,dataScope:req.dataScope,leads:req.leads,representations:req.representations,roundLimits:req.roundLimits,judgeIdentity:options.judgeIdentity,policyRevision:options.policyRevision,nativeObservation:options.nativeObservation};
     const round=req.operation==="start"?await startCallerRound(args):await continueCallerRound({...args,investigationRef:ref,expectedRevision:req.expectedRevision,proposals,acknowledgeInterruptedRound:req.acknowledgeInterruptedRound});
+    const expectedRevision=req.operation==="start"?1:req.expectedRevision+1;
+    if((req.operation==="start"?!/^inv_[0-9a-f]{32}$/.test(round.investigationRef):round.investigationRef!==ref)||round.handoff.revision!==expectedRevision) throw new ValidationError("Caller round returned an unexpected identity.");
+    committed={investigationRef:round.investigationRef,revision:round.handoff.revision};
     ref=round.investigationRef;
   }
   const v=await view(options,ref,req.revision);
@@ -295,4 +350,8 @@ export async function executeCallerInvestigation(request: unknown, options: Call
     return page({kind:"caller-assisted-page",schemaVersion:2,investigationRef:ref,revision:v.record.revision,viewId:v.id,redactionBasis:v.basis,collection,count:v.collections[collection].length,encoding:"json-fragments",metadataIncomplete:true},JSON.stringify(v.collections[collection]),c?.o??0,maxChars,o=>cursor({v:1,r:v.record.snapshot.revision,h:v.record.revision,b:v.basis,c:collection,o}),secrets);
   }
   return bounded(v.header,maxChars,secrets);
+  } catch(error) {
+    if(committed && error instanceof CallerProjectionError) throw new ValidationError(COMMITTED_MESSAGE,recoveryHelp(committed.investigationRef,committed.revision));
+    throw error;
+  }
 }

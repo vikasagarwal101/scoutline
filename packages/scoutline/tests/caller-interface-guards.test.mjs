@@ -348,3 +348,106 @@ test('PR291 delete acknowledgement follows actual successful deletion',async()=>
   assert.equal(x.error,undefined);assert.deepEqual(x.response,{kind:'caller-assisted-investigation',schemaVersion:2,investigationRef:x.h.investigationRef,deleted:true});
   assert.equal(x.after,undefined);assert.ok(x.readError,'deleted retained record must be unavailable');assert.equal(x.callsAfter,x.callsBefore);
 });
+
+test('promotion A1 unsafe native reference profile refuses before work',async()=>{
+  const {readdir}=await import('node:fs/promises');
+  const {readCallerRecord}=await import('../dist/lib/lean-caller-rounds.js');
+  const s=await sandbox(),w=localWorld(),storeRoot=s.env.SCOUTLINE_INVESTIGATIONS_DIR;
+  let response,error;
+  try {response=await run({schemaVersion:1,operation:'start',requirements:contract,dataScope:'synthetic'},{storeRoot,deps:w.deps,secrets:['inv_']});}catch(e){error=e;}
+  const records=(await readdir(join(storeRoot,'investigations')).catch(e=>{if(e.code==='ENOENT')return [];throw e;})).filter(n=>/^inv_[0-9a-f]{32}$/.test(n));
+  const revisions=[];for(const ref of records)revisions.push((await readCallerRecord(storeRoot,ref)).revision);
+  console.log(JSON.stringify({case:'promotion A1',code:error?.code,message:error?.message,response:!!response,calls:w.calls.length,records:records.length,revisions}));
+  assert.equal(error?.code,'VALIDATION_ERROR');
+  assert.equal(w.calls.length,0,'an unsafe recovery reference profile must refuse before acquisition');
+  assert.deepEqual(records,[],'profile refusal must not create a hidden retained investigation');
+});
+
+async function promotionStartProfile(secrets) {
+  const {readdir}=await import('node:fs/promises');
+  const s=await sandbox(),w=localWorld(),storeRoot=s.env.SCOUTLINE_INVESTIGATIONS_DIR;
+  let response,error;
+  try {response=await run({schemaVersion:1,operation:'start',requirements:contract,dataScope:'synthetic'},{storeRoot,deps:w.deps,secrets});}catch(e){error=e;}
+  const records=(await readdir(join(storeRoot,'investigations')).catch(e=>{if(e.code==='ENOENT')return [];throw e;})).filter(n=>/^inv_[0-9a-f]{32}$/.test(n));
+  return {response,error,calls:w.calls.length,records};
+}
+test('promotion A2 complete recovery language and invariant identities refuse before work',async()=>{
+  const profiles=[['caller'],['settled'],['committed'],['"investigationRef":"inv_'],['f'.repeat(32)],['v_'+'f'.repeat(32)],['f'],['mutation']];
+  const rows=[];
+  for(const secrets of profiles){const x=await promotionStartProfile(secrets);rows.push({profile:secrets,code:x.error?.code,message:x.error?.message,calls:x.calls,records:x.records.length,response:!!x.response});}
+  console.log(JSON.stringify({case:'promotion A2',rows}));
+  for(const x of rows){assert.equal(x.code,'VALIDATION_ERROR',JSON.stringify(x));assert.equal(x.calls,0,'the complete recovery language must be admitted before work: '+JSON.stringify(x));assert.equal(x.records,0);}
+});
+
+test('promotion A3 committed partial view failure returns an exact recoverable selector',async()=>{
+  const {readdir}=await import('node:fs/promises');
+  const {readCallerRecord}=await import('../dist/lib/lean-caller-rounds.js');
+  const s=await sandbox(),w=localWorld(),storeRoot=s.env.SCOUTLINE_INVESTIGATIONS_DIR,secrets=['partial'];
+  const request={schemaVersion:1,operation:'start',requirements:contract,dataScope:'synthetic'};
+  const r=await repairInvoke(()=>run(request,{storeRoot,deps:w.deps,secrets}),secrets);
+  const records=(await readdir(join(storeRoot,'investigations'))).filter(n=>/^inv_[0-9a-f]{32}$/.test(n));
+  const native=await readCallerRecord(storeRoot,records[0]),error=JSON.parse(r.stderr),calls=w.calls.length;
+  console.log(JSON.stringify({case:'promotion A3',records:records.length,reference:records[0],revision:native.revision,rounds:native.snapshot.rounds.length,calls,code:r.code,stdout:r.stdout,error}));
+  assert.equal(records.length,1);assert.equal(native.revision,1);assert.equal(native.snapshot.rounds.length,1);assert.ok(calls>0);
+  assert.equal(r.stdout,'');assert.equal(r.code,1);assert.equal(error.code,'VALIDATION_ERROR');
+  assert.equal(error.error,'Caller round committed; do not repeat the mutation.');
+  assert.equal(error.help,JSON.stringify({investigationRef:records[0],revision:1,operation:'inspect'}));
+  assert.ok(!r.stderr.includes('partial'),'the raw colliding value is not copied to diagnostics');
+  const selector=JSON.parse(error.help),page=await run({schemaVersion:1,...selector,collection:'outcomes',maxChars:65536},{storeRoot,secrets});
+  assert.equal(page.collection,'outcomes');assert.equal(page.revision,1);assert.ok(JSON.parse(page.content).length>0);
+  assert.equal(w.calls.length,calls,'recovery inspection adds no collaborator work');
+  assert.deepEqual(await readCallerRecord(storeRoot,records[0]),native,'recovery neither retries nor mutates the committed round');
+});
+
+test('promotion A5 continuation admits the exact next revision and retains late recovery',async()=>{
+  const {startCallerRound,readCallerRecord}=await import('../dist/lib/lean-caller-rounds.js');
+  const rows=[];
+  for(const secret of ['2','partial']){
+    const s=await sandbox(),w=localWorld(),storeRoot=s.env.SCOUTLINE_INVESTIGATIONS_DIR;let identity=0;
+    const lower=await startCallerRound({storeRoot,contract,deps:w.deps,storeOptions:{deps:{randomId:()=>`00000000-0000-4000-8000-${(++identity).toString(16).padStart(12,'0')}`}}});
+    const ref=lower.investigationRef,before=await readCallerRecord(storeRoot,ref),calls=w.calls.length;
+    assert.ok(!ref.includes('2'),'the numeric collision is in the next revision, not the concrete reference');
+    const r=await repairInvoke(()=>run({schemaVersion:1,operation:'continue',investigationRef:ref,expectedRevision:1,dataScope:'synthetic',leads:[{url:'https://example.test/next',title:'Fresh continuation lead'}]},{storeRoot,deps:w.deps,secrets:[secret]}),[secret]);
+    const after=await readCallerRecord(storeRoot,ref);rows.push({secret,ref,before,after,callsBefore:calls,callsAfter:w.calls.length,r,error:JSON.parse(r.stderr)});
+  }
+  console.log(JSON.stringify({case:'promotion A5',rows:rows.map(x=>({secret:x.secret,ref:x.ref,work:x.callsAfter-x.callsBefore,before:x.before.revision,after:x.after.revision,error:x.error}))}));
+  const early=rows[0];assert.equal(early.r.stdout,'');assert.equal(early.error.code,'VALIDATION_ERROR');assert.equal(early.callsAfter,early.callsBefore,'a colliding next revision must refuse before new work');assert.deepEqual(early.after,early.before);
+  const late=rows[1];assert.equal(late.after.revision,2);assert.equal(late.after.snapshot.rounds.length,2);assert.ok(late.callsAfter>late.callsBefore);assert.equal(late.r.stdout,'');assert.equal(late.error.error,'Caller round committed; do not repeat the mutation.');assert.equal(late.error.help,JSON.stringify({investigationRef:late.ref,revision:2,operation:'inspect'}));
+});
+
+test('promotion B start IDs reject the native-incompatible subset at public preflight',async()=>{
+  const {validateCallerRequest}=await api(),rows=[];
+  for(const id of ['release.version','a'.repeat(65),'a'.repeat(128),'é'.repeat(64)]){
+    const requirements={schemaVersion:1,question:'Version?',requirements:{[id]:{question:'Version?',schema:{type:'string'}}}};let error;
+    try{validateCallerRequest({schemaVersion:1,operation:'start',requirements,dataScope:'synthetic'});}catch(e){error=e;}
+    rows.push({bytes:Buffer.byteLength(id),punctuation:id.includes('.'),unicode:id.includes('é'),code:error?.code,message:error?.message});
+  }
+  console.log(JSON.stringify({case:'promotion B',rows}));
+  for(const row of rows){assert.equal(row.code,'VALIDATION_ERROR','public start must reject IDs that the native initial requirements cannot store: '+JSON.stringify(row));assert.equal(row.message,'Caller start requirement IDs must match [A-Za-z0-9_-]{1,64}.');}
+});
+
+test('promotion compatibility native ID boundaries and long-ID retained replacement stay usable',async()=>{
+  const {startCallerRound,readCallerRecord}=await import('../dist/lib/lean-caller-rounds.js');
+  const doc=id=>({schemaVersion:1,question:'Version?',requirements:{[id]:{question:'Version?',schema:{type:'string'}}},limits:{maxSearchAttempts:1,maxUniqueReads:1,maxJudgeAttempts:1}});
+  for(const id of ['a','a'.repeat(64),'release_version-1']){
+    const s=await sandbox(),w=localWorld(),storeRoot=s.env.SCOUTLINE_INVESTIGATIONS_DIR;
+    const h=await run({schemaVersion:1,operation:'start',requirements:doc(id),dataScope:'synthetic'},{storeRoot,deps:w.deps});
+    assert.match(h.investigationRef,/^inv_[0-9a-f]{32}$/);assert.equal(h.revision,1);
+    const raw=await readCallerRecord(storeRoot,h.investigationRef);assert(Object.hasOwn(raw.contract.requirements,id));
+    const {resultSha256,...value}=h;assert.equal(resultSha256,hash(JSON.stringify(value)));
+  }
+  for(const id of ['a'.repeat(128),'é'.repeat(64)]){
+    const s=await sandbox(),w=localWorld(),storeRoot=s.env.SCOUTLINE_INVESTIGATIONS_DIR;
+    // Real native store: valid initial requirements are distinct from the broad retained contract body.
+    const lower=await startCallerRound({storeRoot,contract:doc(id),requirements:{schemaVersion:1,fields:{native_seed:{definition:'Version?',required:true}}},deps:w.deps});
+    const before=await readCallerRecord(storeRoot,lower.investigationRef);
+    const h=await run({schemaVersion:1,operation:'inspect',investigationRef:lower.investigationRef},{storeRoot});assert.equal(h.revision,1);
+    const next=await run({schemaVersion:1,operation:'continue',investigationRef:h.investigationRef,expectedRevision:1,requirements:doc(id),dataScope:'synthetic'},{storeRoot,deps:w.deps});
+    assert.equal(next.revision,2);const after=await readCallerRecord(storeRoot,h.investigationRef);assert(Object.hasOwn(after.baselineContract.requirements,id));assert.equal(after.snapshot.requirementsDigest,before.snapshot.requirementsDigest);
+  }
+});
+
+test('promotion compatibility profile admission preserves exact literal and intrinsic semantics',async()=>{
+  const profiles=[[],['',' \t '],['f'.repeat(33)],['F'.repeat(32)],[' f '],['tvly-synthetic-profile'],['Bearer Key-12345678'],['long-synthetic-secret','[REDACTED]'],['[REDACTED]','long-synthetic-secret']];
+  for(const secrets of profiles){const frozen=Object.freeze([...secrets]),r=await promotionStartProfile(frozen);assert.equal(r.error,undefined,JSON.stringify({secrets,error:r.error?.message}));assert.equal(r.response.revision,1);assert.equal(r.records.length,1);assert.ok(r.calls>0);assert.deepEqual(frozen,secrets);}
+});

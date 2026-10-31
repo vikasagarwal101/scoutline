@@ -495,8 +495,17 @@ select its retained event; evidence cursors pin that event. Public responses
 use schemaVersion 2; request/cursor versions remain 1. Complete selected
 redacted definitions and original per-field proof tokens are paged in
 `changes`, with exact retained usage/stop/ledger detail in `assessments`.
-New public requirement IDs are limited to 128 UTF-8 bytes; legacy reads stay
-available and a compatible full replacement enables continuation.
+New `start` requirement IDs must match `[A-Za-z0-9_-]{1,64}`; continuation
+and replacement IDs retain the 128 UTF-8 byte cap. Legacy reads stay available
+and a compatible full replacement enables continuation. Mutations refuse
+redaction profiles that cannot safely deliver mandatory identities and the
+complete recovery diagnostic before record mutation or paid work. If a
+result-dependent view fails after commitment, the error says
+`Caller round committed; do not repeat the mutation.` Parse the JSON `help`
+selector for the exact reference/revision, add request `schemaVersion: 1`,
+and inspect that retained record (e.g. `collection: "outcomes"`). Never retry
+`start` to recover a committed view or disable credential redaction; some
+pages may remain unavailable under a restrictive profile.
 Output paging is bounded with
 `maxChars` (1024..65536; mutating headers require at least 8192);
 whole metadata/body redaction runs before paging, and changed

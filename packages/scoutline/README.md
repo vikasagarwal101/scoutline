@@ -666,16 +666,27 @@ header points to complete redacted contract/schema/criteria/dependencies,
 executed limits, original per-field proof revisions and latest baseline in
 `changes`; exact retained usage, stop reason and physical ledger remain in
 `assessments`. Mutations require `maxChars >= 8192` (default 16384, maximum
-65536); read-only minimum stays 1024. Public requirement IDs are bounded to
-128 UTF-8 bytes; an oversized legacy baseline remains readable and needs a
-compatible explicit replacement for continuation. `continue`
+65536); read-only minimum stays 1024. New `start` requirement IDs must match
+`[A-Za-z0-9_-]{1,64}` so the initial retained requirements can store them.
+Continuation/replacement IDs retain the 128 UTF-8 byte addressability cap;
+legacy reads remain available, and an oversized baseline needs a compatible
+explicit replacement for continuation. `continue`
 requires the current `expectedRevision` and may acknowledge an
 interrupted settled round. Whole metadata/body redaction runs before
 bounded paging; changed secret bases invalidate old cursors rather
 than mixing pages. Offline `inspect` and `readEvidence` discover configured
 secrets from local settings without provider runtime or HTTP. Unreadable or
 corrupt settings yield a fixed view-unavailable response; `delete` bypasses
-secret discovery. Local records are retained until explicit safe-owned
+secret discovery. Mutations conservatively refuse profiles that could redact
+mandatory handoff identities or any part of the recovery diagnostic, before
+record creation/ownership or paid work. If a result-dependent view fails only
+after a round commits, stderr remains an error with the fixed message
+`Caller round committed; do not repeat the mutation.` Its `help` is a JSON
+inspect selector containing the exact retained reference and committed revision.
+Parse that selector, add request `schemaVersion: 1`, and inspect the existing
+record (for example `collection: "outcomes"`); do not repeat `start` to recover
+the view. A restrictive profile may still refuse some pages; never disable
+credential redaction to force them. Local records are retained until explicit safe-owned
 deletion and are stored under `SCOUTLINE_INVESTIGATIONS_DIR` or
 `<config-root>/investigations`.
 

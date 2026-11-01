@@ -82,15 +82,17 @@ import {SourceTextModule,SyntheticModule} from 'node:vm';
 import * as pureEngine from '../dist/lib/lean-investigation.js';
 import * as pureErrors from '../dist/lib/errors.js';
 import * as pureRedactor from '../dist/lib/redact.js';
+import * as pureOutput from '../dist/lib/output.js';
 const pureCopy=value=>structuredClone(value);
 const pureHash=value=>crypto.createHash('sha256').update(value).digest('hex');
 const pureContract=()=>({schemaVersion:1,question:'Version?',requirements:{version:{question:'Version?',schema:{type:'string'}}},limits:{maxSearchAttempts:1,maxUniqueReads:1,maxJudgeAttempts:1}});
 async function pureFixture(config={}) {
-  const records=new Map(), gates={create:null}, calls={create:0,begin:0,release:0,search:[],producer:0,resolved:[],unregister:0,sink:[],rankingInputs:[],runtimeInputs:[]};
+  let nextReference=0;
+  const records=new Map(), gates={create:null}, calls={create:0,begin:0,release:0,search:[],producer:0,resolved:[],unregister:0,sink:[],rankingInputs:[],runtimeInputs:[],formatSecrets:[]};
   let createReached;const reached=new Promise(resolve=>{createReached=resolve;});
   const store={
     recoveryRecords:[],
-    async createInvestigation(){calls.create++;createReached();if(gates.create)await gates.create;const ref=`memory-${records.size}`;records.set(ref,{bodies:new Map(),snapshot:{schemaVersion:1,revision:0,parentRevision:null,createdAt:1,requirementsDigest:'synthetic-baseline',bodies:[],rounds:[],outcome:{},audit:[]}});return {investigationRef:ref,revision:0};},
+    async createInvestigation(){calls.create++;createReached();if(gates.create)await gates.create;nextReference++;assert(Number.isSafeInteger(nextReference),'fixture reference counter is bounded');const ref=`inv_${nextReference.toString(16).padStart(32,'0')}`;records.set(ref,{bodies:new Map(),snapshot:{schemaVersion:1,revision:0,parentRevision:null,createdAt:1,requirementsDigest:'synthetic-baseline',bodies:[],rounds:[],outcome:{},audit:[]}});return {investigationRef:ref,revision:0};},
     async inspect(ref){return {committed:{snapshot:pureCopy(records.get(ref).snapshot)},incomplete:null};},
     async readBody(ref,id){assert(records.get(ref).bodies.has(id));return Buffer.from(records.get(ref).bodies.get(id));},
     async deleteInvestigation(ref){records.delete(ref);},
@@ -110,7 +112,7 @@ async function pureFixture(config={}) {
   const constantSource=constantText('ts'),constantCompiled=constantText('js');assert.equal(constantSource.expression,constantCompiled.expression);assert.equal(constantSource.value,constantCompiled.value);assert.equal(constantCompiled.value,86400000);
   const fixed={
     'node:crypto':synthetic(crypto,'real:crypto'),'node:fs':synthetic(fs,'real:fs-unused-IO'),'node:fs/promises':synthetic(fsPromises,'real:fs-promises-unused-IO'),'node:util':synthetic(util,'real:util'),
-    'lib/errors.js':synthetic(pureErrors,'real:errors'),'lib/redact.js':synthetic(pureRedactor,'real:redactor'),'lib/lean-investigation.js':synthetic(pureEngine,'real:engine'),
+    'lib/errors.js':synthetic(pureErrors,'real:errors'),'lib/redact.js':synthetic(pureRedactor,'real:redactor'),'lib/output.js':synthetic({...pureOutput,formatErrorOutput:(...args)=>{calls.formatSecrets.push([...args[2]]);return Reflect.apply(pureOutput.formatErrorOutput,pureOutput,args);}},'real:output-observed-delegation'),'lib/lean-investigation.js':synthetic(pureEngine,'real:engine'),
     'lib/retained-record-store.js':synthetic({ExpectedRevisionError,CorruptRecordError,openStore:()=>store},'successful-memory-store'),
     'lib/lean-acquisition-bridge.js':synthetic({createLeanAcquisitionDeps:()=>({search:async q=>{calls.search.push(q);config.onSearch?.();return [];},read:async()=>''})},'successful-memory-acquisition'),
     'lib/quota-store.js':synthetic({[horizonName]:constantCompiled.value},'source-verified-single-constant-only'),
@@ -120,7 +122,7 @@ async function pureFixture(config={}) {
   for(const [provider,name]of [['tavily','Tavily'],['exa','Exa'],['firecrawl','Firecrawl'],['linkup','Linkup'],['spider','Spider']])fixed[`providers/${provider}/adapter.js`]=inert(provider,[`create${name}Descriptor`]);
   fixed['test:runtime-input-observer']=synthetic({observe:input=>calls.runtimeInputs.push(pureCopy(input))},'test-only-input-observer');
   const bodies=new Set(['commands/investigate-caller.js','commands/investigate-requirements.js','lib/caller-investigation.js','lib/lean-caller-rounds.js','lib/caller-physical.js','providers/selection.js','providers/types.js','lib/quota-mapping.js']);
-  for(const name of ['lib/lean-investigation','lib/lean-candidates','lib/lean-composed-stop','lib/errors','lib/redact'])for(const ext of ['src','dist']){const url=new URL(`../${ext}/${name}.${ext==='src'?'ts':'js'}`,import.meta.url);hashes[url.href]=pureHash(readFileSync(url));}
+  for(const name of ['lib/lean-investigation','lib/lean-candidates','lib/lean-composed-stop','lib/errors','lib/redact','lib/output'])for(const ext of ['src','dist']){const url=new URL(`../${ext}/${name}.${ext==='src'?'ts':'js'}`,import.meta.url);hashes[url.href]=pureHash(readFileSync(url));}
   const load=name=>{if(modules.has(name))return modules.get(name);
     if(config.observeRuntimeInput&&name==='commands/investigate-requirements.js'){
       const facade=new SourceTextModule(`export * from './actual-investigate-requirements.js'; import {withRequirementsRuntime as actual} from './actual-investigate-requirements.js'; import {observe} from 'test:runtime-input-observer'; export function withRequirementsRuntime(...args){observe(args[0]);return Reflect.apply(actual,this,args);}`,{identifier:new URL('../dist/commands/runtime-input-observer.js',import.meta.url).href});modules.set(name,facade);return facade;
@@ -226,10 +228,13 @@ test('L7 B exact event selector survives duplicate bodies and evidence cursors',
   const first=(await f.handler({schemaVersion:1,operation:'start',requirements:pureContract(),dataScope:'synthetic',representations:[{format:'text',content,label:'first event',claimedSource:'https://unverified.test/first'},{format:'text',content,label:'second event',claimedSource:'https://unverified.test/second'}]},'memory',f.deps,f.host)).data;
   const page=await f.api.executeCallerInvestigation({schemaVersion:1,operation:'inspect',investigationRef:first.investigationRef,collection:'evidence',maxChars:65536},options);
   const [a,b]=JSON.parse(page.content);assert.notEqual(a.evidenceId,b.evidenceId);assert.equal(a.representationId,b.representationId);assert.equal(a.digest,b.digest);assert.notEqual(a.url,b.url);
-  const read={schemaVersion:1,operation:'readEvidence',investigationRef:first.investigationRef,representationId:b.representationId,digest:b.digest,evidenceId:b.evidenceId,maxChars:1024};
+  // Native-shaped refs carry a larger header than the old memory-* fixture.
+  // This case proves event selection/paging; retain room for a progressing page.
+  const read={schemaVersion:1,operation:'readEvidence',investigationRef:first.investigationRef,representationId:b.representationId,digest:b.digest,evidenceId:b.evidenceId,maxChars:2048};
   let selected;
   await assert.doesNotReject(async()=>{selected=await f.api.executeCallerInvestigation(read,options);},'new optional event selector must read the second exact duplicate event (feature RED)');
   assert.equal(selected.evidenceId,b.evidenceId);assert(selected.cursor);
+  assert(JSON.stringify(selected).length<=read.maxChars);assert(selected.range[1]>selected.range[0]);assert(selected.content.length>0);
   const c=JSON.parse(Buffer.from(selected.cursor,'base64url'));assert.equal(c.e,b.evidenceId);
   const before=f.calls.begin,request={schemaVersion:1,operation:'continue',investigationRef:first.investigationRef,expectedRevision:first.revision,dataScope:'synthetic',proposals:[{requirementId:'version',definitionRevision:(await f.rounds.readCallerRecord('memory',first.investigationRef)).payload.definitions.version,mode:'string',value:'2.4',binding:{representationId:b.representationId,digest:b.digest,evidenceId:b.evidenceId,quote:'Version 2.4.',range:[0,12]}}]};
   for(const evidenceId of [undefined,'forged-event']){const bad=pureCopy(request);if(evidenceId===undefined)delete bad.proposals[0].binding.evidenceId;else bad.proposals[0].binding.evidenceId=evidenceId;await assert.rejects(f.handler(bad,'memory',f.deps,f.host),e=>e.code==='VALIDATION_ERROR');assert.equal(f.calls.begin,before);}
@@ -341,8 +346,10 @@ test('L7 E public ID bytes reject before factory, preserve legacy reads and allo
   const doc=id=>({...pureContract(),requirements:{[id]:{question:'Version?',schema:{type:'string'}}}}),request=requirements=>({schemaVersion:1,operation:'start',requirements,dataScope:'synthetic'});
   let error;try{await f.handler(request(doc('a'.repeat(129))),'memory',f.deps,f.host);}catch(e){error=e;}
   assert.equal(factories,0,'129-byte public key must refuse before runtime factory');assert.equal(f.calls.create,0);assert.equal(error?.code,'VALIDATION_ERROR');
-  for(const id of ['a'.repeat(128),'é'.repeat(64)]){const h=(await f.handler(request(doc(id)),'memory',f.deps,f.host)).data;assert.equal(h.revision,1);}
-  for(const id of ['a'.repeat(129),'é'.repeat(65)]){const before=factories;await assert.rejects(f.handler(request(doc(id)),'memory',f.deps,f.host),e=>e.code==='VALIDATION_ERROR');assert.equal(factories,before);}
+  for(const id of ['a','a'.repeat(64),'release_version-1']){const h=(await f.handler(request(doc(id)),'memory',f.deps,f.host)).data;assert.equal(h.revision,1);}
+  for(const id of ['release.version','a'.repeat(65),'a'.repeat(128),'é'.repeat(64),'a'.repeat(129),'é'.repeat(65)]){const before=factories,created=f.calls.create,begun=f.calls.begin;await assert.rejects(f.handler(request(doc(id)),'memory',f.deps,f.host),e=>e.code==='VALIDATION_ERROR');assert.equal(factories,before);assert.equal(f.calls.create,created);assert.equal(f.calls.begin,begun);}
+  // Broad IDs remain supported by explicit replacement/legacy contracts, not new native starts.
+  for(const id of ['a'.repeat(128),'é'.repeat(64)]){const seed=await f.rounds.startCallerRound({storeRoot:'memory',contract:doc('compatible'),deps:{search:async()=>[],read:async()=>'',judge:null,now:()=>0}});const h=(await f.handler({schemaVersion:1,operation:'continue',investigationRef:seed.investigationRef,expectedRevision:1,requirements:doc(id),dataScope:'synthetic'},'memory',f.deps,f.host)).data;assert.equal(h.revision,2);const [block]=await pureCollection(f,h,'changes');assert(Object.hasOwn(block.contract.requirements,id));}
   const legacy=await f.rounds.startCallerRound({storeRoot:'memory',contract:doc('é'.repeat(65)),deps:{search:async()=>[],read:async()=>'',judge:null,now:()=>0}});
   const base={schemaVersion:1,operation:'continue',investigationRef:legacy.investigationRef,expectedRevision:legacy.handoff.revision,dataScope:'synthetic'};
   const before=factories;
@@ -354,14 +361,97 @@ test('L7 E public ID bytes reject before factory, preserve legacy reads and allo
 });
 
 
-test('L7 D valid public maximum field keys and escaped full definitions leave seven bounded cursors',async()=>{
+test('L7 D legacy maximum field keys and escaped full definitions leave seven bounded cursors',async()=>{
  const f=await pureFixture({producer:false});
  const ids=['a'.repeat(128),'é'.repeat(64),'c'.repeat(128)],escaped='"\\\n😀'.repeat(200);
  const c={...pureContract(),requirements:Object.fromEntries(ids.map(id=>[id,{question:'Version '+escaped,schema:{type:'string'},criteria:['Criterion '+escaped]}]))};
- const h=(await f.handler({schemaVersion:1,operation:'start',requirements:c,dataScope:'synthetic',maxChars:8192},'memory',f.deps,f.host)).data;
+ const legacy=await f.rounds.startCallerRound({storeRoot:'memory',contract:c,deps:{search:async()=>[],read:async()=>'',judge:null,now:()=>0}});
+ const h=(await f.handler({schemaVersion:1,operation:'inspect',investigationRef:legacy.investigationRef,maxChars:8192},'memory',f.deps,f.host)).data;
  assert(JSON.stringify(h).length<=8192);assert.equal(h.fulfillment.total,3);assert.equal(h.schemaVersion,2);assert.equal(h.definitions,undefined);
  const [block]=await pureCollection(f,h,'changes');assert.deepEqual(block.contract,(await f.rounds.readCallerRecord('memory',h.investigationRef)).contract);
  for(const id of ids)assert.equal(block.contract.requirements[id].question,'Version '+escaped);
  for(const collection of Object.keys(h.counts)){const decoded=JSON.parse(Buffer.from(h.cursors[collection],'base64url'));assert.deepEqual(Object.keys(decoded).sort(),['v','r','h','b','c','o'].sort());assert.equal(decoded.c,collection);assert.equal(decoded.r,h.committedRevision);}
  assert.equal(Object.keys(h.usage).length,7);assert(Object.values(h.usage).every(n=>n===null||Number.isSafeInteger(n)&&n>=0));f.check();
+});
+
+test('promotion fixture references remain native-shaped and distinct after deletion',async()=>{
+  const f=await pureFixture({producer:false}),one=await f.store.createInvestigation();
+  await f.store.deleteInvestigation(one.investigationRef);const two=await f.store.createInvestigation();
+  assert.match(one.investigationRef,/^inv_[0-9a-f]{32}$/);assert.match(two.investigationRef,/^inv_[0-9a-f]{32}$/);assert.notEqual(one.investigationRef,two.investigationRef);f.check();
+});
+
+test('promotion handler passes the complete ordered normalized profile to actual continuation formatter',async()=>{
+  const initial=['environment-secret-value','config-secret-value','duplicate-secret-value'];
+  const runtime=['runtime-secret-value','duplicate-secret-value',' \t ','runtime-secret-value'];
+  const f=await pureFixture({producer:false,secrets:Object.freeze(initial),env:Object.freeze({TYPESAFE_API_KEY:'judge-secret-value'}),runtimeSecrets:Object.freeze(runtime)});
+  const h=(await f.handler({schemaVersion:1,operation:'start',requirements:pureContract(),dataScope:'synthetic'},'memory',f.deps,f.host)).data;
+  const next=(await f.handler({schemaVersion:1,operation:'continue',investigationRef:h.investigationRef,expectedRevision:1,dataScope:'synthetic'},'memory',f.deps,f.host)).data;
+  assert.equal(next.revision,2);assert.equal(f.calls.formatSecrets.length,1);
+  const normalized=list=>[...new Set(list.filter(v=>typeof v==='string'&&v.length&&v.trim().length))];
+  const expected=[...initial,'judge-secret-value','runtime-secret-value'];
+  assert.deepEqual(normalized(f.calls.formatSecrets[0]),expected);assert.deepEqual(normalized([...initial,'judge-secret-value',...f.calls.sink.at(-1)]),expected);
+  assert.deepEqual(initial,['environment-secret-value','config-secret-value','duplicate-secret-value']);assert.deepEqual(runtime,['runtime-secret-value','duplicate-secret-value',' \t ','runtime-secret-value']);f.check();
+});
+
+test('promotion pre-return and post-return non-projection failures retain their classifications',async()=>{
+  const cases=[];
+  for(const kind of ['runtime','release','view-read']){
+    const marker=Object.assign(new Error('synthetic '+kind+' failure'),{code:'FILE_ERROR'}),f=await pureFixture({producer:false,...(kind==='runtime'?{runtimeError:marker}:{})});
+    const acquire=f.store.acquireOwnership.bind(f.store),inspect=f.store.inspect.bind(f.store);
+    if(kind==='release')f.store.acquireOwnership=async ref=>{const h=await acquire(ref);return {...h,release:async()=>{if((await inspect(ref)).committed.snapshot.revision>0)throw marker;return h.release();}};}; // committed but no successful round return
+    if(kind==='view-read')f.store.inspect=async ref=>{const value=await inspect(ref);if(value.committed.snapshot.revision>0)throw marker;return value;};
+    let error;try{await f.handler({schemaVersion:1,operation:'start',requirements:pureContract(),dataScope:'synthetic'},'memory',f.deps,f.host);}catch(e){error=e;}
+    cases.push({kind,error,same:error===marker});
+  }
+  console.log(JSON.stringify({case:'promotion failure boundaries',rows:cases.map(x=>({kind:x.kind,code:x.error?.code,message:x.error?.message,same:x.same}))}));
+  for(const x of cases){assert.equal(x.error?.code,'FILE_ERROR');assert.equal(x.same,true);assert.ok(!x.error.message.includes('round committed'));assert.equal(x.error.help,undefined);}
+});
+
+async function promotionMainCase(source,marker='partial',id='version') {
+  const {main}=await import('../dist/index.js'),{hermeticMainDeps}=await import('./helpers/hermetic-main.js');
+  const {createTavilyDescriptor}=await import('../dist/providers/tavily/adapter.js');
+  const {readCallerRecord}=await import('../dist/lib/lean-caller-rounds.js');
+  const dir=await mkdtemp(join(tmpdir(),'promotion-caller-main-')),storeRoot=join(dir,'store'),stdout=[],stderr=[],http=[];
+  let factories=0,configs=0;
+  const env=Object.freeze({SCOUTLINE_INVESTIGATIONS_DIR:storeRoot,SCOUTLINE_CONFIG_DIR:join(dir,'config'),SCOUTLINE_CACHE_DIR:join(dir,'cache'),SCOUTLINE_ARTIFACTS_DIR:join(dir,'artifacts'),
+    ...(source==='configuration'?{}:{TAVILY_API_KEY:source==='environment'?marker:'environment-synthetic-secret'}),
+    ...(source==='merged'?{TYPESAFE_API_KEY:'judge-synthetic-secret',SCOUTLINE_JUDGE_TRANSMIT:'1'}:{})});
+  const configured=Object.freeze({version:1,providers:source==='configuration'?{tavily:{apiKey:marker}}:source==='merged'?{minimax:{apiKey:'configuration-synthetic-secret'}}:{}});
+  const before=JSON.stringify({env,configured});
+  const runtimeSecrets=Object.freeze(source==='runtime'?[marker]:source==='merged'?[marker,'runtime-synthetic-secret','environment-synthetic-secret']:[]);
+  const deps=hermeticMainDeps({env,loadScoutlineConfig:async()=>{configs++;return configured;},
+    invocation:{stdoutIsTTY:false,stdinIsTTY:false,readStdin:async()=>'',writeStdout:s=>stdout.push(s),writeStderr:s=>stderr.push(s),runQuietly:async f=>f(),setExitCode:()=>{}},
+    requirementsRuntime:context=>{
+      factories++;
+      const transport={env:context.env,fetch:async(url,init={})=>{
+        const target=String(url);http.push({url:target,method:init.method??'GET'});
+        if(target==='https://api.tavily.com/search')return Response.json({results:[{url:'https://example.test/promotion',title:'ExampleApp',content:'ExampleApp version 2.4.0.'}]});
+        if(target==='https://api.tavily.com/extract'){const b=JSON.parse(init.body);return Response.json({results:b.urls.map(url=>({url,raw_content:'ExampleApp version 2.4.0.'})),failed_results:[]});}
+        throw new Error('Unexpected promotion fixture HTTP');
+      }};
+      const descriptor=createTavilyDescriptor({transport});
+      return {acquisitionOptions:{searchDescriptor:descriptor,readerDescriptor:descriptor,transports:{tavily:transport},descriptorFactory:(_id,t)=>createTavilyDescriptor({transport:t}),env:context.env,cache:context.cache,sleep:context.sleep,random:context.random,maxPhysicalAttempts:48},engineDeps:{judge:null,candidateJudge:null},secrets:runtimeSecrets};
+    }});
+  const requirements={...pureContract(),requirements:{[id]:{question:'Version?',schema:{type:'string'}}}};
+  try {
+    const code=await main(['investigate','--provider','tavily','--caller-request-json',JSON.stringify({schemaVersion:1,operation:'start',requirements,dataScope:'synthetic'}),'--no-cache'],deps);
+    const refs=(await fsPromises.readdir(join(storeRoot,'investigations')).catch(e=>{if(e.code==='ENOENT')return [];throw e;})).filter(n=>/^inv_[0-9a-f]{32}$/.test(n));
+    const records=[];for(const ref of refs)records.push(await readCallerRecord(storeRoot,ref));
+    return {source,marker,id,code,stdout:stdout.join(''),stderr:stderr.join(''),http,factories,configs,refs,records,inputsUnchanged:before===JSON.stringify({env,configured}),runtimeSecrets};
+  } finally {await rm(dir,{recursive:true,force:true});}
+}
+
+test('promotion compiled main delivers exact recovery across environment config and runtime profiles',async()=>{
+  const rows=[];for(const source of ['environment','configuration','runtime','merged'])rows.push(await promotionMainCase(source));
+  console.log(JSON.stringify({case:'promotion compiled recovery',rows:rows.map(x=>({source:x.source,code:x.code,http:x.http.length,factories:x.factories,refs:x.refs,revisions:x.records.map(r=>r.revision),stdout:x.stdout,stderr:x.stderr,inputsUnchanged:x.inputsUnchanged}))}));
+  for(const x of rows){const error=JSON.parse(x.stderr);assert.equal(x.stdout,'');assert.equal(x.code,1);assert.equal(error.code,'VALIDATION_ERROR');assert.equal(error.error,'Caller round committed; do not repeat the mutation.');assert.equal(x.refs.length,1);assert.equal(x.records[0].revision,1);assert.equal(x.records[0].snapshot.rounds.length,1);assert.ok(x.http.length>0);assert.equal(error.help,JSON.stringify({investigationRef:x.refs[0],revision:1,operation:'inspect'}));assert(!x.stderr.includes('partial'));assert.equal(x.inputsUnchanged,true);}
+});
+
+test('promotion compiled admission refuses dangerous profile contributions and invalid IDs without HTTP',async()=>{
+  const rows=[];
+  for(const source of ['environment','configuration','runtime'])rows.push(await promotionMainCase(source,'committed'));
+  for(const marker of ['"investigationRef":"inv_','f'.repeat(32)])rows.push(await promotionMainCase('environment',marker));
+  for(const id of ['release.version','a'.repeat(65),'é'.repeat(64)])rows.push(await promotionMainCase('environment','synthetic-acquisition-key',id));
+  console.log(JSON.stringify({case:'promotion compiled refusal',rows:rows.map(x=>({source:x.source,bytes:Buffer.byteLength(x.id),code:x.code,http:x.http.length,factories:x.factories,configs:x.configs,refs:x.refs,stdout:x.stdout,stderr:x.stderr}))}));
+  for(const x of rows){assert.equal(x.stdout,'');assert.equal(x.code,1);assert.equal(JSON.parse(x.stderr).code,'VALIDATION_ERROR');assert.equal(x.http.length,0);assert.deepEqual(x.refs,[]);assert.equal(x.inputsUnchanged,true);if(x.id!=='version'){assert.equal(x.configs,0);assert.equal(x.factories,0);assert.equal(JSON.parse(x.stderr).error,'Caller start requirement IDs must match [A-Za-z0-9_-]{1,64}.');}else{assert.equal(x.factories,1);assert.equal(JSON.parse(x.stderr).error,'Caller view unavailable under the active redaction profile.');}}
 });

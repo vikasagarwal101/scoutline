@@ -10,6 +10,9 @@ EXPERIMENTAL caller-assisted operations:
   --caller-request-json '<json>'   Inline versioned operation JSON
   schemaVersion:1; operation:start|continue|inspect|readEvidence|delete.
   Start/continue require explicit public/synthetic dataScope; no automatic extractor.
+  Start IDs: [A-Za-z0-9_-]{1,64}; continuation IDs remain bounded to 128 UTF-8 bytes.
+  Unsafe recovery profiles refuse before work. A committed-view error carries
+  an inspect selector in JSON help; do not repeat the mutation.
   Inspect/readEvidence/delete are offline and credential-free.
   maxChars defaults to 16384 (1024..65536; mutating header minimum 8192).
   Records: SCOUTLINE_INVESTIGATIONS_DIR or <config-root>/investigations.

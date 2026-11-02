@@ -92,3 +92,27 @@ test("finite profiles bind immutable exact model identities", () => {
     assert.throws(() => judgeDescriptor(route, model), ValidationError);
   }
 });
+
+
+test("route model lists and helpers match the immutable descriptor table", () => {
+  const expected = {
+    openrouter: ["OPENROUTER_API_KEY", "https://openrouter.ai/api/v1/systemone", [["typesafe/jev-1.14", "typesafe/jev-1.14-20261014"], ["typesafe/jev-1.13", "typesafe/jev-1.13-20260917"]]],
+    typesafe: ["TYPESAFE_API_KEY", "https://api.typesafe.ai/v1/systemone", [["jev-1.13.0", "jev-1.13.0"], ["jev-1.14.0", "jev-1.14.0"]]],
+  };
+  assert.ok(Object.isFrozen(judgeConfig.JUDGE_ROUTE_MODELS));
+  assert.equal(judgeConfig.JUDGE_ROUTE_DEFAULT, "openrouter");
+  for (const [route, [envKey, endpoint, models]] of Object.entries(expected)) {
+    const list = judgeConfig.JUDGE_ROUTE_MODELS[route];
+    assert.ok(Object.isFrozen(list));
+    assert.throws(() => list.push("invalid"), TypeError);
+    assert.throws(() => { judgeConfig.JUDGE_ROUTE_MODELS[route] = ["invalid"]; }, TypeError);
+    assert.deepEqual(list, models.map(([requested]) => requested));
+    assert.equal(judgeConfig.judgeRouteEnvVar(route), envKey);
+    assert.equal(judgeConfig.judgeDefaultModel(route), list[0]);
+    for (const [requested, resolved] of models) {
+      const descriptor = judgeDescriptor(route, requested);
+      assert.equal(descriptor.endpoint, endpoint);
+      assert.equal(descriptor.expectedResolvedModel, resolved);
+    }
+  }
+});

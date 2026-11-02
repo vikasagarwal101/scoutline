@@ -39,7 +39,7 @@ fs.open=function(path,...args){const callback=args.pop();return Reflect.apply(ac
 fs.close=function(fd,...args){const callback=args.pop();return Reflect.apply(actualClose,this,[fd,...args,(error)=>{if(!error&&opened.delete(fd))process.stderr.write('FD_CLOSE '+fd+'\\n');callback(error);}]);};
 syncBuiltinESMExports();
 import http from 'node:http';import https from 'node:https';const refuse=()=>{throw Error('REAL_NETWORK_FORBIDDEN')};http.request=refuse;https.request=refuse;
-globalThis.fetch=async(url,init)=>{process.stderr.write('HTTP '+new URL(url).hostname+' '+JSON.stringify({callback:!!init.signal})+'\\n');if(process.env.JEV_DEV_ENDPOINT){const path=new URL(url).pathname;return new Response(JSON.stringify(path=== '/search' ? {results:[{url:'https://offline.test/release',title:'lead',content:'lead'}]} : path=== '/extract' ? {results:[{url:'https://offline.test/release',raw_content:'release documented'}]} : {}));}const signal=init.signal;return new Response(new ReadableStream({start(c){const abort=()=>{process.stderr.write('NATIVE_ABORT\\n');c.error(new DOMException('abort','AbortError'))};signal?.addEventListener('abort',abort,{once:true});setTimeout(()=>{if(!signal?.aborted){c.enqueue(new TextEncoder().encode('{"results":[]}'));c.close()}},75)}}));};`);
+globalThis.fetch=async(url,init)=>{process.stderr.write('HTTP '+new URL(url).hostname+' '+JSON.stringify({callback:!!init.signal})+'\\n');if(new URL(url).hostname!=='api.tavily.com')throw Error('UNAPPROVED_OFFLINE_ENDPOINT');if(process.env.JEV_DEV_ENDPOINT){const path=new URL(url).pathname;return new Response(JSON.stringify(path=== '/search' ? {results:[{url:'https://offline.test/release',title:'lead',content:'lead'}]} : path=== '/extract' ? {results:[{url:'https://offline.test/release',raw_content:'release documented'}]} : {}));}const signal=init.signal;return new Response(new ReadableStream({start(c){const abort=()=>{process.stderr.write('NATIVE_ABORT\\n');c.error(new DOMException('abort','AbortError'))};signal?.addEventListener('abort',abort,{once:true});setTimeout(()=>{if(!signal?.aborted){c.enqueue(new TextEncoder().encode('{"results":[]}'));c.close()}},75)}}));};`);
 function child(args, overrides = {}, stdin = '') {
  return new Promise((resolve,reject) => {
  const proc=spawn(process.execPath,['--import',preload,...args],{cwd:root,env:{PATH:process.env.PATH,NODE_OPTIONS:process.env.NODE_OPTIONS,TMPDIR:process.env.TMPDIR,HOME:sandbox,SCOUTLINE_CONFIG_DIR:join(sandbox,'config'),SCOUTLINE_CACHE_DIR:join(sandbox,`cache-${Math.random()}`),SCOUTLINE_ARTIFACTS_DIR:join(sandbox,'artifacts'),TAVILY_API_KEY:'synthetic-ambient',SLICE_LIVE_PROFILE:'1',...overrides},stdio:['pipe','pipe','pipe']});let stdout='',stderr='';const timer=setTimeout(()=>{proc.kill();reject(Error('offline child timeout'))},1500);proc.stdout.on('data',x=>stdout+=x);proc.stderr.on('data',x=>stderr+=x);proc.on('error',reject);proc.on('close',code=>{clearTimeout(timer);resolve({code,stdout,stderr})});proc.stdin.end(stdin);
@@ -71,12 +71,12 @@ test('actual authorized main pipe parses valid requirements through its real inc
  assert.equal(JSON.parse(r.stdout).question,'Check release');
 });
 
-test('Search/Reader consent does not activate an ambient complete judge profile',async()=>{
+for (const [route, keyName] of [['typesafe', 'TYPESAFE_API_KEY'], ['openrouter', 'OPENROUTER_API_KEY']]) test(`Search/Reader consent does not activate ${route} without judge consent`,async()=>{
  // MIGRATION (dual-route Jev): a bare credential is not consent, so it
  // stays inert instead of refusing. The run remains deterministic-only
  // and NO judge transmission happens; acquisition may run inside the
  // existing bounds and is not native work.
- const r=await child([script,'investigate','--requirements-json',JSON.stringify(input())],{TYPESAFE_API_KEY:'synthetic-judge-key'});
+ const r=await child([script,'investigate','--requirements-json',JSON.stringify(input())],{SCOUTLINE_JUDGE:route,[keyName]:'synthetic-judge-key'});
  const document=assertionStdout(r.stdout);
  assertionSnapshot('consent-correction',{...r,...document,httpMarkers:r.stderr.match(/HTTP [^\n]*/g)??[]});
  assert.equal(r.code,1);
@@ -84,7 +84,7 @@ test('Search/Reader consent does not activate an ambient complete judge profile'
  assert.equal(document.envelope.assessment,'deterministic-only');
  assert.equal(document.envelope.usage.judgeCalls,0);
  assert.equal(document.envelope.usage.candidateJudgeCalls,0);
- assert.doesNotMatch(r.stderr,/HTTP api\.typesafe\.ai/,'no separately authorized judge transmission');
+ assert.doesNotMatch(r.stderr,/HTTP (?:api\.typesafe\.ai|openrouter\.ai)/,'neither native endpoint was contacted');
  assert.doesNotMatch(r.stdout,/synthetic-judge-key/,'an inert credential never reaches the output');
 });
 

@@ -176,6 +176,27 @@ describe("config set", () => {
     );
   });
 
+  it("emits the route billing notice when consent is saved", async () => {
+    const notices = [];
+    let stored;
+    const result = await configSetCommand("judge.typesafe.transmitConsent", "true", {
+      set: async (path, value) => {
+        assert.equal(path, "judge.typesafe.transmitConsent");
+        assert.equal(value, "true");
+        stored = { version: 1, providers: {}, judge: { typesafe: { transmitConsent: true, apiKey: "synthetic-private-key" } } };
+        return stored;
+      },
+      notify: notice => notices.push(notice),
+    });
+    assert.equal(stored.judge.typesafe.transmitConsent, true);
+    assert.equal(result.data.value, true);
+    assert.equal(notices.length, 1);
+    assert.match(notices[0], /TypeSafe/);
+    assert.match(notices[0], /billed/i);
+    assert.match(notices[0], /not live-verified/i);
+    assert.doesNotMatch(notices[0], /synthetic-private-key/);
+  });
+
   it("registry strictness propagates (typo'd id)", async () => {
     const { deps } = setDoubles();
     await assert.rejects(
@@ -231,6 +252,8 @@ describe("config help", () => {
     assert.ok(CONFIG_HELP.includes("judge.route"));
     assert.ok(CONFIG_HELP.includes("judge.openrouter.model"));
     assert.ok(CONFIG_HELP.includes("judge.openrouter.transmitConsent"));
+    assert.match(CONFIG_HELP, /stored preferences and shipped defaults/);
+    assert.match(CONFIG_HELP, /not runtime environment overrides or activation/);
   });
 });
 

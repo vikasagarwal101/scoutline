@@ -14,19 +14,34 @@ export interface JudgeDescriptor {
   readonly allowFallbacks: false;
 }
 
+export const JUDGE_ROUTE_DEFAULT = "openrouter" as const;
+
+const ROUTES = Object.freeze({
+  openrouter: Object.freeze({
+    endpoint: "https://openrouter.ai/api/v1/systemone", envKey: "OPENROUTER_API_KEY",
+    models: Object.freeze({ "typesafe/jev-1.14": "typesafe/jev-1.14-20261014", "typesafe/jev-1.13": "typesafe/jev-1.13-20260917" }),
+  }),
+  typesafe: Object.freeze({
+    endpoint: "https://api.typesafe.ai/v1/systemone", envKey: "TYPESAFE_API_KEY",
+    models: Object.freeze({ "jev-1.13.0": "jev-1.13.0", "jev-1.14.0": "jev-1.14.0" }),
+  }),
+});
+
+export const JUDGE_ROUTE_MODELS: Readonly<Record<JudgeRoute, readonly string[]>> = Object.freeze({
+  openrouter: Object.freeze(Object.keys(ROUTES.openrouter.models)),
+  typesafe: Object.freeze(Object.keys(ROUTES.typesafe.models)),
+});
+
 export function judgeDescriptor(route: JudgeRoute, model?: string): JudgeDescriptor {
-  const profiles: Readonly<Record<JudgeRoute, Readonly<Record<string, string>>>> = {
-    openrouter: { "typesafe/jev-1.14": "typesafe/jev-1.14-20261014", "typesafe/jev-1.13": "typesafe/jev-1.13-20260917" },
-    typesafe: { "jev-1.13.0": "jev-1.13.0", "jev-1.14.0": "jev-1.14.0" },
-  };
   if (route !== "openrouter" && route !== "typesafe") throw new ValidationError("Unsupported judge route.");
-  const requestedModel = model ?? (route === "openrouter" ? "typesafe/jev-1.14" : "jev-1.13.0");
-  if (!Object.hasOwn(profiles[route], requestedModel)) throw new ValidationError("Unsupported judge model.");
+  const policy = ROUTES[route];
+  const requestedModel = model ?? JUDGE_ROUTE_MODELS[route][0]!;
+  if (!Object.hasOwn(policy.models, requestedModel)) throw new ValidationError("Unsupported judge model.");
   return Object.freeze({
     route,
-    endpoint: route === "openrouter" ? "https://openrouter.ai/api/v1/systemone" : "https://api.typesafe.ai/v1/systemone",
+    endpoint: policy.endpoint,
     requestedModel,
-    expectedResolvedModel: profiles[route][requestedModel]!,
+    expectedResolvedModel: (policy.models as Readonly<Record<string, string>>)[requestedModel]!,
     questionRevision: "native-noul-attribution-v1",
     thresholdRevision: "trial-v1-p9-p1",
     uncertaintyRevision: "per-source-null-v1",
@@ -35,17 +50,9 @@ export function judgeDescriptor(route: JudgeRoute, model?: string): JudgeDescrip
   });
 }
 
-export const JUDGE_ROUTE_DEFAULT = "openrouter" as const;
-
-/** The finite supported request ids per route, recommended model first. */
-export const JUDGE_ROUTE_MODELS: Readonly<Record<JudgeRoute, readonly string[]>> = {
-  openrouter: ["typesafe/jev-1.14", "typesafe/jev-1.13"],
-  typesafe: ["jev-1.13.0", "jev-1.14.0"],
-};
-
 /** The route's own credential environment variable. */
 export function judgeRouteEnvVar(route: JudgeRoute): string {
-  return route === "openrouter" ? "OPENROUTER_API_KEY" : "TYPESAFE_API_KEY";
+  return ROUTES[route === "openrouter" ? "openrouter" : "typesafe"].envKey;
 }
 
 export function judgeDefaultModel(route: JudgeRoute): string {
@@ -60,7 +67,7 @@ export interface JudgeSettings {
 
 export function resolveJudgeSettings(env: Readonly<Record<string, string | undefined>>, stored: unknown = undefined) {
   const parsed = parseJudgeSettings(stored);
-  const route = (env.SCOUTLINE_JUDGE ?? parsed.route ?? "openrouter") as JudgeRoute;
+  const route = (env.SCOUTLINE_JUDGE ?? parsed.route ?? JUDGE_ROUTE_DEFAULT) as JudgeRoute;
   const profile = parsed[route];
   const descriptor = judgeDescriptor(route, env.SCOUTLINE_JUDGE_MODEL ?? profile?.model);
   if (env.SCOUTLINE_JUDGE_TRANSMIT !== undefined && env.SCOUTLINE_JUDGE_TRANSMIT !== "1" && env.SCOUTLINE_JUDGE_TRANSMIT !== "0") {
@@ -68,7 +75,7 @@ export function resolveJudgeSettings(env: Readonly<Record<string, string | undef
   }
   const consent = env.SCOUTLINE_JUDGE_TRANSMIT === undefined ? profile?.transmitConsent ?? false : env.SCOUTLINE_JUDGE_TRANSMIT === "1";
   if (!consent) return Object.freeze({ enabled: false as const, route, model: descriptor.requestedModel });
-  const apiKey = env[route === "openrouter" ? "OPENROUTER_API_KEY" : "TYPESAFE_API_KEY"] ?? profile?.apiKey;
+  const apiKey = env[judgeRouteEnvVar(route)] ?? profile?.apiKey;
   if (!apiKey?.trim()) throw new ValidationError("Judge consent requires a selected-route API key. To select direct TypeSafe, set SCOUTLINE_JUDGE=typesafe or use init/config.");
   return Object.freeze({ enabled: true as const, route, model: descriptor.requestedModel, apiKey, descriptor });
 }

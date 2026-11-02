@@ -25,7 +25,9 @@ const continued=call(request('continue',{investigationRef,expectedRevision:start
 assert.equal(continued.status,'complete');
 const trace=(await readFile(env.CALLER_DEMO_TRACE,'utf8')).trim().split('\n').map(line=>JSON.parse(line));
 const native=trace.filter(row=>row.url==='https://openrouter.ai/api/v1/systemone');
-assert.ok(native.length>0);assert.ok(native.every(row=>row.method==='POST'&&row.requestedModel==='typesafe/jev-1.14'&&row.resolvedModel==='typesafe/jev-1.14-20261014'&&row.allowFallbacks===false&&row.authSha256===createHash('sha256').update('Bearer synthetic-judge-key').digest('hex')));
+assert.equal(native.length,1,'exactly one native candidate dispatch');
+const {url,method,requestedModel,resolvedModel,allowFallbacks,authSha256}=native[0];
+assert.deepEqual({url,method,requestedModel,resolvedModel,allowFallbacks,authSha256},{url:'https://openrouter.ai/api/v1/systemone',method:'POST',requestedModel:'typesafe/jev-1.14',resolvedModel:'typesafe/jev-1.14-20261014',allowFallbacks:false,authSha256:createHash('sha256').update('Bearer synthetic-judge-key').digest('hex')});
 assert.ok(!trace.some(row=>row.url==='https://api.typesafe.ai/v1/systemone'));
 
 const outcomes=JSON.parse(call(request('inspect',{investigationRef,collection:'outcomes'})).content);assert.equal(outcomes[0].outcome.value,'1.2.3');

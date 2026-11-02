@@ -1042,3 +1042,8 @@ shared bounded lifecycle. They are distinct from acquisition Providers and
 their routing/fallback. Selected judge failures never switch routes or models;
 each logical judgment has one attempt, while multiple judgments share the
 existing physical admission ceiling. See [judge configuration](configuration.md#investigation-judge).
+
+Trusted descriptors bind route, model and policy before eligible native proof
+reuse. Opaque collaborators without one cannot receive native reuse authority;
+caller JSON cannot supply it. Fake-HTTP fixtures do not establish live account,
+billing, privacy or semantic-quality claims.

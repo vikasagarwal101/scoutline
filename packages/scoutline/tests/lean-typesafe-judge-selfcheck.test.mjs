@@ -108,6 +108,7 @@ test("legacy direct 200 error envelope is a protocol failure", async () => {
   await assert.rejects(() => profile.judge(INPUT), (error) => {
     assert.equal(error.code, "TYPESAFE_PROTOCOL");
     assert.ok(!JSON.stringify(error).includes("private-upstream-message"));
+    assert.ok(!error.message.includes("private-upstream-message"));
     return true;
   });
 });

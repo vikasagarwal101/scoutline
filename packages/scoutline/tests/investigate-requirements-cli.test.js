@@ -385,15 +385,31 @@ test("requirements mode: judge selection rules refuse typed, and a bare credenti
   assert.equal(legacyOverride.code, 1);
   assert.ok(legacyOverride.stderr.includes("TYPESAFE_MODEL"), legacyOverride.stderr);
   // A credential WITHOUT consent is inert: no refusal, no judge work.
-  const keyOnly = await runMain(
-    ["investigate", "--provider", "tavily", "--requirements-json", JSON.stringify(CONTRACT)],
-    { env: { TAVILY_API_KEY: "guard-synthetic-key", TYPESAFE_API_KEY: "guard-key" } },
-  );
-  assert.equal(keyOnly.code, 1);
-  assert.ok(keyOnly.parsed, `expected the deterministic envelope: ${keyOnly.stderr}`);
-  assert.equal(keyOnly.parsed.assessment, "deterministic-only");
-  assert.equal(keyOnly.parsed.usage.judgeCalls, 0);
-  assert.equal(keyOnly.parsed.usage.candidateJudgeCalls, 0);
+  const originalFetch = globalThis.fetch;
+  const attempts = [];
+  globalThis.fetch = async (url, init = {}) => {
+    const target = String(url);
+    attempts.push(target);
+    if (init.method !== "POST") throw new Error("unexpected acquisition method");
+    if (target === "https://api.tavily.com/search") return Response.json({ results: [] });
+    if (target === "https://api.tavily.com/extract") return Response.json({ results: [], failed_results: [] });
+    throw new Error("unexpected acquisition endpoint");
+  };
+  try {
+    const keyOnly = await runMain(
+      ["investigate", "--provider", "tavily", "--requirements-json", JSON.stringify(CONTRACT)],
+      { env: { TAVILY_API_KEY: "guard-synthetic-key", SCOUTLINE_JUDGE: "typesafe", TYPESAFE_API_KEY: "guard-key" } },
+    );
+    assert.equal(keyOnly.code, 1);
+    assert.ok(keyOnly.parsed, `expected the deterministic envelope: ${keyOnly.stderr}`);
+    assert.equal(keyOnly.parsed.assessment, "deterministic-only");
+    assert.equal(keyOnly.parsed.usage.judgeCalls, 0);
+    assert.equal(keyOnly.parsed.usage.candidateJudgeCalls, 0);
+    assert.ok(attempts.length > 0, "acquisition reached the fake transport");
+    assert.ok(attempts.every(url => url === "https://api.tavily.com/search" || url === "https://api.tavily.com/extract"));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("requirements mode: a supplier outside the executable subset fails closed before acquisition", async () => {

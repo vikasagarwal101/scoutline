@@ -1333,16 +1333,6 @@ async function promptReconfigAction(
 }
 
 /**
- * Apply a single mutating re-config action. Persists the result via the
- * store and returns a status the caller uses to decide whether to
- * re-render the menu, exit, or loop.
- *
- *   - "written": the config was mutated + persisted successfully.
- *   - "loop": the user backed out of a sub-prompt (no mutation); re-render.
- *   - "cancel": the user explicitly cancelled; exit 0.
- *   - "write-error": the atomic write failed; exit 1.
- */
-/**
  * Judge setup — one shared flow for the fresh wizard and the re-config
  * menu. Saves preferences only: no inference, model discovery, quota
  * probe or credential check. A cancel leaves the judge section untouched.
@@ -1438,6 +1428,16 @@ async function setupJudge(
   return status;
 }
 
+/**
+ * Apply a single mutating re-config action. Persists the result via the
+ * store and returns a status the caller uses to decide whether to
+ * re-render the menu, exit, or loop.
+ *
+ *   - "written": the config was mutated + persisted successfully.
+ *   - "loop": the user backed out of a sub-prompt (no mutation); re-render.
+ *   - "cancel": the user explicitly cancelled; exit 0.
+ *   - "write-error": the atomic write failed; exit 1.
+ */
 async function applyReconfigAction(
   deps: InitDependencies,
   action: Exclude<ReconfigChoice, "cancel" | "rerun-full">,

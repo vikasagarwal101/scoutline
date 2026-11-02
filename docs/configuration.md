@@ -69,10 +69,8 @@ environment keys participate in redaction; public display redaction does not
 encrypt or scrub original private retained source bytes, and original/display
 digests may differ. A changed redaction basis can invalidate cursors independently
 of semantic reuse. Route/model/policy changes invalidate eligible reuse; key
-identity is not semantic identity. Opaque collaborators without trusted
-descriptors cannot receive native reuse authority, and caller JSON cannot supply
-that identity. Fake-HTTP fixtures do not establish live access, billing, privacy
-or semantic quality.
+identity is not semantic identity. Live access, billing, privacy and semantic
+quality are not verified.
 
 ## On-Disk Config Foundation
 

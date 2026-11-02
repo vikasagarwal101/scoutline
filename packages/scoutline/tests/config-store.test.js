@@ -597,6 +597,24 @@ describe("config key registry", () => {
     });
   });
 
+  it("unsetting the only judge route removes the empty section", async (t) => {
+    const { unsetConfigValue, readConfig } = await import("../dist/lib/config-store.js");
+    await withConfig(t, { version: 1, providers: {}, judge: { route: "typesafe" } }, async (filePath) => {
+      const result = await unsetConfigValue("judge.route", { filePath });
+      assert.equal(Object.hasOwn(result, "judge"), false);
+      assert.equal(Object.hasOwn(await readConfig({ filePath }), "judge"), false);
+    });
+  });
+
+  it("unsetting a route preserves inactive profile credentials and consent", async (t) => {
+    const { unsetConfigValue, readConfig } = await import("../dist/lib/config-store.js");
+    const judge = { openrouter: { model: "typesafe/jev-1.13", apiKey: "or-secret", transmitConsent: true }, typesafe: { apiKey: "ts-secret", transmitConsent: false } };
+    await withConfig(t, { version: 1, providers: {}, judge: { route: "typesafe", ...judge } }, async (filePath) => {
+      assert.deepEqual((await unsetConfigValue("judge.route", { filePath })).judge, judge);
+      assert.deepEqual((await readConfig({ filePath })).judge, judge);
+    });
+  });
+
   it("route notice describes consent without claiming runtime readiness", async () => {
     const { resolveConfigKey } = await import("../dist/lib/config-store.js");
     const notice = resolveConfigKey("judge.route").setNotice({ version: 1, providers: {}, judge: { route: "typesafe", typesafe: { transmitConsent: true } } });
@@ -606,10 +624,9 @@ describe("config key registry", () => {
     assert.doesNotMatch(notice, /judging is enabled/i);
   });
 
-  it("emits a static notice without network when consent is enabled", async (t) => {
+  it("derives the static consent notice from the registry descriptor", async (t) => {
     const { resolveConfigKey, setConfigValue } = await import("../dist/lib/config-store.js");
     await withConfig(t, { version: 1, providers: {} }, async (filePath) => {
-      const notices = [];
       const key = resolveConfigKey("judge.typesafe.transmitConsent");
       await setConfigValue("judge.typesafe.transmitConsent", "true", { filePath });
       const { readConfig } = await import("../dist/lib/config-store.js");
@@ -620,7 +637,6 @@ describe("config key registry", () => {
       assert.ok(notice.includes("billed"));
       assert.ok(notice.includes("not live-verified"));
       assert.ok(!notice.includes("secret"));
-      notices.push(notice);
     });
   });
 

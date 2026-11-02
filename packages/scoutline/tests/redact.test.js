@@ -1687,10 +1687,7 @@ describe("judge-route credential surfaces (dual-route Jev)", () => {
     );
   });
 
-  it("masks a plain scalar that equals an inactive route's stored credential", () => {
-    // The stored OpenRouter model string is ALSO the value of an inactive
-    // TYPESAFE_API_KEY in this fixture. The model is not an apiKey field,
-    // but the LITERAL is a credential, so the scalar must still mask.
+  it("masks a plain scalar matching a supplied literal", () => {
     const literal = "typesafe/jev-1.14";
     assert.strictEqual(
       redactSecrets(literal, [literal]),

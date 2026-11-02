@@ -110,7 +110,7 @@ function valueAtPath(config: ScoutlineConfig, path: string): unknown {
   return undefined;
 }
 
-/** The judge section view: effective defaults, never the stored keys. */
+/** Stored judge preferences with shipped defaults, not runtime overrides. */
 function judgeView(config: ScoutlineConfig): unknown {
   const route = config.judge?.route ?? JUDGE_ROUTE_DEFAULT;
   const profile = (name: "openrouter" | "typesafe") => ({
@@ -247,7 +247,8 @@ Keys:
                              switch (back to default-on) with
                              \`scoutline config unset journal\`.
   judge                      The judge settings section (view only; credentials
-                             masked; effective defaults shown).
+                             masked; stored preferences and shipped defaults
+                             shown, not runtime environment overrides or activation).
   judge.route                openrouter|typesafe — the selected judge access
                              route (default openrouter).
   judge.openrouter           The openrouter route's judge profile (view

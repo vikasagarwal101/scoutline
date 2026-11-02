@@ -31,14 +31,26 @@ import * as fs from "node:fs/promises";
 import { main } from "../dist/index.js";
 import { handleInitWithHelp as runInitWithHelp, INIT_HELP } from "../dist/commands/init.js";
 async function handleInitWithHelp(args, deps) {
-  try { return await runInitWithHelp(args, deps); }
-  finally { deps.prompts.assertJudgeScripted?.(); }
+  const result = await runInitWithHelp(args, deps);
+  deps.prompts.assertJudgeScripted?.();
+  return result;
 }
 import { AuthError, ApiError, NetworkError } from "../dist/lib/errors.js";
 import { withTempDir } from "./helpers/temp-dir.js";
 import { useTempConfigDir } from "./helpers/config-dir-pin.js";
 
 useTempConfigDir();
+
+it("preserves a real handler throw instead of the secondary judge guard error", async () => {
+  const primary = new Error("help output failed");
+  const secondary = new Error("judge guard failed");
+  let guardCalls = 0;
+  await assert.rejects(() => handleInitWithHelp(["--help"], {
+    prompts: { assertJudgeScripted: () => { guardCalls += 1; throw secondary; } },
+    writeStdout: () => { throw primary; },
+  }), (error) => error === primary);
+  assert.equal(guardCalls, 0);
+});
 
 // ---------------------------------------------------------------------------
 // Test doubles

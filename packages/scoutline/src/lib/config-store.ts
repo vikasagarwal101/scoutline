@@ -1266,7 +1266,11 @@ export async function unsetConfigValue(
       }
       const { route: _route, ...judgeRest } = current.judge;
       void _route;
-      next = { ...current, judge: judgeRest };
+      if (Object.keys(judgeRest).length === 0) {
+        const { judge: _judge, ...rest } = current;
+        void _judge;
+        next = rest;
+      } else next = { ...current, judge: judgeRest };
     } else if (trimmed.startsWith("judge.") && trimmed.endsWith(".model")) {
       const route = trimmed.split(".")[1] as "openrouter" | "typesafe";
       if (current.judge?.[route]?.model === undefined) {

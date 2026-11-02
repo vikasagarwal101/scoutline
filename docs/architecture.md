@@ -1034,3 +1034,11 @@ DeepSeek supports Search and Markdown Reader through standalone bearer-authentic
 JSON endpoints. Domain/topic/date operators are compiled before the 128-character
 query limit is checked. The effective query and capped count partition its cache.
 See the [DeepSeek provider guide](deepseek.md) for controls and lifecycle details.
+
+## Investigation judge routes
+
+OpenRouter and direct TypeSafe are thin native Jev route policies over one
+shared bounded lifecycle. They are distinct from acquisition Providers and
+their routing/fallback. Selected judge failures never switch routes or models;
+each logical judgment has one attempt, while multiple judgments share the
+existing physical admission ceiling. See [judge configuration](configuration.md#investigation-judge).

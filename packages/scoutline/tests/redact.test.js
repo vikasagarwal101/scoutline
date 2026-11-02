@@ -1588,3 +1588,114 @@ describe("#232 — derivation pin: credentials modules drive redact surfaces", (
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Judge-route credential surfaces (dual-route Jev).
+//
+// The two judge routes are REAL credentials and their redaction must reach
+// every surface the incumbent providers already reach — the structured
+// object-key surface, the [=:] assignment surface, the guarded
+// whitespace-separator surface, and the environment discovery scan.
+//
+// The GUARDED whitespace form is deliberately narrow: the existing
+// pattern only fires when the value carries BOTH a letter and a digit and
+// is long enough. A space-separated value WITHOUT that shape is NOT a
+// masked form, and this suite must not assert that it is. (R1 corrected
+// the earlier digit/assignment misconception.)
+// ---------------------------------------------------------------------------
+
+describe("judge-route credential surfaces (dual-route Jev)", () => {
+  const ROUTE_SURFACES = [
+    { name: "OPENROUTER_API_KEY", value: "zzRoute1Openrouter2Key3" },
+    { name: "TYPESAFE_API_KEY", value: "zzRoute1Typesafe2Key3" },
+    { name: "DEEPSEEK_API_KEY", value: "zzRoute1Deepseek2Key3" },
+  ];
+
+  it("redacts each judge route env name as a structured object key", () => {
+    for (const { name, value } of ROUTE_SURFACES) {
+      assert.strictEqual(
+        redactSecrets({ [name]: value })[name],
+        "[REDACTED]",
+        `object key ${name} must redact`,
+      );
+    }
+  });
+
+  it("redacts each judge route env name in its [=:] assignment form", () => {
+    for (const { name, value } of ROUTE_SURFACES) {
+      assert.strictEqual(
+        redactCredentialString(`${name}=${value}`),
+        "[REDACTED]",
+        `assignment form "${name}=<value>" must redact`,
+      );
+      assert.strictEqual(
+        redactCredentialString(`${name}: ${value}`),
+        "[REDACTED]",
+        `assignment form "${name}: <value>" must redact`,
+      );
+    }
+  });
+
+  it("redacts each judge route env name in the guarded whitespace form", () => {
+    for (const { name, value } of ROUTE_SURFACES) {
+      assert.strictEqual(
+        redactCredentialString(`${name} ${value}`),
+        "[REDACTED]",
+        `guarded whitespace form "${name} <value>" must redact when the value carries a letter and a digit`,
+      );
+    }
+  });
+
+  it("leaves a space-separated value without the guarded shape unmasked", () => {
+    // The guarded pattern needs a digit AND a letter. A lowercase-only
+    // value does NOT match it, so it is NOT a masked form — this suite
+    // asserts the true shape rather than claiming every space form masks.
+    for (const name of ["OPENROUTER_API_KEY", "TYPESAFE_API_KEY", "DEEPSEEK_API_KEY"]) {
+      assert.strictEqual(
+        redactCredentialString(`${name} orsecretvaluenodigits`),
+        `${name} orsecretvaluenodigits`,
+        `an unguarded space-separated value is not a masked form for ${name}`,
+      );
+    }
+  });
+
+  it("surfaces each judge route credential through the environment discovery scan", () => {
+    for (const { name, value } of ROUTE_SURFACES) {
+      assert.ok(
+        configuredSecrets({ [name]: value }).includes(value),
+        `configuredSecrets must include the ${name} value so it is redacted at every outward boundary`,
+      );
+    }
+  });
+
+  it("redacts a supplied literal secret wherever it appears in a string", () => {
+    const literal = "supplied-literal-secret-4242";
+    assert.strictEqual(
+      redactCredentialString(`plain ${literal} here`, literal),
+      "plain [REDACTED] here",
+      "a supplied literal must be replaced wherever it appears",
+    );
+    assert.strictEqual(
+      redactCredentialString(`plain ${literal} here`, [literal]),
+      "plain [REDACTED] here",
+      "a supplied literal list must be replaced wherever it appears",
+    );
+    assert.strictEqual(
+      redactSecrets({ note: `plain ${literal} here` }, [literal]).note,
+      "plain [REDACTED] here",
+      "a supplied literal must be replaced inside a nested string value",
+    );
+  });
+
+  it("masks a plain scalar that equals an inactive route's stored credential", () => {
+    // The stored OpenRouter model string is ALSO the value of an inactive
+    // TYPESAFE_API_KEY in this fixture. The model is not an apiKey field,
+    // but the LITERAL is a credential, so the scalar must still mask.
+    const literal = "typesafe/jev-1.14";
+    assert.strictEqual(
+      redactSecrets(literal, [literal]),
+      "[REDACTED]",
+      "a plain scalar equal to a credential literal must mask",
+    );
+  });
+});

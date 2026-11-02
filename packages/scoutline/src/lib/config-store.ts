@@ -9,6 +9,7 @@ import {
   type ProviderId,
 } from "../providers/types.js";
 import { ConfigurationError, ValidationError } from "./errors.js";
+import { parseJudgeSettings, judgeDescriptor, type JudgeSettings } from "./judge-config.js";
 import { assertTestSafeWrite, isTestIsolationViolation } from "./test-isolation.js";
 import {
   withAsyncFileLock,
@@ -33,6 +34,7 @@ export interface ProviderConfig {
 
 export interface ScoutlineConfig {
   readonly version: typeof CONFIG_VERSION;
+  readonly judge?: JudgeSettings;
   readonly fallbackEnabled?: boolean;
   /**
    * Multi-provider search fan-out switch (search-fanout plan, DESIGN
@@ -383,10 +385,19 @@ function parseConfig(contents: string): ParsedConfig {
   }
 
   const routing = parseRoutingConfig(parsed.routing, warnings);
+  let judge: JudgeSettings | undefined;
+  if (parsed.judge !== undefined) {
+    try {
+      judge = parseJudgeSettings(parsed.judge);
+    } catch {
+      throw corruptConfig();
+    }
+  }
 
   return {
     config: {
       version: CONFIG_VERSION,
+      ...(judge !== undefined ? { judge } : {}),
       ...(parsed.fallbackEnabled !== undefined
         ? { fallbackEnabled: parsed.fallbackEnabled as boolean }
         : {}),
@@ -820,6 +831,61 @@ const KEY_ROUTING_CAPABILITY: ConfigKeyDescriptor = {
   describe: "ordered provider list for one capability (comma-separated)",
 };
 
+const JUDGE_ROUTES = ["openrouter", "typesafe"] as const;
+
+function judgeKey(path: string, describe: string, options: Partial<ConfigKeyDescriptor> = {}): ConfigKeyDescriptor {
+  return { path, gettable: true, settable: false, credential: false, describe, ...options };
+}
+
+function judgeRouteKey(): ConfigKeyDescriptor {
+  return judgeKey("judge.route", "the selected judge route (openrouter|typesafe)", {
+    settable: true,
+    setNotice: (config) => {
+      const route = config.judge?.route ?? "openrouter";
+      const destination = JUDGE_DESTINATION[route] ?? route;
+      const consent = config.judge?.[route as "openrouter" | "typesafe"]?.transmitConsent === true;
+      const state = consent
+        ? "Saved transmission consent is enabled; selected credentials and runtime checks are still required."
+        : "Saved transmission consent is disabled; judging stays disabled.";
+      return `Judge route set to ${route}: judgment requests will be sent to ${destination} and billed to that account. ${state} Saved, not live-verified.`;
+    },
+  });
+}
+
+function judgeProfileKey(route: string): ConfigKeyDescriptor {
+  return judgeKey(`judge.${route}`, `judge ${route} profile (view only; credentials redacted)`, { credential: true });
+}
+
+const JUDGE_DESTINATION: Record<string, string> = {
+  openrouter: "OpenRouter",
+  typesafe: "TypeSafe",
+};
+
+function judgeProfileFieldKey(route: string, field: "model" | "transmitConsent" | "apiKey"): ConfigKeyDescriptor {
+  const path = `judge.${route}.${field}`;
+  if (field === "apiKey") return judgeKey(path, `judge ${route} credential (not a config surface)`, { gettable: false, credential: true });
+  if (field === "model") {
+    return judgeKey(path, `judge ${route} model`, {
+      settable: true,
+      setNotice: (config) => {
+        const model = config.judge?.[route as "openrouter" | "typesafe"]?.model;
+        return `Judge model for ${route} set to ${model ?? "the route default"}. Saved, not live-verified.`;
+      },
+    });
+  }
+  return judgeKey(path, `judge ${route} transmission consent`, {
+    settable: true,
+    setNotice: (config) => {
+      const enabled = config.judge?.[route as "openrouter" | "typesafe"]?.transmitConsent === true;
+      const destination = JUDGE_DESTINATION[route] ?? route;
+      if (!enabled) {
+        return `Judge transmission consent disabled for ${route}; judging stays disabled. Saved, not live-verified.`;
+      }
+      return `Judge transmission consent enabled for ${route}: judgment requests will send investigation content to ${destination} and be billed to that account. Saved, not live-verified.`;
+    },
+  });
+}
+
 function providerKey(id: string): ConfigKeyDescriptor {
   return {
     path: `providers.${id}`,
@@ -868,6 +934,18 @@ export function resolveConfigKey(path: string): ConfigKeyDescriptor | null {
     return (PROVIDER_CAPABILITIES as readonly string[]).includes(capability)
       ? KEY_ROUTING_CAPABILITY
       : null;
+  }
+  if (trimmed === "judge") return judgeKey("judge", "judge settings (view only; credentials redacted)", { credential: true });
+  if (trimmed === "judge.route") return judgeRouteKey();
+  if (trimmed.startsWith("judge.")) {
+    const parts = trimmed.split(".");
+    const route = parts[1];
+    if (route === undefined || !(JUDGE_ROUTES as readonly string[]).includes(route)) return null;
+    if (parts.length === 2) return judgeProfileKey(route);
+    if (parts.length === 3 && (parts[2] === "model" || parts[2] === "transmitConsent" || parts[2] === "apiKey")) {
+      return judgeProfileFieldKey(route, parts[2]);
+    }
+    return null;
   }
   if (trimmed.startsWith("providers.")) {
     // Provider ids are validated against the registry: `providers.tylvy`
@@ -1069,6 +1147,34 @@ export async function setConfigValue(
         );
       }
       next = { ...current, fusion: trimmed as FusionMode };
+    } else if (key.path === "judge.route") {
+      const trimmed = value.trim();
+      if (!(JUDGE_ROUTES as readonly string[]).includes(trimmed)) {
+        throw new ValidationError("Invalid judge route.", `Use one of: ${JUDGE_ROUTES.join(", ")}.`);
+      }
+      next = { ...current, judge: { ...current.judge, route: trimmed as "openrouter" | "typesafe" } };
+    } else if (key.path.startsWith("judge.") && key.path.endsWith(".model")) {
+      const route = key.path.split(".")[1] as "openrouter" | "typesafe";
+      const trimmed = value.trim();
+      try {
+        judgeDescriptor(route, trimmed);
+      } catch {
+        throw new ValidationError(`Invalid judge model for ${route}.`, "Use a supported route-compatible model id.");
+      }
+      next = {
+        ...current,
+        judge: { ...current.judge, [route]: { ...current.judge?.[route], model: trimmed } },
+      };
+    } else if (key.path.startsWith("judge.") && key.path.endsWith(".transmitConsent")) {
+      const route = key.path.split(".")[1] as "openrouter" | "typesafe";
+      const lowered = value.trim().toLowerCase();
+      if (lowered !== "true" && lowered !== "false") {
+        throw new ValidationError("Invalid boolean value.", "Use one of: true, false.");
+      }
+      next = {
+        ...current,
+        judge: { ...current.judge, [route]: { ...current.judge?.[route], transmitConsent: lowered === "true" } },
+      };
     } else {
       const { capability, ids } = parseRoutingValue(path, value);
       const routing = { ...current.routing, [capability]: ids };
@@ -1154,6 +1260,29 @@ export async function unsetConfigValue(
       const { journal: _jo, ...rest } = current;
       void _jo;
       next = rest;
+    } else if (trimmed === "judge.route") {
+      if (current.judge?.route === undefined) {
+        throw new ValidationError('"judge.route" is not set.', "Nothing to unset.");
+      }
+      const { route: _route, ...judgeRest } = current.judge;
+      void _route;
+      next = { ...current, judge: judgeRest };
+    } else if (trimmed.startsWith("judge.") && trimmed.endsWith(".model")) {
+      const route = trimmed.split(".")[1] as "openrouter" | "typesafe";
+      if (current.judge?.[route]?.model === undefined) {
+        throw new ValidationError(`"${trimmed}" is not set.`, "Nothing to unset.");
+      }
+      const { model: _model, ...profileRest } = current.judge[route]!;
+      void _model;
+      next = { ...current, judge: { ...current.judge, [route]: profileRest } };
+    } else if (trimmed.startsWith("judge.") && trimmed.endsWith(".transmitConsent")) {
+      const route = trimmed.split(".")[1] as "openrouter" | "typesafe";
+      if (current.judge?.[route]?.transmitConsent === undefined) {
+        throw new ValidationError(`"${trimmed}" is not set.`, "Nothing to unset.");
+      }
+      const { transmitConsent: _consent, ...profileRest } = current.judge[route]!;
+      void _consent;
+      next = { ...current, judge: { ...current.judge, [route]: profileRest } };
     } else {
       throw new ValidationError(
         `"${key.path}" is not unsettable via config.`,

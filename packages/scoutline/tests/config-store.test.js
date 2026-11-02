@@ -37,6 +37,19 @@ describe("resolveConfigRootPure", () => {
   });
 });
 
+describe("judge config persistence", () => {
+  it("round-trips both profiles without discarding unrelated settings", async (t) => {
+    await withTempDir(t, async (dir) => {
+      const filePath = path.join(dir, "config.json");
+      const { writeConfig, readConfig } = await import("../dist/lib/config-store.js");
+      const config = { version: 1, providers: {}, journal: false, judge: { route: "typesafe", openrouter: { model: "typesafe/jev-1.14", transmitConsent: false, apiKey: "or-secret" }, typesafe: { model: "jev-1.14.0", transmitConsent: true, apiKey: "ts-secret" } } };
+      await writeConfig(config, { filePath });
+      const saved = await readConfig({ filePath });
+      assert.deepStrictEqual(saved, config);
+    });
+  });
+});
+
 describe("readConfig", () => {
   it("treats an absent injected config file as an empty env-only configuration", async (t) => {
     await withTempDir(t, async (dir) => {
@@ -514,6 +527,101 @@ describe("config key registry", () => {
     assert.strictEqual(resolveConfigKey("version"), null);
     assert.strictEqual(resolveConfigKey("hintShown"), null);
     assert.strictEqual(resolveConfigKey("nope.nope"), null);
+  });
+
+  it("judge-only editing cannot empty a populated provider config", async (t) => {
+    const { setConfigValue, readConfig } = await import("../dist/lib/config-store.js");
+    await withConfig(t, { version: 1, providers: { zai: { apiKey: "zai-key" } } }, async (filePath) => {
+      await setConfigValue("judge.route", "typesafe", { filePath });
+      const saved = await readConfig({ filePath });
+      assert.deepStrictEqual(saved.providers, { zai: { apiKey: "zai-key" } });
+      assert.strictEqual(saved.judge.route, "typesafe");
+    });
+  });
+
+  it("unrelated config writers preserve both judge profiles", async (t) => {
+    const { createDefaultVerificationPromoter, createDefaultHintShownStore } = await import("../dist/lib/config-store.js");
+    await withConfig(t, {
+      version: 1,
+      providers: { zai: { apiKey: "zai-key", verification: { status: "unverified", checkedAt: 1 } } },
+      judge: { route: "typesafe", openrouter: { model: "typesafe/jev-1.14", transmitConsent: true, apiKey: "or-secret" }, typesafe: { model: "jev-1.13.0", transmitConsent: false } },
+    }, async (filePath) => {
+      await createDefaultVerificationPromoter({ filePath }).promote("zai", 1_700_000_000_000);
+      await createDefaultHintShownStore({ filePath }).setHintShown(true);
+      const { readConfig } = await import("../dist/lib/config-store.js");
+      const saved = await readConfig({ filePath });
+      assert.deepStrictEqual(saved.judge, {
+        route: "typesafe",
+        openrouter: { model: "typesafe/jev-1.14", transmitConsent: true, apiKey: "or-secret" },
+        typesafe: { model: "jev-1.13.0", transmitConsent: false },
+      });
+      assert.strictEqual(saved.providers.zai.verification.status, "verified");
+      assert.strictEqual(saved.hintShown, true);
+    });
+  });
+
+  it("registers judge settings keys and refuses credential paths", async (t) => {
+    const { resolveConfigKey, setConfigValue, unsetConfigValue } = await import("../dist/lib/config-store.js");
+    assert.ok(resolveConfigKey("judge")?.gettable);
+    assert.ok(resolveConfigKey("judge.route")?.settable);
+    assert.ok(resolveConfigKey("judge.openrouter.model")?.settable);
+    assert.ok(resolveConfigKey("judge.typesafe.transmitConsent")?.settable);
+    assert.strictEqual(resolveConfigKey("judge.openrouter.apiKey")?.credential, true);
+    assert.strictEqual(resolveConfigKey("judge.nope"), null);
+    await withConfig(t, { version: 1, providers: {} }, async (filePath) => {
+      await assert.rejects(
+        () => setConfigValue("judge.openrouter.apiKey", "secret", { filePath }),
+        (error) => error.name === "ValidationError" && !error.message.includes("secret"),
+      );
+      await setConfigValue("judge.route", "typesafe", { filePath });
+      await setConfigValue("judge.typesafe.model", "jev-1.14.0", { filePath });
+      await setConfigValue("judge.typesafe.transmitConsent", "true", { filePath });
+      await assert.rejects(
+        () => setConfigValue("judge.route", "bogus", { filePath }),
+        (error) => error.name === "ValidationError" && !error.message.includes("bogus"),
+      );
+      await assert.rejects(
+        () => setConfigValue("judge.typesafe.model", "jev-9.9.9", { filePath }),
+        (error) => error.name === "ValidationError" && !error.message.includes("jev-9.9.9"),
+      );
+      await assert.rejects(
+        () => setConfigValue("judge.typesafe.transmitConsent", "maybe", { filePath }),
+        (error) => error.name === "ValidationError",
+      );
+      await unsetConfigValue("judge.typesafe.transmitConsent", { filePath });
+      const { readConfig } = await import("../dist/lib/config-store.js");
+      const saved = await readConfig({ filePath });
+      assert.strictEqual(saved.judge.route, "typesafe");
+      assert.strictEqual(saved.judge.typesafe.model, "jev-1.14.0");
+      assert.strictEqual(saved.judge.typesafe.transmitConsent, undefined);
+    });
+  });
+
+  it("route notice describes consent without claiming runtime readiness", async () => {
+    const { resolveConfigKey } = await import("../dist/lib/config-store.js");
+    const notice = resolveConfigKey("judge.route").setNotice({ version: 1, providers: {}, judge: { route: "typesafe", typesafe: { transmitConsent: true } } });
+    assert.match(notice, /consent/i);
+    assert.match(notice, /credential/i);
+    assert.match(notice, /runtime/i);
+    assert.doesNotMatch(notice, /judging is enabled/i);
+  });
+
+  it("emits a static notice without network when consent is enabled", async (t) => {
+    const { resolveConfigKey, setConfigValue } = await import("../dist/lib/config-store.js");
+    await withConfig(t, { version: 1, providers: {} }, async (filePath) => {
+      const notices = [];
+      const key = resolveConfigKey("judge.typesafe.transmitConsent");
+      await setConfigValue("judge.typesafe.transmitConsent", "true", { filePath });
+      const { readConfig } = await import("../dist/lib/config-store.js");
+      const updated = await readConfig({ filePath });
+      const notice = key?.setNotice?.(updated);
+      assert.ok(notice);
+      assert.ok(notice.includes("TypeSafe"));
+      assert.ok(notice.includes("billed"));
+      assert.ok(notice.includes("not live-verified"));
+      assert.ok(!notice.includes("secret"));
+      notices.push(notice);
+    });
   });
 
   it("credential refusal echoes the full typed field path", async (t) => {

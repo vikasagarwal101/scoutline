@@ -8,8 +8,8 @@
  *
  * Covers: file/stdin/inline input routes, plain-mode compatibility and
  * mode-conflict rejection, no-HTTP preflight rejections (unknown keys,
- * bad JSON, byte ceiling), judge selection rules (absent = deterministic
- * partial; key-without-consent and consent-without-key = typed error),
+ * bad JSON, byte ceiling), judge selection rules (absent consent =
+ * deterministic-only; consent without the selected key = typed error),
  * selected-judge failure (never a silent downgrade), cancellation
  * contract (AbortSignal honored by the engine), shared run-admission
  * seam (one closure across acquisition AND judge), result envelope shape
@@ -26,6 +26,7 @@ import { createHash } from "node:crypto";
 import { main } from "../dist/index.js";
 import { createTavilyDescriptor } from "../dist/providers/tavily/adapter.js";
 import { hermeticMainDeps } from "./helpers/hermetic-main.js";
+import "./helpers/caller-review-harness.mjs";
 
 const TEXT =
   "ExampleApp release 2.4.0. License MIT applies to release 2.4.0. CSV export is supported from the reports screen.";
@@ -341,26 +342,58 @@ test("requirements mode: malformed input rejects pre-acquisition with zero HTTP"
   assert.equal(httpLog.length, 0, "preflight rejections must make zero HTTP dispatches");
 });
 
-test("requirements mode: judge selection rules (key/consent pairing) are typed preflight errors", async () => {
+test("requirements mode: judge selection rules refuse typed, and a bare credential stays inert", async () => {
   // Judge selection lives in the PRODUCTION default runtime; no
   // injected runtime here. The provider pin avoids the (correct)
-  // zai-compat executable-subset preflight so the PAIRING error is
-  // what fires. Both failures happen inside defaultRequirementsRuntime
+  // zai-compat executable-subset preflight so the SELECTION error is
+  // what fires. Every refusal happens inside defaultRequirementsRuntime
   // BEFORE any HTTP dispatch — hermetic, zero network.
-  // Key without consent.
-  const keyOnly = await runMain(
-    ["investigate", "--provider", "tavily", "--requirements-json", JSON.stringify(CONTRACT)],
-    { env: { TAVILY_API_KEY: "guard-synthetic-key", TYPESAFE_API_KEY: "guard-key" } },
-  );
-  assert.equal(keyOnly.code, 1);
-  assert.ok(keyOnly.stderr.includes("SCOUTLINE_JUDGE_TRANSMIT"), keyOnly.stderr);
-  // Consent without key.
+  //
+  // MIGRATION (dual-route Jev): a credential ALONE no longer refuses —
+  // credentials are not consent, so they stay inert and the run is
+  // deterministic-only. Consent without the SELECTED route's
+  // credential refuses, and the legacy direct-TypeSafe pair without an
+  // explicit route no longer selects the direct route (OpenRouter is
+  // the public default, so the direct key cannot authenticate it).
   const consentOnly = await runMain(
     ["investigate", "--provider", "tavily", "--requirements-json", JSON.stringify(CONTRACT)],
     { env: { TAVILY_API_KEY: "guard-synthetic-key", SCOUTLINE_JUDGE_TRANSMIT: "1" } },
   );
   assert.equal(consentOnly.code, 1);
-  assert.ok(consentOnly.stderr.includes("TYPESAFE_API_KEY"), consentOnly.stderr);
+  assert.ok(consentOnly.stderr.includes("SCOUTLINE_JUDGE"), consentOnly.stderr);
+  // Legacy direct pair without an explicit route: no silent route
+  // guess by credential presence.
+  const legacyPair = await runMain(
+    ["investigate", "--provider", "tavily", "--requirements-json", JSON.stringify(CONTRACT)],
+    { env: { TAVILY_API_KEY: "guard-synthetic-key", TYPESAFE_API_KEY: "guard-key", SCOUTLINE_JUDGE_TRANSMIT: "1" } },
+  );
+  assert.equal(legacyPair.code, 1);
+  assert.ok(legacyPair.stderr.includes("SCOUTLINE_JUDGE"), legacyPair.stderr);
+  // An unsupported own judge control is REFUSED, never accepted and
+  // dropped.
+  const unsupported = await runMain(
+    ["investigate", "--provider", "tavily", "--requirements-json", JSON.stringify(CONTRACT)],
+    { env: { TAVILY_API_KEY: "guard-synthetic-key", SCOUTLINE_JUDGE_ENDPOINT: "https://elsewhere.test/v1" } },
+  );
+  assert.equal(unsupported.code, 1);
+  assert.ok(unsupported.stderr.includes("SCOUTLINE_JUDGE_ENDPOINT"), unsupported.stderr);
+  // The legacy direct override pair is refused as well.
+  const legacyOverride = await runMain(
+    ["investigate", "--provider", "tavily", "--requirements-json", JSON.stringify(CONTRACT)],
+    { env: { TAVILY_API_KEY: "guard-synthetic-key", TYPESAFE_MODEL: "jev-1.13.0" } },
+  );
+  assert.equal(legacyOverride.code, 1);
+  assert.ok(legacyOverride.stderr.includes("TYPESAFE_MODEL"), legacyOverride.stderr);
+  // A credential WITHOUT consent is inert: no refusal, no judge work.
+  const keyOnly = await runMain(
+    ["investigate", "--provider", "tavily", "--requirements-json", JSON.stringify(CONTRACT)],
+    { env: { TAVILY_API_KEY: "guard-synthetic-key", TYPESAFE_API_KEY: "guard-key" } },
+  );
+  assert.equal(keyOnly.code, 1);
+  assert.ok(keyOnly.parsed, `expected the deterministic envelope: ${keyOnly.stderr}`);
+  assert.equal(keyOnly.parsed.assessment, "deterministic-only");
+  assert.equal(keyOnly.parsed.usage.judgeCalls, 0);
+  assert.equal(keyOnly.parsed.usage.candidateJudgeCalls, 0);
 });
 
 test("requirements mode: a supplier outside the executable subset fails closed before acquisition", async () => {

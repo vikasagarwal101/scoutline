@@ -4,6 +4,12 @@ This reference covers advanced commands and performance tuning for
 `scoutline`, plus Provider-specific configuration and the package publication
 gate.
 
+## Investigation judge
+
+The default OpenRouter and optional direct TypeSafe judge routes are independent
+of acquisition Provider selection. Configure their credentials, consent and
+compatible models through [judge configuration](../../../../../docs/configuration.md#investigation-judge).
+
 ## Provider Selection
 
 Shared commands (`search`, `vision analyze`, `quota`, `doctor`),

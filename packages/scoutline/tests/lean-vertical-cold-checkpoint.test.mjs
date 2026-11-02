@@ -59,14 +59,21 @@ test('actual stdin pipe is read and validated, not treated as a zero-length regu
   assert.doesNotMatch(result.stderr, /not valid JSON|Unexpected end of JSON input/, 'valid pipe bytes must not disappear');
 });
 
-test('judge credentials without transmit consent fail closed before acquisition, not deterministic-only downgrade', async () => {
+test('judge credentials without transmit consent stay inert: deterministic-only, no judge request', async () => {
+  // MIGRATION (dual-route Jev): credentials alone are NOT consent, so a
+  // bare credential no longer refuses. It stays INERT — the run stays
+  // deterministic-only and no judge request is made. Acquisition may
+  // run inside the existing bounds; it is NOT native work.
   const result = await child([script, 'investigate', '--requirements-json', JSON.stringify(input())], { TYPESAFE_API_KEY: 'synthetic-partial-key' });
-  const error=assertionErrorDocument(result.stderr);
-  assertionSnapshot('consent-cold',{...result,...assertionStdout(result.stdout),error,httpMarkers:result.stderr.match(/OFFLINE_HTTP_ATTEMPT/g)??[]});
-  assert.equal(result.code,1);assert.equal(result.stdout,'');assert.equal(error?.success,false);assert.equal(error?.code,'VALIDATION_ERROR');
-  assert.equal(error.error,"requirements-mode judge selection is incomplete: TYPESAFE_API_KEY and SCOUTLINE_JUDGE_TRANSMIT=1 must be supplied together (credentials alone are not consent; consent alone has no judge).");
-  assert.equal(result.calls, 0);
-  assert.doesNotMatch(result.stdout, /deterministic-only/);
+  const document=assertionStdout(result.stdout);
+  assertionSnapshot('consent-cold',{...result,...document,httpMarkers:result.stderr.match(/OFFLINE_HTTP_ATTEMPT/g)??[]});
+  assert.equal(result.code,1);
+  assert.equal(document.parseError,null,`expected a delivered envelope: ${result.stderr}`);
+  assert.equal(document.envelope.assessment,'deterministic-only');
+  assert.equal(document.envelope.usage.judgeCalls,0);
+  assert.equal(document.envelope.usage.candidateJudgeCalls,0);
+  assert.equal(document.envelope.admission.judge,undefined,'an inert credential configures no judge stage');
+  assert.doesNotMatch(result.stdout,/synthetic-partial-key/,'an inert credential never reaches the output');
 });
 
 test('bridge reused sequentially with same transport binds second run signal and its own physical budget', async () => {

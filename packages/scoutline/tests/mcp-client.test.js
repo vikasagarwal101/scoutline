@@ -1334,11 +1334,13 @@ describe("ZaiMcpClient — response-cache redaction (F2, code-review-baseline)",
   // both the returned value and the on-disk cache carry [REDACTED].
   let tempDir;
   let originalCacheDir;
+  let originalScoutlineCacheDir;
   let originalToolCache;
   let originalZaiKey;
 
   before(async () => {
     originalCacheDir = process.env.ZAI_CACHE_DIR;
+    originalScoutlineCacheDir = process.env.SCOUTLINE_CACHE_DIR;
     originalToolCache = process.env.ZAI_MCP_TOOL_CACHE;
     // The F2 scrub uses configuredSecrets() (the configured provider key),
     // so the realistic leak — a provider echoing the user's own key back in
@@ -1348,6 +1350,7 @@ describe("ZaiMcpClient — response-cache redaction (F2, code-review-baseline)",
     process.env.Z_AI_API_KEY = "sk-zai-fixture-key-1234567890ab";
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), TEMP_PREFIX));
     process.env.ZAI_CACHE_DIR = tempDir;
+    process.env.SCOUTLINE_CACHE_DIR = tempDir;
     // Disable the tool-discovery cache so the only on-disk write is the
     // response cache entry this test exercises.
     process.env.ZAI_MCP_TOOL_CACHE = "0";
@@ -1356,6 +1359,8 @@ describe("ZaiMcpClient — response-cache redaction (F2, code-review-baseline)",
   after(async () => {
     if (originalCacheDir === undefined) delete process.env.ZAI_CACHE_DIR;
     else process.env.ZAI_CACHE_DIR = originalCacheDir;
+    if (originalScoutlineCacheDir === undefined) delete process.env.SCOUTLINE_CACHE_DIR;
+    else process.env.SCOUTLINE_CACHE_DIR = originalScoutlineCacheDir;
     if (originalToolCache === undefined) delete process.env.ZAI_MCP_TOOL_CACHE;
     else process.env.ZAI_MCP_TOOL_CACHE = originalToolCache;
     if (originalZaiKey === undefined) delete process.env.Z_AI_API_KEY;

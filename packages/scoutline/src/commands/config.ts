@@ -22,6 +22,7 @@ import {
   type ScoutlineConfig,
 } from "../lib/config-store.js";
 import { ValidationError } from "../lib/errors.js";
+import { JUDGE_ROUTE_DEFAULT, collectJudgeSecrets, judgeDefaultModel } from "../lib/judge-config.js";
 import { redactSecrets } from "../lib/redact.js";
 
 // ---------------------------------------------------------------------------
@@ -94,7 +95,29 @@ function valueAtPath(config: ScoutlineConfig, path: string): unknown {
   const providerMatch = /^providers\.([a-z0-9-]+)(?:\.[A-Za-z0-9-]+)*$/.exec(trimmed);
   if (providerMatch?.[1])
     return config.providers[providerMatch[1] as keyof typeof config.providers];
+  if (trimmed === "judge") return judgeView(config);
+  if (trimmed === "judge.route") return config.judge?.route ?? JUDGE_ROUTE_DEFAULT;
+  const judgeMatch = /^judge\.(openrouter|typesafe)(?:\.(model|transmitConsent))?$/.exec(trimmed);
+  if (judgeMatch?.[1]) {
+    const route = judgeMatch[1] as "openrouter" | "typesafe";
+    const profile = config.judge?.[route];
+    if (judgeMatch[2] === undefined) {
+      return { model: profile?.model ?? judgeDefaultModel(route), transmitConsent: profile?.transmitConsent ?? false };
+    }
+    if (judgeMatch[2] === "model") return profile?.model ?? judgeDefaultModel(route);
+    return profile?.transmitConsent ?? false;
+  }
   return undefined;
+}
+
+/** The judge section view: effective defaults, never the stored keys. */
+function judgeView(config: ScoutlineConfig): unknown {
+  const route = config.judge?.route ?? JUDGE_ROUTE_DEFAULT;
+  const profile = (name: "openrouter" | "typesafe") => ({
+    model: config.judge?.[name]?.model ?? judgeDefaultModel(name),
+    transmitConsent: config.judge?.[name]?.transmitConsent ?? false,
+  });
+  return { route, openrouter: profile("openrouter"), typesafe: profile("typesafe") };
 }
 
 function presentationsFor(path: string, value: unknown): Partial<Record<TextOutputMode, string>> {
@@ -118,7 +141,7 @@ export async function configGetCommand(
   deps: ConfigGetDependencies,
 ): Promise<CommandResult<unknown>> {
   const config = await deps.read();
-  const secrets = deps.secrets();
+  const secrets = [...deps.secrets(), ...collectJudgeSecrets({}, config.judge)];
   if (path === undefined || path.trim().length === 0) {
     const redacted = redactSecrets(config, secrets);
     return { kind: "data", data: redacted };
@@ -131,7 +154,7 @@ export async function configGetCommand(
       ? unknownConfigKeyError(path)
       : new ValidationError(
           `Unknown config key "${path}".`,
-          'Valid keys: routing, routing.<capability>, fallbackEnabled, fanout, fusion, journal, providers.<id>. Run "scoutline config --help".',
+          'Valid keys: routing, routing.<capability>, fallbackEnabled, fanout, fusion, journal, providers.<id>, judge, judge.route, judge.<route>.model, judge.<route>.transmitConsent. Run "scoutline config --help".',
         );
   }
   const raw = valueAtPath(config, path);
@@ -223,6 +246,20 @@ Keys:
                              to stop journaling entirely; remove the explicit
                              switch (back to default-on) with
                              \`scoutline config unset journal\`.
+  judge                      The judge settings section (view only; credentials
+                             masked; effective defaults shown).
+  judge.route                openrouter|typesafe — the selected judge access
+                             route (default openrouter).
+  judge.openrouter           The openrouter route's judge profile (view
+                             only): model and transmission consent.
+  judge.typesafe             The typesafe route's judge profile (view only).
+  judge.openrouter.model     The openrouter route's Jev request id to use.
+  judge.typesafe.model       The typesafe route's Jev request id to use.
+  judge.openrouter.transmitConsent
+  judge.typesafe.transmitConsent
+                             true|false — whether judgment requests may
+                             transmit investigation content to that route's
+                             account (default false).
   providers.<id>              Provider configuration (view only; credential
                              values are always masked).
 
@@ -236,7 +273,8 @@ Behaviour:
         arguments).
   unset Removes a routing capability (and the table when the last entry
         goes), the whole routing table, the fallbackEnabled switch, the
-        fanout switch, the fusion choice, or the journal switch.
+        fanout switch, the fusion choice, the journal switch, or a judge
+        route/model/consent setting.
 
 Routing semantics: when no --provider / SCOUTLINE_PROVIDER pin exists,
 the routed list orders provider selection for that capability — the
@@ -255,6 +293,8 @@ Examples:
   scoutline config set fallbackEnabled false
   scoutline config set fanout true
   scoutline config set journal false
+  scoutline config set judge.route openrouter
+  scoutline config set judge.openrouter.transmitConsent true
   scoutline config unset routing.search
   scoutline config unset fanout
   scoutline config --help

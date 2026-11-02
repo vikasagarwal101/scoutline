@@ -64,6 +64,13 @@ import type { DiagnosticOptions, DiagnosticsCapability } from "../capabilities/d
 import type { ProviderDescriptor, ProviderId } from "../providers/types.js";
 import { PROVIDER_CAPABILITIES, PROVIDER_IDS } from "../providers/types.js";
 import { AuthError, ApiError, NetworkError } from "../lib/errors.js";
+import {
+  JUDGE_ROUTE_MODELS,
+  judgeDefaultModel,
+  judgeRouteEnvVar,
+  type JudgeRoute,
+  type JudgeSettings,
+} from "../lib/judge-config.js";
 import { CLI_VERSION } from "../lib/artifacts.js";
 import { AGENT_TOOLS } from "../lib/agent-registration/registry.js";
 import { registerAgentTools } from "../lib/agent-registration/deploy.js";
@@ -95,7 +102,8 @@ The wizard walks you through recording API keys in
   - ABSENT (no config yet): the fresh-onboarding flow runs.
   - VALID + ALREADY-ONBOARDED: a re-config menu runs (edit a key,
     add a Provider, remove a Provider, change the fallback
-    preference, change journaling, edit the routing table, re-run
+    preference, change journaling, edit the routing table, set up
+    judge access, re-run
     the full wizard, or cancel). Editing a key
     resets that Provider's verification to "unverified".
   - VALID + EMPTY: the fresh-onboarding flow runs.
@@ -130,6 +138,14 @@ The fresh flow:
     local file 0600, never uploaded; default yes. Journaling changes
     no provider-call volume: savings come from using
     \`history recall\` instead of re-running searches)
+  - asks the judge access setup: which route (OpenRouter is the
+    default, TypeSafe direct is the alternative), which supported Jev
+    model, that route's API key (hidden input, or leave empty to remove
+    its stored key and use the route's environment variable), and explicit transmission
+    consent for that route. Declining consent stores the preference
+    with judging disabled. Setup never probes the model, the account
+    or the quota — it saves preferences and reports "saved, not
+    live-verified".
   - writes ~/.scoutline/config.json atomically with mode 0600
 
 Non-interactive terminals: init refuses before any prompt and exits.
@@ -850,6 +866,7 @@ async function runAgentRegistrationStep(deps: InitDependencies): Promise<number>
 async function runFreshFlow(
   deps: InitDependencies,
   options: WriteConfigOptions = {},
+  fullReset = false,
 ): Promise<number> {
   // Splash (init-only). Sent to stderr so stdout stays data-only for the
   // final summary.
@@ -939,6 +956,18 @@ async function runFreshFlow(
     return 1;
   }
 
+  // Step 2d — judge access setup (Jev dual-route). Preferences only: no
+  // inference, model discovery or quota probe. Cancelling the step
+  // leaves the saved judge section untouched; the explicit re-run-full
+  // reset deliberately discards it with the rest of the config.
+  const judgeBefore = await deps.configStore.inspect();
+  const existingJudge = judgeBefore.status === "valid" ? judgeBefore.config.judge : undefined;
+  const judgeChoice = await runJudgeSetup(
+    deps,
+    !fullReset && judgeBefore.status === "valid" ? judgeBefore.config : { version: 1, providers: {} },
+  );
+  const judge = judgeChoice ?? (fullReset ? undefined : existingJudge);
+
   // Step 3 — atomic write (T1 primitive). Build the final config and
   // commit. No partial writes ever reach disk: `writeConfig` either
   // replaces the live file atomically or leaves it untouched. The
@@ -955,6 +984,7 @@ async function runFreshFlow(
   const config: ScoutlineConfig = {
     ...buildConfig(onboardings, fallbackEnabled, journalEnabled, fusionMode),
     ...(agentRules !== undefined ? { agentRules } : {}),
+    ...(judge !== undefined ? { judge } : {}),
   };
   try {
     const isZeroProviders = Object.keys(config.providers).length === 0;
@@ -966,10 +996,18 @@ async function runFreshFlow(
     return 1;
   }
 
-  // Step 4 — redacted summary on stdout (data-only contract). The
-  // summary line is the ONLY write to stdout in the wizard; it lists
-  // provider ids and their verification status, never the keys.
+  // Step 4 — redacted provider and optional judge summaries on stdout.
   deps.writeStdout(`${formatSummary(onboardings, fallbackEnabled, journalEnabled)}\n`);
+  if (judge !== undefined) {
+    const route = judge.route ?? "openrouter";
+    const consent = judge[route]?.transmitConsent === true;
+    deps.writeStdout(
+      `Judge: route ${route}, model ${judge[route]?.model ?? "default"}. ` +
+        (consent
+          ? "Transmission consent enabled for this route — saved, not live-verified."
+          : "Judging stays disabled (no transmission consent) — saved, not live-verified."),
+    );
+  }
   return 0;
 }
 
@@ -1107,6 +1145,7 @@ type ReconfigChoice =
   | "change-fallback"
   | "change-journal"
   | "edit-routing"
+  | "setup-judge"
   | "rerun-full"
   | "cancel";
 
@@ -1187,7 +1226,7 @@ async function runReconfigMenu(
       deps.writeStderr(
         "Re-running the full onboarding flow. The live config will be replaced atomically.\n",
       );
-      return runFreshFlow(deps, { allowEmpty: true });
+      return runFreshFlow(deps, { allowEmpty: true }, true);
     }
 
     // Mutating actions: each returns the next config (or null on cancel).
@@ -1275,6 +1314,11 @@ async function promptReconfigAction(
     description: "Set per-capability provider preferences (search: tavily,brave)",
   });
   choices.push({
+    value: "setup-judge",
+    name: "Set up judge access",
+    description: "Choose the judge route, model, key and transmission consent",
+  });
+  choices.push({
     value: "rerun-full",
     name: "Re-run full onboarding",
     description: "Discard the current config and start the wizard from scratch",
@@ -1298,6 +1342,102 @@ async function promptReconfigAction(
  *   - "cancel": the user explicitly cancelled; exit 0.
  *   - "write-error": the atomic write failed; exit 1.
  */
+/**
+ * Judge setup — one shared flow for the fresh wizard and the re-config
+ * menu. Saves preferences only: no inference, model discovery, quota
+ * probe or credential check. A cancel leaves the judge section untouched.
+ */
+async function runJudgeSetup(
+  deps: InitDependencies,
+  config: ScoutlineConfig,
+): Promise<JudgeSettings | null> {
+  const existing = config.judge ?? {};
+  let route: JudgeRoute | undefined;
+  try {
+    route = await deps.prompts.select<JudgeRoute | undefined>(
+      "Which judge access route should investigations use? (OpenRouter is the default)",
+      [
+        ...(["openrouter", "typesafe"] as const)
+          .map((value) => ({ value, name: `${value === "openrouter" ? "OpenRouter (recommended)" : "TypeSafe (direct)"}${existing.route === value ? " (current)" : ""}`, description: `Jev ${judgeDefaultModel(value)}` }))
+          .sort((a, b) => Number(b.value === existing.route) - Number(a.value === existing.route)),
+        { value: undefined, name: "Skip judge setup", description: "Leave the judge section unchanged" },
+      ],
+    );
+  } catch {
+    return null;
+  }
+  if (route === undefined) return null;
+
+  let model: string;
+  try {
+    model = await deps.prompts.select<string>(
+      `Which model should the ${route} route use?`,
+      [...JUDGE_ROUTE_MODELS[route]]
+        .sort((a, b) => Number(b === existing[route]?.model) - Number(a === existing[route]?.model))
+        .map((id) => ({ value: id, name: `${id}${id === existing[route]?.model ? " (current)" : ""}` })),
+    );
+  } catch {
+    return null;
+  }
+
+  let apiKey: string | undefined;
+  try {
+    const entered = (
+      await deps.prompts.password(
+        `Paste the ${route} API key (input hidden; leave empty to remove the stored key and use $${judgeRouteEnvVar(route)} only):`,
+      )
+    ).trim();
+    if (entered.length > 0) apiKey = entered;
+  } catch {
+    return null;
+  }
+
+  let transmitConsent: boolean;
+  try {
+    transmitConsent = await deps.prompts.confirm(
+      `Allow judgment requests to send investigation content to ${route === "openrouter" ? "OpenRouter" : "TypeSafe"} and bill that account? [y/N]`,
+      false,
+    );
+  } catch {
+    return null;
+  }
+
+  const profile = {
+    model,
+    transmitConsent,
+    ...(apiKey !== undefined ? { apiKey } : {}),
+  };
+  return {
+    ...existing,
+    route,
+    [route]: profile,
+  };
+}
+
+async function setupJudge(
+  deps: InitDependencies,
+  config: ScoutlineConfig,
+): Promise<"written" | "loop" | "cancel" | "write-error"> {
+  const judge = await runJudgeSetup(deps, config);
+  if (judge === null) {
+    deps.writeStderr("Judge setup skipped; the judge section is unchanged.\n");
+    return "loop";
+  }
+  const updated: ScoutlineConfig = { ...config, judge };
+  const status = persistConfig(deps, updated);
+  if ((await status) === "written") {
+    const route = judge.route ?? "openrouter";
+    const consent = judge[route]?.transmitConsent === true;
+    deps.writeStdout(
+      `Judge: route ${route}, model ${judge[route]?.model ?? "default"}. ` +
+        (consent
+          ? "Transmission consent enabled for this route — saved, not live-verified."
+          : "Judging stays disabled (no transmission consent) — saved, not live-verified."),
+    );
+  }
+  return status;
+}
+
 async function applyReconfigAction(
   deps: InitDependencies,
   action: Exclude<ReconfigChoice, "cancel" | "rerun-full">,
@@ -1313,6 +1453,9 @@ async function applyReconfigAction(
   }
   if (action === "edit-routing") {
     return editRouting(deps, config);
+  }
+  if (action === "setup-judge") {
+    return setupJudge(deps, config);
   }
   if (action === "add-provider") {
     return addProvider(deps, config, keyedIds, keylessIds);

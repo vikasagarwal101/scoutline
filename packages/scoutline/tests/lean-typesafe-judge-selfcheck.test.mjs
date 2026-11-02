@@ -102,6 +102,16 @@ test("complete flow: request shape, auth, redirect refusal, normalization", asyn
   assert.equal(meta.probabilities.q0r, 0.95, "raw probabilities preserved as data");
 });
 
+test("legacy direct 200 error envelope is a protocol failure", async () => {
+  const { fetchLike } = makeFetch([{ status: 200, ok: true, headers: { get: () => null }, body: streamOf(JSON.stringify({ error: { message: "private-upstream-message" }, usage: { input_tokens: 10, output_tokens: 2 } })) }]);
+  const profile = tsj.createTypesafeJudge({ apiKey: "k", fetchLike, reserveAttempt: () => {} });
+  await assert.rejects(() => profile.judge(INPUT), (error) => {
+    assert.equal(error.code, "TYPESAFE_PROTOCOL");
+    assert.ok(!JSON.stringify(error).includes("private-upstream-message"));
+    return true;
+  });
+});
+
 test("middle-band probability is unknown, never false", async () => {
   const answers = noulAnswersFor(1);
   answers.q0r = { type: "noul", noul: 0.5 };

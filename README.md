@@ -282,6 +282,10 @@ SCOUTLINE_PROVIDER=minimax scoutline quota
 
 Selecting a provider that doesn't support a capability auto-reroutes to the next eligible configured provider in registry order and emits a stderr notice (the default since 0.11.0). Pass `--no-fallback` (or set `SCOUTLINE_NO_FALLBACK=1`) to restore the previous strict `UNSUPPORTED_CAPABILITY` behavior for scripting or cost-sensitive workflows.
 
+Requirements and caller investigations support an optional native Jev judge:
+OpenRouter is the default route; direct TypeSafe is optional. Explicit consent
+and the selected route’s own key are required. See [judge setup and migration](docs/configuration.md#investigation-judge).
+
 ## Investigation (`investigate`)
 
 `scoutline investigate <question>` composes Scoutline's own capabilities into a local, transparent, cache-resumable pipeline ([ADR-0013](docs/adr/0013-local-investigation-pipeline.md)): plan sub-queries → fan-out search → Fusion merge → read the top `--sources` (default 5) → deterministic passage extraction → an EvidencePack. No provider-side job runs — distinct from Research, an opaque billed provider job. The pack is data, not prose: agents consume it directly, text output modes fall back to JSON, and `--synthesize` attaches an additive Z.AI brief for humans (Z.AI-only, absent by default). Sources surfaced but unread land in `coverage.unread` with a reason code — never silently dropped.

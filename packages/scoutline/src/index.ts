@@ -188,6 +188,11 @@ import { MAX_SUBQUERIES, parseContextText, readContextSource } from "./lib/conte
 import type { ContextSourceKind } from "./lib/context-file.js";
 import { configuredSecrets, redactSecrets } from "./lib/redact.js";
 import {
+  collectJudgeSecrets,
+  parseJudgeSettings,
+  type JudgeSettings,
+} from "./lib/judge-config.js";
+import {
   configFilePath,
   atomicReplaceFile,
   readConfig,
@@ -1298,7 +1303,7 @@ export interface HandlerDependencies {
    * factory for `investigate --requirements/--requirements-json`.
    * Tests inject fake transports + fake judge/extractor collaborators;
    * production leaves it undefined and the requirements handler composes
-   * the real acquisition bridge + explicit direct TypeSafe judge.
+   * the real acquisition bridge + selected native Jev judge.
    */
   readonly requirementsRuntime?: RequirementsRuntimeFactory;
   /**
@@ -1324,6 +1329,15 @@ export interface HandlerDependencies {
    * main() entry owns a different cell.
    */
   readonly requirementsRefreshSuppressed?: { value: boolean };
+  /**
+   * The OWNED judge-settings snapshot taken from the loaded config
+   * (route, per-route model/consent/key). It is a frozen clone: the
+   * runtime never borrows the loaded config's mutable object, and a
+   * later mutation of the source cannot change the selected route,
+   * model or key. Present only on the loaded-config path — the early
+   * credential-free command paths carry no judge settings at all.
+   */
+  readonly judgeSettings?: JudgeSettings;
   readonly env: NodeJS.ProcessEnv;
   readonly secrets: string[];
   readonly now?: () => number;
@@ -3887,6 +3901,36 @@ async function handleDoctor(
  * helpers owned by `src/lib/cache.ts` (Ticket 01) through the
  * presentation-only handlers in `src/commands/cache.ts`.
  */
+/**
+ * The OWNED judge-settings snapshot of a loaded config: a frozen clone
+ * of the parsed judge section. The runtime receives this value, never
+ * the loaded config's mutable object, so mutating the source afterwards
+ * cannot change the selected route, model or key mid-run.
+ */
+function snapshotJudgeSettings(value: unknown): JudgeSettings | undefined {
+  if (value === undefined) return undefined;
+  const parsed = parseJudgeSettings(value);
+  const clone: JudgeSettings = { ...parsed };
+  for (const route of ["openrouter", "typesafe"] as const) {
+    const profile = parsed[route];
+    if (profile !== undefined) clone[route] = Object.freeze({ ...profile });
+  }
+  return Object.freeze(clone);
+}
+
+/**
+ * Append the stored judge credentials to the ONE shared secret list.
+ * Both routes' stored keys join it — including an inactive or
+ * overridden one — so no stored credential can reach an outward
+ * boundary in clear.
+ */
+function appendJudgeSecrets(target: string[], config: { judge?: unknown }): void {
+  if (config.judge === undefined) return;
+  for (const secret of collectJudgeSecrets({}, parseJudgeSettings(config.judge))) {
+    if (secret && !target.includes(secret)) target.push(secret);
+  }
+}
+
 async function handleConfig(
   args: string[],
   outputMode: OutputMode,
@@ -3898,6 +3942,12 @@ async function handleConfig(
     deps.invocation.writeStdout(CONFIG_HELP);
     return 0;
   }
+
+  // ONE shared mutable secret list for this command: the config view,
+  // the error envelope and the saved output all redact against the
+  // SAME array. The stored judge credentials join it as soon as the
+  // injected read/update returns a config.
+  const sharedSecrets: string[] = [...deps.secrets];
 
   // Config-store warnings (lenient load-time validation) surface on
   // stderr through the invocation adapter so test harnesses observe
@@ -3928,12 +3978,16 @@ async function handleConfig(
         deps.invocation,
         () =>
           configGetCommand(positional[1], {
-            read: () => readConfig(configOptions),
-            secrets: () => configuredSecrets(deps.env),
+            read: async () => {
+              const config = await readConfig(configOptions);
+              appendJudgeSecrets(sharedSecrets, config);
+              return config;
+            },
+            secrets: () => sharedSecrets,
           }),
         outputMode,
         deps.now,
-        deps.secrets,
+        sharedSecrets,
       );
     case "set": {
       const setPath = positional[1];
@@ -3954,7 +4008,11 @@ async function handleConfig(
         deps.invocation,
         (context) =>
           configSetCommand(setPath, setValue, {
-            set: (path, value) => setConfigValue(path, value, configOptions),
+            set: async (path, value) => {
+              const updated = await setConfigValue(path, value, configOptions);
+              appendJudgeSecrets(sharedSecrets, updated);
+              return updated;
+            },
             // Registry-mandated enable-time warnings (e.g. the fan-out
             // cost sentence, search-fanout DESIGN D7) ride stderr. The
             // eligibility context lets the fan-out notice name only the
@@ -3967,7 +4025,7 @@ async function handleConfig(
           }),
         outputMode,
         deps.now,
-        deps.secrets,
+        sharedSecrets,
       );
     }
     case "unset": {
@@ -3988,11 +4046,15 @@ async function handleConfig(
         deps.invocation,
         () =>
           configUnsetCommand(unsetPath, {
-            unset: (path) => unsetConfigValue(path, configOptions),
+            unset: async (path) => {
+              const updated = await unsetConfigValue(path, configOptions);
+              appendJudgeSecrets(sharedSecrets, updated);
+              return updated;
+            },
           }),
         outputMode,
         deps.now,
-        deps.secrets,
+        sharedSecrets,
       );
     }
     default:
@@ -5155,6 +5217,8 @@ async function handleInvestigate(
         quotaState: deps.quotaState,
         readQuotaSnapshot: deps.readRequirementsQuotaSnapshot,
         providerDescriptors: deps.providerDescriptors,
+        // The SAME owned judge snapshot the requirements lane uses.
+        judgeSettings: deps.judgeSettings,
       };
       const requirementsExitCode = await invokeCommand(
         deps.invocation,
@@ -6247,7 +6311,7 @@ export interface MainDependencies {
    * factory for `investigate --requirements/--requirements-json`.
    * Tests inject fake transports + fake judge/extractor collaborators;
    * production leaves it undefined and the requirements handler composes
-   * the real acquisition bridge + explicit direct TypeSafe judge.
+   * the real acquisition bridge + selected native Jev judge.
    */
     readonly requirementsRuntime?: RequirementsRuntimeFactory;
   /** Overrides the requirements lane's fail-open quota-snapshot read
@@ -6772,20 +6836,28 @@ export async function main(
       callerRequest = await readCallerRequest(source, signal => invocation.readStdin(MAX_REQUIREMENTS_BYTES_HANDLER,signal),callerInterrupt.signal);
       if(callerInterrupt.signal.aborted)throw new CallerInputInterruptedError();
       if (!["start","continue"].includes((callerRequest as {operation:string}).operation)) {
-        if ((callerRequest as {operation:string}).operation !== "delete") {
-          try {
-            let viewConfig: ScoutlineConfig;
-            if (loadScoutlineConfig) viewConfig = await loadScoutlineConfig();
-            else {
-              const inspection = await inspectConfig({filePath:path.join(resolveConfigRootPure(env,{homedir:os.homedir()}),"config.json")});
-              if (inspection.status === "corrupt") throw new ValidationError("Caller view unavailable under the active redaction profile.");
-              viewConfig = inspection.status === "absent" ? {version:1,providers:{}} : inspection.config;
-            }
-            const viewEnv = resolveEnvFromConfig(env,viewConfig,providerDescriptors);
-            for (const secret of configuredSecrets(viewEnv)) if (!envSecrets.includes(secret)) envSecrets.push(secret);
-          } catch {
-            throw new ValidationError("Caller view unavailable under the active redaction profile.");
+        // Redaction-only local config read for EVERY offline record
+        // operation — INCLUDING delete. Judge credentials can now be
+        // stored, so the env-only shortcut can no longer establish the
+        // secret basis; the read constructs no judge, validates no
+        // activation and performs no HTTP. A structurally corrupt or
+        // unreadable config refuses BEFORE the record is touched, so a
+        // refused delete leaves the record intact.
+        try {
+          let viewConfig: ScoutlineConfig;
+          if (loadScoutlineConfig) viewConfig = await loadScoutlineConfig();
+          else {
+            const inspection = await inspectConfig({filePath:path.join(resolveConfigRootPure(env,{homedir:os.homedir()}),"config.json")});
+            if (inspection.status === "corrupt") throw new ValidationError("Caller view unavailable under the active redaction profile.");
+            viewConfig = inspection.status === "absent" ? {version:1,providers:{}} : inspection.config;
           }
+          const viewEnv = resolveEnvFromConfig(env,viewConfig,providerDescriptors);
+          for (const secret of configuredSecrets(viewEnv)) if (!envSecrets.includes(secret)) envSecrets.push(secret);
+          // Both stored route keys — including an inactive or
+          // overridden one — join the redaction basis.
+          for (const secret of collectJudgeSecrets(viewEnv,snapshotJudgeSettings(viewConfig.judge)??{})) if (!envSecrets.includes(secret)) envSecrets.push(secret);
+        } catch {
+          throw new ValidationError("Caller view unavailable under the active redaction profile.");
         }
         const root = env.SCOUTLINE_INVESTIGATIONS_DIR ?? path.join(resolveConfigRootPure(env,{homedir:os.homedir()}),"investigations");
         const exit = await invokeCommand(invocation,()=>handleInvestigateCaller(callerRequest,root,{readFile: p=>readRequirementsFileBounded(p,MAX_REQUIREMENTS_BYTES_HANDLER),readStdin:s=>invocation.readStdin(MAX_REQUIREMENTS_BYTES_HANDLER,s),now:Date.now},{env,secrets:envSecrets}),outputMode,undefined,envSecrets);
@@ -7018,6 +7090,7 @@ export async function main(
     credRouting: HandlerDependencies["routing"] = undefined,
     credFanout: boolean | undefined = undefined,
     credFusion: HandlerDependencies["fusionMode"] = undefined,
+    credJudgeSettings: JudgeSettings | undefined = undefined,
   ): HandlerDependencies => ({
     invocation,
     synthesize: dependencies.synthesize,
@@ -7039,6 +7112,10 @@ export async function main(
     routing: credRouting,
     configFanout: credFanout,
     fusionMode: credFusion,
+    // The owned judge-settings snapshot — present ONLY on the
+    // loaded-config path. The early credential-free command paths carry
+    // none, so their behavior is byte-identical to before.
+    judgeSettings: credJudgeSettings,
     searchCache,
     searchSleep,
     searchRandom,
@@ -7525,10 +7602,17 @@ export async function main(
   // mutated — the returned object is a fresh shallow copy owned by this
   // invocation.
   const resolvedEnv = resolveEnvFromConfig(env, config, providerDescriptors);
-  const secrets = configuredSecrets(resolvedEnv);
+  // The OWNED judge-settings snapshot of the loaded config (frozen
+  // clone). It is resolved ONCE here and threaded down; the runtime
+  // never rereads the config and never borrows its mutable object.
+  const judgeSettings = snapshotJudgeSettings(config.judge);
+  // F5: the redaction basis is the environment's credentials UNION the
+  // stored judge credentials of BOTH routes — including an inactive or
+  // overridden one. A stored credential is still a credential.
+  const secrets = [...new Set([...configuredSecrets(resolvedEnv), ...collectJudgeSecrets(resolvedEnv, judgeSettings ?? {})])];
 
   if (callerRequest !== undefined) {
-    const callerSecrets = [...secrets, ...(resolvedEnv.TYPESAFE_API_KEY ? [resolvedEnv.TYPESAFE_API_KEY] : [])];
+    const callerSecrets = [...secrets];
     try {
       const root = resolvedEnv.SCOUTLINE_INVESTIGATIONS_DIR ?? path.join(resolveConfigRootPure(resolvedEnv,{homedir:os.homedir()}),"investigations");
       return await invokeCommand(invocation,()=>handleInvestigateCaller(callerRequest,root,{
@@ -7536,7 +7620,7 @@ export async function main(
         requirementsRuntime:dependencies.requirementsRuntime,
         registerUserInterrupt: listener => {const abort=()=>listener();callerInterrupt!.signal.addEventListener("abort",abort);if(callerInterrupt!.signal.aborted)listener();return ()=>callerInterrupt!.signal.removeEventListener("abort",abort);},
         onRuntimeSecrets: values=>{for(const s of values)if(s&&!callerSecrets.includes(s))callerSecrets.push(s);},
-      },{env:resolvedEnv,secrets:callerSecrets,provider,noCache:commandArgs.includes("--no-cache"),cache:searchCache,sleep:searchSleep,random:searchRandom,routing:dependencies.routing??config.routing,quotaState,readQuotaSnapshot:dependencies.readRequirementsQuotaSnapshot??requirementsSnapshotReader,providerDescriptors}),outputMode,undefined,callerSecrets);
+      },{env:resolvedEnv,secrets:callerSecrets,provider,noCache:commandArgs.includes("--no-cache"),cache:searchCache,sleep:searchSleep,random:searchRandom,routing:dependencies.routing??config.routing,quotaState,readQuotaSnapshot:dependencies.readRequirementsQuotaSnapshot??requirementsSnapshotReader,providerDescriptors,judgeSettings}),outputMode,undefined,callerSecrets);
     } finally {callerRelease?.();}
   }
 
@@ -7624,6 +7708,9 @@ export async function main(
     dependencies.routing ?? config.routing,
     configFanout,
     fusionMode,
+    // The owned judge snapshot reaches the requirements/caller lanes
+    // through the handler deps.
+    judgeSettings,
   );
 
   // PB-T5 — derive Plan A verification records from the loaded config

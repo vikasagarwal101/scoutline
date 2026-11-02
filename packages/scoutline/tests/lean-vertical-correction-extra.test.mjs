@@ -72,15 +72,20 @@ test('actual authorized main pipe parses valid requirements through its real inc
 });
 
 test('Search/Reader consent does not activate an ambient complete judge profile',async()=>{
+ // MIGRATION (dual-route Jev): a bare credential is not consent, so it
+ // stays inert instead of refusing. The run remains deterministic-only
+ // and NO judge transmission happens; acquisition may run inside the
+ // existing bounds and is not native work.
  const r=await child([script,'investigate','--requirements-json',JSON.stringify(input())],{TYPESAFE_API_KEY:'synthetic-judge-key'});
- const error=assertionErrorDocument(r.stderr);
- assertionSnapshot('consent-correction',{...r,...assertionStdout(r.stdout),error,httpMarkers:r.stderr.match(/HTTP [^\n]*/g)??[]});
- assert.equal(r.code,1);assert.equal(r.stdout,'');
- assert.equal(error?.success,false);assert.equal(error?.code,'VALIDATION_ERROR');
- assert.equal(error.error,"requirements-mode judge selection is incomplete: TYPESAFE_API_KEY and SCOUTLINE_JUDGE_TRANSMIT=1 must be supplied together (credentials alone are not consent; consent alone has no judge).");
- assert.doesNotMatch(r.stderr,/HTTP /,'incomplete selection refuses before any HTTP');
- assert.doesNotMatch(r.stderr,/HTTP offline.test/,'no separately authorized judge transmission');
- assert.ok(r.code!==0);
+ const document=assertionStdout(r.stdout);
+ assertionSnapshot('consent-correction',{...r,...document,httpMarkers:r.stderr.match(/HTTP [^\n]*/g)??[]});
+ assert.equal(r.code,1);
+ assert.equal(document.parseError,null,`expected a delivered envelope: ${r.stderr}`);
+ assert.equal(document.envelope.assessment,'deterministic-only');
+ assert.equal(document.envelope.usage.judgeCalls,0);
+ assert.equal(document.envelope.usage.candidateJudgeCalls,0);
+ assert.doesNotMatch(r.stderr,/HTTP api\.typesafe\.ai/,'no separately authorized judge transmission');
+ assert.doesNotMatch(r.stdout,/synthetic-judge-key/,'an inert credential never reaches the output');
 });
 
 test('abort of ignored native headers settles locally without awaiting unresolved late response',async()=>{

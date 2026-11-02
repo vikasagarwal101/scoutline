@@ -10,6 +10,70 @@ export Z_AI_API_KEY="your-api-key"
 `ZAI_API_KEY` remains accepted for compatibility, but new setups should use
 `Z_AI_API_KEY`.
 
+## Investigation judge
+
+Requirements and caller start/continue use a native Jev judge separate from the
+acquisition `--provider`. The default route/model is OpenRouter
+`typesafe/jev-1.14`; transmission requires the selected route’s own key and
+explicit consent. Keys alone are inert. Without consent, deterministic
+evaluation remains and fields needing semantic proof may remain unresolved.
+There is no judge route or model fallback.
+
+| Route | Supported request models (default first) | Credential |
+| --- | --- | --- |
+| `openrouter` | `typesafe/jev-1.14`, `typesafe/jev-1.13` | `OPENROUTER_API_KEY` |
+| `typesafe` | `jev-1.13.0`, `jev-1.14.0` | `TYPESAFE_API_KEY` |
+
+Use interactive `scoutline init` to select a route, model, hidden key or
+env-only credential, and per-route consent. Judge setup saves without live
+judge/account validation; ordinary acquisition Provider onboarding keeps its
+separate validation. A blank selected-route password removes its stored key;
+ordinary editing preserves the inactive profile, while full reset discards all.
+
+```bash
+scoutline config get judge
+scoutline config set judge.route openrouter
+scoutline config set judge.openrouter.model typesafe/jev-1.14
+scoutline config set judge.openrouter.transmitConsent true
+scoutline config unset judge.openrouter.model
+```
+
+Config get masks stored credentials; credential paths cannot be set or unset via
+arguments. Use the hidden init prompt or a secure environment instead. Views of
+enabled or env-only preferences do not authenticate. The optional stored shape is
+`judge: {route, openrouter: {model, transmitConsent, apiKey?}, typesafe: {...}}`.
+Older binaries may drop this additive section when rewriting configuration.
+
+| Control | Precedence |
+| --- | --- |
+| `SCOUTLINE_JUDGE` | Environment > stored `judge.route` > `openrouter` |
+| `SCOUTLINE_JUDGE_MODEL` | Environment > selected route stored model > route default |
+| `SCOUTLINE_JUDGE_TRANSMIT` (`1` or `0`) | Environment > selected route consent > false |
+| Selected route key | Its environment key > its stored key |
+
+Blank or invalid higher-priority controls refuse rather than fall back. Enabled
+selection without its own key refuses before dispatch. `TYPESAFE_MODEL`,
+`TYPESAFE_ENDPOINT` and unknown `SCOUTLINE_JUDGE_*` controls are rejected.
+Existing direct users must explicitly set `SCOUTLINE_JUDGE=typesafe`; a
+TypeSafe key plus consent no longer selects that route automatically. Clear an
+incompatible `SCOUTLINE_JUDGE_MODEL` and unsupported legacy overrides. Keys are
+never copied between routes.
+
+Each logical judgment permits one request and zero retries; an investigation may
+need several judgments under shared acquisition/judge/producer admission.
+Offline caller inspect/readEvidence/delete read config only for redaction, with
+no judge activation or HTTP. Missing config or keys are fine; a corrupt,
+unreadable or unsafe colliding secret basis refuses before deletion. Correct the
+basis rather than blindly repeating a mutation. Stored, inactive, overridden and
+environment keys participate in redaction; public display redaction does not
+encrypt or scrub original private retained source bytes, and original/display
+digests may differ. A changed redaction basis can invalidate cursors independently
+of semantic reuse. Route/model/policy changes invalidate eligible reuse; key
+identity is not semantic identity. Opaque collaborators without trusted
+descriptors cannot receive native reuse authority, and caller JSON cannot supply
+that identity. Fake-HTTP fixtures do not establish live access, billing, privacy
+or semantic quality.
+
 ## On-Disk Config Foundation
 
 Scoutline reserves `~/.scoutline/config.json` for its versioned, hand-editable

@@ -38,6 +38,7 @@
 
 import { createHash } from "node:crypto";
 import { ValidationError } from "./errors.js";
+import { judgeDescriptor, type JudgeDescriptor, type JudgeRoute } from "./judge-config.js";
 import { composedStopRootOf } from "./lean-composed-stop.js";
 import {
   buildCandidateJudgeRequest,
@@ -120,7 +121,7 @@ export type TypesafeJudgeKind = "classification" | "candidate";
  *  response strings (non-pin models, raw ids, bodies) are discarded. */
 export interface TypesafeObserved {
   readonly requestSha256: string;
-  readonly requestedModel: typeof TYPESAFE_PINNED_MODEL;
+  readonly requestedModel: string;
   readonly resolvedModel: string | null;
   readonly status: number | null;
   readonly usage: { readonly inputTokens: number; readonly outputTokens: number } | null;
@@ -133,7 +134,7 @@ export interface TypesafeAttemptEvent {
   readonly attemptSha256: string;
   readonly policySha256: string;
   readonly contextSha256: string;
-  readonly requestedModel: typeof TYPESAFE_PINNED_MODEL;
+  readonly requestedModel: string;
   readonly resolvedModel: string | null;
   readonly outcome: "ok" | TypesafeJudgeErrorCode;
   readonly status: number | null;
@@ -381,7 +382,8 @@ export function buildTypesafeCandidateRequest(input: LeanCandidateJudgeInput): s
 // Policy/context identity
 // ---------------------------------------------------------------------------
 
-function policyIdentity(): string {
+function policyIdentity(policy?: JudgeDescriptor): string {
+  if (policy !== undefined) return createHash("sha256").update(JSON.stringify(policy)).digest("hex");
   return createHash("sha256")
     .update(
       JSON.stringify([
@@ -751,17 +753,18 @@ interface ValidatedResponse {
   readonly model: string;
   readonly answers: Readonly<Record<string, { type: string; noul?: number }>>;
   readonly usage: { inputTokens: number; outputTokens: number };
+  readonly observedCost: number | null;
 }
 
 /** Safe measured facts from an unparsed/raw body: pin-matching model and
  *  valid usage only — everything private is discarded. */
-function safeFactsFromRaw(raw: unknown): {
+function safeFactsFromRaw(raw: unknown, expectedModel = TYPESAFE_PINNED_MODEL): {
   resolvedModel: string | null;
   usage: { inputTokens: number; outputTokens: number } | null;
 } {
   if (!isPlainObject(raw)) return { resolvedModel: null, usage: null };
   const model = raw.model;
-  const resolvedModel = model === TYPESAFE_PINNED_MODEL ? TYPESAFE_PINNED_MODEL : null;
+  const resolvedModel = model === expectedModel ? expectedModel : null;
   const usageRaw = raw.usage;
   let usage: { inputTokens: number; outputTokens: number } | null = null;
   if (
@@ -782,6 +785,7 @@ function validUsageOf(raw: unknown): { inputTokens: number; outputTokens: number
 function validateNativeResponse(
   bodyText: string,
   expectedIds: ReadonlySet<string>,
+  policy?: JudgeDescriptor,
 ): { value?: ValidatedResponse; code?: TypesafeJudgeErrorCode; message?: string; safe?: { resolvedModel: string | null; usage: { inputTokens: number; outputTokens: number } | null } } {
   let parsed: unknown;
   try {
@@ -789,14 +793,17 @@ function validateNativeResponse(
   } catch {
     return { code: "TYPESAFE_MALFORMED", message: "Direct TypeSafe response was not valid JSON." };
   }
-  const safe = safeFactsFromRaw(parsed);
+  const safe = safeFactsFromRaw(parsed, policy?.expectedResolvedModel);
   if (!isPlainObject(parsed)) {
     return { code: "TYPESAFE_MALFORMED", message: "Direct TypeSafe response was not an object.", safe };
+  }
+  if (Object.hasOwn(parsed, "error")) {
+    return { code: "TYPESAFE_PROTOCOL", message: "Native judge returned an error envelope.", safe };
   }
   if (typeof parsed.model !== "string" || parsed.model.length === 0) {
     return { code: "TYPESAFE_MALFORMED", message: "Direct TypeSafe response lacked a resolved model identity.", safe };
   }
-  if (parsed.model !== TYPESAFE_PINNED_MODEL) {
+  if (parsed.model !== (policy?.expectedResolvedModel ?? TYPESAFE_PINNED_MODEL)) {
     // Static message: the raw model string never leaves the module.
     return { code: "TYPESAFE_MODEL", message: "Direct TypeSafe resolved to a model other than the pinned version.", safe };
   }
@@ -818,7 +825,7 @@ function validateNativeResponse(
     }
   }
   for (const id of expectedIds) {
-    if (!(id in answersRaw)) {
+    if (!Object.hasOwn(answersRaw, id)) {
       return { code: "TYPESAFE_PROTOCOL", message: "Direct TypeSafe response was missing a requested question id.", safe };
     }
   }
@@ -843,6 +850,7 @@ function validateNativeResponse(
       model: parsed.model,
       answers: answersRaw as Record<string, { type: string; noul?: number }>,
       usage,
+      observedCost: policy?.route === "openrouter" && isPlainObject(parsed.usage) && typeof parsed.usage.cost === "number" && Number.isFinite(parsed.usage.cost) && parsed.usage.cost >= 0 ? parsed.usage.cost : null,
     },
     safe,
   };
@@ -859,7 +867,13 @@ interface LifecycleResult {
   readonly attempts: number;
 }
 
-function classifyStatus(status: number): TypesafeJudgeErrorCode {
+function classifyStatus(status: number, policy?: JudgeDescriptor): TypesafeJudgeErrorCode {
+  if (policy?.route === "openrouter") {
+    if (status === 400 || status === 404 || status === 413 || status === 422) return "TYPESAFE_REQUEST";
+    if (status === 408) return "TYPESAFE_TIMEOUT";
+    if (status === 402 || status === 401 || status === 403) return "TYPESAFE_AUTH";
+    if (status === 502 || status === 503 || status === 529) return "TYPESAFE_OVERLOADED";
+  }
   if (status === 401 || status === 403) return "TYPESAFE_AUTH";
   if (status === 422) return "TYPESAFE_REQUEST";
   if (status === 429) return "TYPESAFE_RATE_LIMIT";
@@ -900,19 +914,20 @@ async function runLifecycle(
   deps: TypesafeJudgeDeps,
   contextSha256: string,
   options: LeanDispatchOptions | undefined,
+  policy?: JudgeDescriptor,
 ): Promise<LifecycleResult> {
   const now = deps.now ?? (() => Date.now());
-  const maxAttempts = deps.maxAttempts ?? TYPESAFE_DEFAULT_MAX_ATTEMPTS;
+  const maxAttempts = policy === undefined ? deps.maxAttempts ?? TYPESAFE_DEFAULT_MAX_ATTEMPTS : 1;
   const timeoutMs = deps.timeoutMs ?? TYPESAFE_DEFAULT_TIMEOUT_MS;
   const maxResponseBytes = deps.maxResponseBytes ?? TYPESAFE_DEFAULT_MAX_RESPONSE_BYTES;
   const retry: TypesafeRetrySettings = Object.freeze({
-    maxTransientRetries: deps.retrySettings?.maxTransientRetries ?? TYPESAFE_DEFAULT_RETRY_SETTINGS.maxTransientRetries,
+    maxTransientRetries: policy === undefined ? deps.retrySettings?.maxTransientRetries ?? TYPESAFE_DEFAULT_RETRY_SETTINGS.maxTransientRetries : 0,
     baseDelayMs: deps.retrySettings?.baseDelayMs ?? TYPESAFE_DEFAULT_RETRY_SETTINGS.baseDelayMs,
     maxDelayMs: deps.retrySettings?.maxDelayMs ?? TYPESAFE_DEFAULT_RETRY_SETTINGS.maxDelayMs,
     maxRetryAfterMs: deps.retrySettings?.maxRetryAfterMs ?? TYPESAFE_DEFAULT_RETRY_SETTINGS.maxRetryAfterMs,
   });
   const fetchLike = deps.fetchLike ?? (globalThis.fetch as unknown as LeanJevFetchLike);
-  const policySha = policyIdentity();
+  const policySha = policyIdentity(policy);
   const attemptSha = createHash("sha256").update(requestBody).digest("hex");
   const events: TypesafeAttemptEvent[] = [];
 
@@ -949,7 +964,7 @@ async function runLifecycle(
       const stop = composedStopRootOf(error);
       const event: TypesafeAttemptEvent = {
         kind, attempt, attemptSha256: attemptSha, policySha256: policySha, contextSha256,
-        requestedModel: TYPESAFE_PINNED_MODEL, resolvedModel: null, outcome: "TYPESAFE_ATTEMPT_REFUSED",
+        requestedModel: policy?.requestedModel ?? TYPESAFE_PINNED_MODEL, resolvedModel: null, outcome: "TYPESAFE_ATTEMPT_REFUSED",
         status: null, usage: null, elapsedMs: now() - startedAt, remoteWorkUncertain: false,
         ...(stop !== null ? { stopReason: stop } : {}),
       };
@@ -987,7 +1002,7 @@ async function runLifecycle(
     const attemptEnd = Math.min(attemptStartedAt + timeoutMs, runDeadline);
 
     const dispatched = await dispatchOnce({
-      url: TYPESAFE_SYSTEMONE_ENDPOINT,
+      url: policy?.endpoint ?? TYPESAFE_SYSTEMONE_ENDPOINT,
       requestBody,
       apiKey: deps.apiKey,
       fetchLike,
@@ -1000,7 +1015,7 @@ async function runLifecycle(
       const failure = dispatched.failure;
       const event: TypesafeAttemptEvent = {
         kind, attempt, attemptSha256: attemptSha, policySha256: policySha, contextSha256,
-        requestedModel: TYPESAFE_PINNED_MODEL, resolvedModel: null, outcome: failure.code,
+        requestedModel: policy?.requestedModel ?? TYPESAFE_PINNED_MODEL, resolvedModel: null, outcome: failure.code,
         status: null, usage: null, elapsedMs: now() - attemptStartedAt,
         remoteWorkUncertain: failure.uncertain,
         ...(failure.stopReason !== undefined ? { stopReason: failure.stopReason } : {}),
@@ -1020,10 +1035,10 @@ async function runLifecycle(
 
     const response = dispatched.response!;
     if (!response.ok) {
-      const code = classifyStatus(response.status);
+      const code = classifyStatus(response.status, policy);
       const event: TypesafeAttemptEvent = {
         kind, attempt, attemptSha256: attemptSha, policySha256: policySha, contextSha256,
-        requestedModel: TYPESAFE_PINNED_MODEL, resolvedModel: null, outcome: code,
+        requestedModel: policy?.requestedModel ?? TYPESAFE_PINNED_MODEL, resolvedModel: null, outcome: code,
         status: response.status, usage: null, elapsedMs: now() - attemptStartedAt,
         remoteWorkUncertain: false,
       };
@@ -1037,13 +1052,13 @@ async function runLifecycle(
       // rejection AND on every retry-refusal path below.
       const observed: TypesafeObserved = {
         requestSha256: attemptSha,
-        requestedModel: TYPESAFE_PINNED_MODEL,
+        requestedModel: policy?.requestedModel ?? TYPESAFE_PINNED_MODEL,
         resolvedModel: null,
         status: response.status,
         usage: null,
         elapsedMs: now() - attemptStartedAt,
       };
-      const rejection = typedRejection(code, `Direct TypeSafe endpoint returned status ${response.status}.`, {
+      const rejection = typedRejection(code, `${policy?.route === "openrouter" ? "OpenRouter" : "Direct TypeSafe"} endpoint returned status ${response.status}.`, {
         observed,
         attempts: attempt + 1,
       });
@@ -1111,7 +1126,7 @@ async function runLifecycle(
       const failure = body.failure;
       const event: TypesafeAttemptEvent = {
         kind, attempt, attemptSha256: attemptSha, policySha256: policySha, contextSha256,
-        requestedModel: TYPESAFE_PINNED_MODEL, resolvedModel: null, outcome: failure.code,
+        requestedModel: policy?.requestedModel ?? TYPESAFE_PINNED_MODEL, resolvedModel: null, outcome: failure.code,
         status: response.status, usage: null, elapsedMs: now() - attemptStartedAt,
         remoteWorkUncertain: failure.uncertain,
         ...(failure.stopReason !== undefined ? { stopReason: failure.stopReason } : {}),
@@ -1121,7 +1136,7 @@ async function runLifecycle(
       return {
         rejection: typedRejection(failure.code, failure.message, {
           observed: {
-            requestSha256: attemptSha, requestedModel: TYPESAFE_PINNED_MODEL, resolvedModel: null,
+            requestSha256: attemptSha, requestedModel: policy?.requestedModel ?? TYPESAFE_PINNED_MODEL, resolvedModel: null,
             status: response.status, usage: null, elapsedMs: now() - attemptStartedAt,
           },
           ...(failure.stopReason !== undefined ? { stopReason: failure.stopReason } : {}),
@@ -1133,13 +1148,13 @@ async function runLifecycle(
       };
     }
 
-    const validated = validateNativeResponse(body.bodyText ?? "", expectedIds);
+    const validated = validateNativeResponse(body.bodyText ?? "", expectedIds, policy);
     if (validated.value === undefined) {
       const code = validated.code ?? "TYPESAFE_MALFORMED";
       const safe = validated.safe ?? { resolvedModel: null, usage: null };
       const event: TypesafeAttemptEvent = {
         kind, attempt, attemptSha256: attemptSha, policySha256: policySha, contextSha256,
-        requestedModel: TYPESAFE_PINNED_MODEL, resolvedModel: safe.resolvedModel, outcome: code,
+        requestedModel: policy?.requestedModel ?? TYPESAFE_PINNED_MODEL, resolvedModel: safe.resolvedModel, outcome: code,
         status: response.status, usage: safe.usage, elapsedMs: now() - attemptStartedAt,
         remoteWorkUncertain: false,
       };
@@ -1148,7 +1163,7 @@ async function runLifecycle(
       return {
         rejection: typedRejection(code, validated.message ?? "Direct TypeSafe response failed validation.", {
           observed: {
-            requestSha256: attemptSha, requestedModel: TYPESAFE_PINNED_MODEL, resolvedModel: safe.resolvedModel,
+            requestSha256: attemptSha, requestedModel: policy?.requestedModel ?? TYPESAFE_PINNED_MODEL, resolvedModel: safe.resolvedModel,
             status: response.status, usage: safe.usage, elapsedMs: now() - attemptStartedAt,
           },
           attempts: attempt + 1,
@@ -1161,7 +1176,7 @@ async function runLifecycle(
     const usage = validated.value.usage;
     const event: TypesafeAttemptEvent = {
       kind, attempt, attemptSha256: attemptSha, policySha256: policySha, contextSha256,
-      requestedModel: TYPESAFE_PINNED_MODEL, resolvedModel: validated.value.model, outcome: "ok",
+      requestedModel: policy?.requestedModel ?? TYPESAFE_PINNED_MODEL, resolvedModel: validated.value.model, outcome: "ok",
       status: response.status, usage, elapsedMs: now() - attemptStartedAt, remoteWorkUncertain: false,
     };
     events.push(event);
@@ -1208,13 +1223,24 @@ function assertRequestCeiling(requestBody: string, deps: TypesafeJudgeDeps): voi
 // ---------------------------------------------------------------------------
 
 export function createTypesafeJudge(deps: TypesafeJudgeDeps): TypesafeJudgeProfile {
+  return createNativeJudge(deps);
+}
+
+export function createSelectedNativeJudge(route: JudgeRoute, deps: TypesafeJudgeDeps, model?: string): TypesafeJudgeProfile & { readonly descriptor: JudgeDescriptor } {
+  const descriptor = judgeDescriptor(route, model);
+  if (typeof deps.apiKey !== "string" || deps.apiKey.trim() === "") throw new ValidationError("Selected judge requires a nonblank API key.");
+  return Object.freeze({ ...createNativeJudge({ ...deps, retrySettings: deps.retrySettings === undefined ? undefined : { ...deps.retrySettings } }, descriptor), descriptor });
+}
+
+function createNativeJudge(deps: TypesafeJudgeDeps, policy?: JudgeDescriptor): TypesafeJudgeProfile {
   validateDeps(deps, true);
   const judge: TypesafeClassificationJudge = async (input, options) => {
     const evidenceIds = input.documents.map((doc) => doc.evidenceId);
-    const requestBody = buildTypesafeNoulRequest(input);
+    const legacyBody = buildTypesafeNoulRequest(input);
+    const requestBody = policy === undefined ? legacyBody : JSON.stringify({ ...JSON.parse(legacyBody), model: policy.requestedModel, ...(policy.route === "openrouter" ? { provider: { allow_fallbacks: false } } : {}) });
     assertRequestCeiling(requestBody, deps);
     const contextSha256 = contextIdentityOf(requestBody);
-    const policySha256 = policyIdentity();
+    const policySha256 = policyIdentity(policy);
     const result = await runLifecycle(
       "classification",
       requestBody,
@@ -1222,8 +1248,12 @@ export function createTypesafeJudge(deps: TypesafeJudgeDeps): TypesafeJudgeProfi
       deps,
       contextSha256,
       options,
+      policy,
     );
-    if (result.rejection !== undefined) throw result.rejection;
+    if (result.rejection !== undefined) {
+      if (policy?.route === "openrouter") result.rejection.message = result.rejection.message.replaceAll("Direct TypeSafe", "OpenRouter");
+      throw result.rejection;
+    }
     const validated = result.validated!;
     const answers = validated.answers;
     const translate = (p: number): boolean | null =>
@@ -1242,7 +1272,7 @@ export function createTypesafeJudge(deps: TypesafeJudgeDeps): TypesafeJudgeProfi
     return Object.assign(response, {
       [LEAN_JEV_ATTEMPT_META_SYMBOL]: Object.freeze({
         attemptSha256: result.attemptEvents.at(-1)?.attemptSha256 ?? "",
-        requestedModel: TYPESAFE_PINNED_MODEL,
+        requestedModel: policy?.requestedModel ?? TYPESAFE_PINNED_MODEL,
         resolvedModel: validated.model,
         thresholdRevision: TYPESAFE_THRESHOLD_REVISION,
         questionRevision: TYPESAFE_QUESTION_REVISION,
@@ -1251,7 +1281,7 @@ export function createTypesafeJudge(deps: TypesafeJudgeDeps): TypesafeJudgeProfi
         elapsedMs: result.attemptEvents.reduce((a, e) => a + e.elapsedMs, 0),
         usage: validated.usage,
         probabilities,
-        observedCost: null,
+        observedCost: validated.observedCost,
         attempts: result.attempts,
         contextSha256,
         policySha256,
@@ -1260,12 +1290,13 @@ export function createTypesafeJudge(deps: TypesafeJudgeDeps): TypesafeJudgeProfi
   };
 
   const candidateJudge: TypesafeCandidateJudge = async (input, options) => {
-    const requestBody = buildTypesafeCandidateRequest(input);
+    const legacyBody = buildTypesafeCandidateRequest(input);
+    const requestBody = policy === undefined ? legacyBody : JSON.stringify({ ...JSON.parse(legacyBody), model: policy.requestedModel, ...(policy.route === "openrouter" ? { provider: { allow_fallbacks: false } } : {}) });
     assertRequestCeiling(requestBody, deps);
     const now = deps.now ?? (() => Date.now());
     const startedAt = now();
     const contextSha256 = contextIdentityOf(requestBody);
-    const policySha256 = policyIdentity();
+    const policySha256 = policyIdentity(policy);
     const result = await runLifecycle(
       "candidate",
       requestBody,
@@ -1273,8 +1304,12 @@ export function createTypesafeJudge(deps: TypesafeJudgeDeps): TypesafeJudgeProfi
       deps,
       contextIdentityOf(requestBody),
       options,
+      policy,
     );
-    if (result.rejection !== undefined) throw result.rejection;
+    if (result.rejection !== undefined) {
+      if (policy?.route === "openrouter") result.rejection.message = result.rejection.message.replaceAll("Direct TypeSafe", "OpenRouter");
+      throw result.rejection;
+    }
     const validated = result.validated!;
     const answers: Record<string, { type: string; noul: number }> = {};
     for (const [id, entry] of Object.entries(validated.answers)) {

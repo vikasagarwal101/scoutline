@@ -215,5 +215,16 @@ test('PR291 compatibility A config precedence, unavailable views, delete bypass 
   const unavailable=r=>{assert.equal(r.code,1);assert.equal(r.stdout,'');const error=JSON.parse(r.stderr);assert.equal(error.code,'VALIDATION_ERROR');assert.equal(error.error,'Caller view unavailable under the active redaction profile.');assert(!r.stderr.includes(loaderKey));};
   unavailable(await invoke(inspect,{loadScoutlineConfig:async()=>{throw new Error(loaderKey);}}));
   const file=join(s.env.SCOUTLINE_CONFIG_DIR,'config.json');await writeFile(file,'{"untrusted":"'+loaderKey+'",');unavailable(await invoke(inspect,{loadScoutlineConfig:undefined}));await rm(file);await mkdir(file);unavailable(await invoke(inspect,{loadScoutlineConfig:undefined}));
-  let calls=0;const deleted=await invoke({schemaVersion:1,operation:'delete',investigationRef:made.investigationRef},{loadScoutlineConfig:async()=>{calls++;throw new Error(loaderKey);}});assert.equal(deleted.code,0,deleted.stderr);assert.equal(deleted.data.deleted,true);assert.equal(calls,0);assert.equal(runtime,0);assert.equal(http,0);
+  // MIGRATION (dual-route Jev): delete now establishes its redaction
+  // basis from the LOCAL config too — judge credentials can be stored,
+  // so the old env-only skip-discovery shortcut is superseded. An
+  // unreadable config refuses BEFORE the record is touched, and the
+  // record survives the refusal.
+  let calls=0;const refused=await invoke({schemaVersion:1,operation:'delete',investigationRef:made.investigationRef},{loadScoutlineConfig:async()=>{calls++;throw new Error(loaderKey);}});
+  assert.equal(refused.code,1,refused.stderr);assert.equal(refused.stdout,'');assert.equal(JSON.parse(refused.stderr).error,'Caller view unavailable under the active redaction profile.');
+  assert.equal(calls,1,'the redaction basis was established exactly once');
+  assert.equal(runtime,0);assert.equal(http,0);
+  const survived=await executeCallerInvestigation(inspect,{storeRoot,secrets:[loaderKey]});assert.ok(survived,'the refused delete preserved the record');
+  const deleted=await invoke({schemaVersion:1,operation:'delete',investigationRef:made.investigationRef},{loadScoutlineConfig:async()=>({version:1,providers:{}})});
+  assert.equal(deleted.code,0,deleted.stderr);assert.equal(deleted.data.deleted,true);assert.equal(runtime,0);assert.equal(http,0);
 });

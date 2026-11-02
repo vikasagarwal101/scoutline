@@ -385,6 +385,11 @@ test("requirements mode: judge selection rules refuse typed, and a bare credenti
   assert.equal(legacyOverride.code, 1);
   assert.ok(legacyOverride.stderr.includes("TYPESAFE_MODEL"), legacyOverride.stderr);
   // A credential WITHOUT consent is inert: no refusal, no judge work.
+  // Three credential PROFILES reach the same inert outcome: the
+  // explicitly selected direct route, the default OpenRouter route with
+  // its own key, and the default route with only the INACTIVE direct
+  // key present. Each case owns its own wire window, so a prior case's
+  // acquisition can never satisfy a later witness.
   const originalFetch = globalThis.fetch;
   const attempts = [];
   globalThis.fetch = async (url, init = {}) => {
@@ -395,18 +400,33 @@ test("requirements mode: judge selection rules refuse typed, and a bare credenti
     if (target === "https://api.tavily.com/extract") return Response.json({ results: [], failed_results: [] });
     throw new Error("unexpected acquisition endpoint");
   };
+  const noConsentProfiles = [
+    { label: "selected-typesafe", env: { SCOUTLINE_JUDGE: "typesafe", TYPESAFE_API_KEY: "guard-key-selected" } },
+    { label: "default-openrouter", env: { OPENROUTER_API_KEY: "guard-key-default-or" } },
+    { label: "default-inactive-typesafe", env: { TYPESAFE_API_KEY: "guard-key-inactive-ts" } },
+  ];
   try {
-    const keyOnly = await runMain(
-      ["investigate", "--provider", "tavily", "--requirements-json", JSON.stringify(CONTRACT)],
-      { env: { TAVILY_API_KEY: "guard-synthetic-key", SCOUTLINE_JUDGE: "typesafe", TYPESAFE_API_KEY: "guard-key" } },
-    );
-    assert.equal(keyOnly.code, 1);
-    assert.ok(keyOnly.parsed, `expected the deterministic envelope: ${keyOnly.stderr}`);
-    assert.equal(keyOnly.parsed.assessment, "deterministic-only");
-    assert.equal(keyOnly.parsed.usage.judgeCalls, 0);
-    assert.equal(keyOnly.parsed.usage.candidateJudgeCalls, 0);
-    assert.ok(attempts.length > 0, "acquisition reached the fake transport");
-    assert.ok(attempts.every(url => url === "https://api.tavily.com/search" || url === "https://api.tavily.com/extract"));
+    for (const profile of noConsentProfiles) {
+      const windowStart = attempts.length;
+      const keyOnly = await runMain(
+        ["investigate", "--provider", "tavily", "--requirements-json", JSON.stringify(CONTRACT)],
+        { env: { TAVILY_API_KEY: "guard-synthetic-key", ...profile.env } },
+      );
+      assert.equal(keyOnly.code, 1);
+      assert.ok(keyOnly.parsed, `expected the deterministic envelope: ${keyOnly.stderr}`);
+      assert.equal(keyOnly.parsed.assessment, "deterministic-only");
+      assert.equal(keyOnly.parsed.usage.judgeCalls, 0);
+      assert.equal(keyOnly.parsed.usage.candidateJudgeCalls, 0);
+      const attemptsForCase = attempts.slice(windowStart);
+      assert.ok(attemptsForCase.length > 0, "acquisition reached the fake transport");
+      assert.ok(attemptsForCase.every(url => url === "https://api.tavily.com/search" || url === "https://api.tavily.com/extract"));
+      const syntheticKeys = Object.entries(profile.env).filter(([name]) => name.endsWith("_API_KEY")).map(([, value]) => value);
+      for (const secret of syntheticKeys) {
+        assert.ok(!keyOnly.stdout.includes(secret), "an inert credential never reaches stdout");
+        assert.ok(!keyOnly.stderr.includes(secret), "an inert credential never reaches stderr");
+      }
+      console.log("NO_CONSENT_PROFILE " + profile.label + " acquisition=" + attemptsForCase.length);
+    }
   } finally {
     globalThis.fetch = originalFetch;
   }

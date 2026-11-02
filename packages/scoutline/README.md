@@ -598,13 +598,12 @@ over the selected provider produces an accepted-only structured answer
 (`kind: "requirements-investigation"`) with per-field outcomes,
 evidence identity digests, and physical HTTP accounting. Exit 0
 complete / 1 partial. Mutually exclusive with the positional question
-and plain-mode controls. Semantic judging is explicit:
-`TYPESAFE_API_KEY` + `SCOUTLINE_JUDGE_TRANSMIT=1` (both or neither —
-credentials alone are not consent; an absent judge keeps an honest
-deterministic-only partial, never a silent downgrade). The official
-TypeSafe route is implemented against the documented protocol and
-verified only with fake-HTTP fixtures — it is NOT live-attested: no
-real account operation or calibrated semantic accuracy is claimed.
+and plain-mode controls. Semantic judging defaults to OpenRouter Jev 1.14;
+direct TypeSafe is optional. The selected route needs its own credential
+and explicit transmission consent; keys alone are inert. Without consent,
+deterministic evaluation remains and semantic fields may remain unresolved.
+No selected-route/model fallback occurs. See [judge configuration](../../docs/configuration.md#investigation-judge).
+Fake-HTTP fixtures do not establish live account access or semantic accuracy.
 Experimental:
 executable bounded-transport supplier subset (tavily, exa, firecrawl,
 linkup, spider — each serving search AND reader over an injected
@@ -674,10 +673,11 @@ explicit replacement for continuation. `continue`
 requires the current `expectedRevision` and may acknowledge an
 interrupted settled round. Whole metadata/body redaction runs before
 bounded paging; changed secret bases invalidate old cursors rather
-than mixing pages. Offline `inspect` and `readEvidence` discover configured
-secrets from local settings without provider runtime or HTTP. Unreadable or
-corrupt settings yield a fixed view-unavailable response; `delete` bypasses
-secret discovery. Mutations conservatively refuse profiles that could redact
+than mixing pages. Offline `inspect`, `readEvidence` and `delete` read local settings for
+redaction without judge activation or HTTP. Corrupt, unreadable or unsafe
+secret bases yield a fixed view-unavailable refusal before deletion; correct
+the basis before retrying. Public display redaction does not encrypt or scrub
+the original private retained source bytes. Mutations conservatively refuse profiles that could redact
 mandatory handoff identities or any part of the recovery diagnostic, before
 record creation/ownership or paid work. If a result-dependent view fails only
 after a round commits, stderr remains an error with the fixed message

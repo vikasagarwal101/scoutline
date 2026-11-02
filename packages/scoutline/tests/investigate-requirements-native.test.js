@@ -35,6 +35,9 @@ const BASE_ENV = {
   SCOUTLINE_WATCH_DIR: join(SCRATCH, "watch"),
   TAVILY_API_KEY: "synthetic-acquisition-key",
   TYPESAFE_API_KEY: "synthetic-judge-key",
+  // Explicit direct-route selection: the OpenRouter route is the
+  // public default, so the intended direct wire is now stated.
+  SCOUTLINE_JUDGE: "typesafe",
   SCOUTLINE_JUDGE_TRANSMIT: "1",
 };
 
@@ -614,7 +617,7 @@ test("compiled bin: SIGINT during an in-flight native judge request aborts and s
     [
       "investigate", "--provider", "tavily", "--requirements-json", JSON.stringify(CONTRACT), "--no-cache",
     ],
-    { TYPESAFE_API_KEY: "synthetic-judge-key", SCOUTLINE_JUDGE_TRANSMIT: "1", COLD_HANG_JUDGE: "1" },
+    { TYPESAFE_API_KEY: "synthetic-judge-key", SCOUTLINE_JUDGE: "typesafe", SCOUTLINE_JUDGE_TRANSMIT: "1", COLD_HANG_JUDGE: "1" },
     { killSignal: "SIGINT", afterDispatch: "api.typesafe.ai" },
   );
   assert.equal(r.signal, null, "no raw signal death");

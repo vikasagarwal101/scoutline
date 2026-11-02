@@ -9,6 +9,13 @@ process.stdin[Symbol.asyncIterator] = function () {
   return iterator;
 };
 let nativeAttempts=0;
+// The two EXACT public native endpoints and their metadata-backed
+// requested/resolved model pairs. Anything else is refused by this
+// fixture — never delegated to real transport, never fallen back.
+const NATIVE_ROUTES={
+  'https://api.typesafe.ai/v1/systemone':{models:{'jev-1.13.0':'jev-1.13.0','jev-1.14.0':'jev-1.14.0'}},
+  'https://openrouter.ai/api/v1/systemone':{models:{'typesafe/jev-1.14':'typesafe/jev-1.14-20261014','typesafe/jev-1.13':'typesafe/jev-1.13-20260917'}},
+};
 // Opt-in fixed retry-failure stimulus (F1/I05): clones the audit's exact
 // native-probe-retried-read preload — per-QUERY one 429 then search success
 // (6 URLs), every extract 429 — never configurable per endpoint/key.
@@ -16,7 +23,8 @@ const retriedRead=process.env.REVIEW_RETRIED_READ==='1';
 const retriedQueries=new Map();
 globalThis.fetch=async(url,init={})=>{
   const target=String(url);
-  record({url:target,method:init.method??'GET'});
+  const method=init.method??'GET';
+  record({url:target,method});
   if(process.env.REVIEW_REFUSE_HTTP==='1') throw new Error('HTTP forbidden for this operation');
   if(retriedRead && target==='https://api.tavily.com/search'){
     const body=JSON.parse(init.body),n=retriedQueries.get(body.query)||0;
@@ -25,14 +33,25 @@ globalThis.fetch=async(url,init={})=>{
     return Response.json({results:Array.from({length:6},(_,i)=>({title:'Audit source '+i,url:'https://example.test/'+i,content:'Audit search snippet'}))});
   }
   if(retriedRead && target==='https://api.tavily.com/extract')return Response.json({error:'synthetic retry'},{status:429,headers:{'retry-after':'0'}});
-  if(target==='https://api.typesafe.ai/v1/systemone') {
+  const route=NATIVE_ROUTES[target];
+  if(route!==undefined){
+    if(method!=='POST') throw new Error('fixture refused '+target+' '+method+': System One requires POST');
     if(process.env.REVIEW_HANG_JUDGE==='1') return new Promise((_resolve,reject)=>{
       init.signal?.addEventListener('abort',()=>{record({event:'native-abort'});reject(new DOMException('aborted','AbortError'));},{once:true});
     });
     if(process.env.REVIEW_JUDGE_RETRY==='1' && nativeAttempts++===0) return Response.json({}, {status:429,headers:{'retry-after':'0'}});
     const body=JSON.parse(init.body);
-    record({event:'native-context',requestBytes:Buffer.byteLength(init.body),questions:Object.keys(body.questions??{})});
-    return Response.json({model:'jev-1.13.0',answers:Object.fromEntries(Object.keys(body.questions).map(k=>[k,{type:'noul',noul:/[fc]$/.test(k)?0.05:0.95}])),usage:{input_tokens:13,output_tokens:2}});
+    const requested=body.model;
+    if(!Object.hasOwn(route.models,requested)) throw new Error('fixture refused '+target+': unknown judge model '+String(requested));
+    const isOpenRouter=target==='https://openrouter.ai/api/v1/systemone';
+    if(isOpenRouter){
+      if(body.provider?.allow_fallbacks!==false) throw new Error('fixture refused '+target+': OpenRouter provider fallback must stay disabled');
+    }else if(body.provider!==undefined){
+      throw new Error('fixture refused '+target+': the direct route carries no provider block');
+    }
+    if(body.questions===undefined) throw new Error('fixture refused '+target+': judge request carries no questions');
+    record({event:'native-context',requestBytes:Buffer.byteLength(init.body),questions:Object.keys(body.questions),requestedModel:requested,resolvedModel:route.models[requested],allowFallbacks:body.provider?.allow_fallbacks??null});
+    return Response.json({model:route.models[requested],answers:Object.fromEntries(Object.keys(body.questions).map(k=>[k,{type:'noul',noul:/[fc]$/.test(k)?0.05:0.95}])),usage:{input_tokens:13,output_tokens:2}});
   }
   if(target==='https://api.tavily.com/search') return Response.json({results:[{title:'ExampleApp release',url:'https://example.test/release',content}]});
   if(target==='https://api.tavily.com/extract') {

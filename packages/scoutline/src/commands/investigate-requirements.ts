@@ -11,9 +11,8 @@
  *   engine     runLeanInvestigation over LeanUnifiedDeps built from
  *              createLeanAcquisitionDeps (real descriptors + shared
  *              executors + bounded per-operation transport wrapper)
- *   judge      resolveTypesafeJudgeProfile — explicit
- *              TYPESAFE_API_KEY + SCOUTLINE_JUDGE_TRANSMIT=1, both or
- *              neither; selected-and-failing NEVER silently downgrades
+ *   judge      selected native Jev route; explicit consent and the
+ *              selected route credential; no silent downgrade
  *   candidates extract/candidateJudge ride ONLY the injected runtime;
  *              no production parser is activated by judge credentials
  *
@@ -50,7 +49,15 @@ import type {
   LeanPhysicalAttempt,
   LeanReadProvenance,
 } from "../lib/lean-acquisition-bridge.js";
-import { resolveTypesafeJudgeProfile } from "../lib/lean-typesafe-judge.js";
+import { createSelectedNativeJudge, type TypesafeJudgeDeps } from "../lib/lean-typesafe-judge.js";
+import { createOpenRouterJudge } from "../lib/lean-openrouter-judge.js";
+import {
+  collectJudgeSecrets,
+  parseJudgeSettings,
+  resolveJudgeSettings,
+  type JudgeDescriptor,
+  type JudgeSettings,
+} from "../lib/judge-config.js";
 import { ValidationError } from "../lib/errors.js";
 import { redactSecrets } from "../lib/redact.js";
 import type { ResponseCache } from "../lib/cache.js";
@@ -157,10 +164,12 @@ Requirements mode (EXPERIMENTAL — unified-investigation):
   reader over a bounded transport in this mode (executable
   subset: ${[...EXECUTABLE_SUPPLIERS].join(", ")}) — otherwise
   a typed preflight error names the subset, never a reroute.
-  Semantic judge: explicit TYPESAFE_API_KEY +
-  SCOUTLINE_JUDGE_TRANSMIT=1 (both or neither; absent judge
-  keeps deterministic-only results with unresolved semantic
-  fields — never a silent downgrade).
+  Semantic judge: OpenRouter Jev 1.14 is the default route/model;
+  direct TypeSafe is optional. Configure with init/config or
+  SCOUTLINE_JUDGE, SCOUTLINE_JUDGE_MODEL, SCOUTLINE_JUDGE_TRANSMIT.
+  The selected route needs its own key and explicit consent. Without
+  consent deterministic evaluation remains; semantic fields may remain
+  unresolved. Selected route/model failures never fall back.
 `;
 
 const TOP_LEVEL_KEYS = new Set(["schemaVersion", "question", "scope", "requirements", "evidence", "limits"]);
@@ -203,6 +212,13 @@ export interface RequirementsRuntimeContext {
    * must not create its own second budget.
    */
   readonly reserveAttempt?: () => void;
+  /**
+   * The OWNED judge-settings snapshot (route, per-route model/consent/key)
+   * captured from the loaded config. It is a frozen clone owned by this
+   * run — never the loaded config's mutable object — so a later mutation
+   * of the source cannot change the selected model or key.
+   */
+  readonly judgeSettings?: JudgeSettings;
 }
 
 export interface RequirementsEngineDeps {
@@ -244,6 +260,15 @@ export interface RequirementsRuntimeInput {
    * but with unknown enforcement.
    */
   readonly judgeAdmission?: "shared";
+  /**
+   * The TRUSTED descriptor of the ACTUAL selected native judge profile.
+   * It is produced by the profile factory itself — never stamped onto an
+   * opaque injected collaborator. Absent means no trusted native profile
+   * (disabled selection, or an injected runtime that did not construct
+   * one); the caller then uses the unknown-identity path instead of a
+   * key-derived native certification.
+   */
+  readonly judgeDescriptor?: JudgeDescriptor;
 }
 
 export type RequirementsRuntimeFactory = (context: RequirementsRuntimeContext) => RequirementsRuntimeInput;
@@ -346,46 +371,90 @@ export function preflightRequirements(input: unknown): void {
 type RequirementsJudgeFn = (input: unknown, options?: unknown) => Promise<unknown>;
 
 /**
- * Official direct TypeSafe judge profile from explicit selection:
- * TYPESAFE_API_KEY and SCOUTLINE_JUDGE_TRANSMIT=1 must BOTH be present;
- * either alone is a typed configuration error, neither is approved
- * deterministic-only. Malformed overrides (TYPESAFE_MODEL /
- * TYPESAFE_ENDPOINT) reject even with no key — the resolver's
- * closed-selection validation runs before the absent return.
+ * The CLOSED set of supported public judge controls. The route, the
+ * route's request model and the transmission consent — nothing else.
+ */
+const SUPPORTED_JUDGE_CONTROLS: ReadonlySet<string> = new Set([
+  "SCOUTLINE_JUDGE",
+  "SCOUTLINE_JUDGE_MODEL",
+  "SCOUTLINE_JUDGE_TRANSMIT",
+]);
+
+/**
+ * Legacy direct-TypeSafe override names. They are REFUSED, never
+ * accepted-and-dropped: the selected route uses its fixed endpoint and
+ * its own supported model set.
+ */
+const UNSUPPORTED_JUDGE_CONTROL_NAMES: ReadonlySet<string> = new Set([
+  "TYPESAFE_MODEL",
+  "TYPESAFE_ENDPOINT",
+]);
+
+/**
+ * Refuse every unsupported public judge control BEFORE any acquisition,
+ * judgment, record mutation or incidental quota refresh. An unknown
+ * `SCOUTLINE_JUDGE_*` variable (an endpoint, a retry knob, a model
+ * alias) is a typed refusal — silently dropping it would let a caller
+ * believe an override took effect.
+ */
+function assertSupportedJudgeControls(env: NodeJS.ProcessEnv): void {
+  for (const name of Object.keys(env)) {
+    if (UNSUPPORTED_JUDGE_CONTROL_NAMES.has(name)) {
+      throw new ValidationError(
+        `${name} is not an accepted judge override; the selected route uses its fixed endpoint and its own supported model set.`,
+        "Use SCOUTLINE_JUDGE_MODEL for the selected route's request id, and SCOUTLINE_JUDGE / SCOUTLINE_JUDGE_TRANSMIT to choose the route and its transmission consent.",
+      );
+    }
+    if (name.startsWith("SCOUTLINE_JUDGE_") && !SUPPORTED_JUDGE_CONTROLS.has(name)) {
+      throw new ValidationError(
+        `${name} is not an accepted judge control.`,
+        "Supported judge controls: SCOUTLINE_JUDGE, SCOUTLINE_JUDGE_MODEL, SCOUTLINE_JUDGE_TRANSMIT.",
+      );
+    }
+  }
+}
+
+/**
+ * The public native judge selection (dual-route Jev).
+ *
+ * The pure settings resolve ONCE through the shared judge-config
+ * resolver (route > stored route > openrouter; env model > stored
+ * model > shipped default; env consent > stored consent > false; env
+ * selected-route key > stored key). The selected profile is then
+ * constructed for real:
+ *
+ *   - openrouter → the OpenRouter System One facade,
+ *   - typesafe  → the direct native facade,
+ *
+ * both from the SAME profile and both wired to the EXACT handler-owned
+ * `reserveAttempt` closure. There is no route/model fallback and no
+ * silent deterministic downgrade: a selected profile that fails stays
+ * failed.
+ *
+ * Disabled selection (no consent) yields null callbacks and NO trusted
+ * descriptor — credentials alone are inert.
  */
 export function selectRequirementsJudge(
   env: NodeJS.ProcessEnv,
   reserveAttempt: () => void,
-): { judge: RequirementsJudgeFn | null; candidateJudge: RequirementsJudgeFn | null } {
-  const key = env.TYPESAFE_API_KEY;
-  const consent = env.SCOUTLINE_JUDGE_TRANSMIT === "1";
-  if (key === undefined && !consent) {
-    // Probe the closed-selection validation (rejects malformed
-    // overrides) then return the approved absent profile.
-    resolveTypesafeJudgeProfile(
-      {
-        env: { TYPESAFE_MODEL: env.TYPESAFE_MODEL, TYPESAFE_ENDPOINT: env.TYPESAFE_ENDPOINT },
-        transmitConsent: false,
-      },
-      { apiKey: "probe-not-used", reserveAttempt },
-    );
-    return { judge: null, candidateJudge: null };
-  }
-  if (key === undefined || !consent) {
-    throw new ValidationError(
-      "requirements-mode judge selection is incomplete: TYPESAFE_API_KEY and SCOUTLINE_JUDGE_TRANSMIT=1 must be supplied together (credentials alone are not consent; consent alone has no judge).",
-    );
-  }
-  const profile = resolveTypesafeJudgeProfile(
-    { env, transmitConsent: true },
-    { apiKey: key, reserveAttempt },
-  );
-  if (profile === null) {
-    throw new ValidationError("requirements-mode judge profile resolved to null after explicit selection.");
-  }
+  storedSettings?: JudgeSettings,
+): {
+  judge: RequirementsJudgeFn | null;
+  candidateJudge: RequirementsJudgeFn | null;
+  descriptor?: JudgeDescriptor;
+} {
+  assertSupportedJudgeControls(env);
+  const selection = resolveJudgeSettings(env, storedSettings ?? {});
+  if (!selection.enabled) return { judge: null, candidateJudge: null };
+  const deps: TypesafeJudgeDeps = { apiKey: selection.apiKey, reserveAttempt };
+  const profile =
+    selection.route === "openrouter"
+      ? createOpenRouterJudge(deps, selection.model)
+      : createSelectedNativeJudge("typesafe", deps, selection.model);
   return {
     judge: profile.judge as unknown as RequirementsJudgeFn,
     candidateJudge: profile.candidateJudge as unknown as RequirementsJudgeFn,
+    descriptor: profile.descriptor,
   };
 }
 
@@ -668,14 +737,14 @@ async function raceWithInterrupt<T>(work: Promise<T>, owned: OwnedInterruption):
 }
 
 export async function withRequirementsRuntime<T>(input: unknown, deps: InvestigateRequirementsDeps, host: RuntimeContextHost,
-  execute: (input: unknown, unified: LeanUnifiedDeps, observation: () => CallerPhysicalSnapshot) => Promise<{ result: LeanResult; value: T }>, signal?: AbortSignal): Promise<{ value: T; projected: CommandResult; secrets: string[] }> {
+  execute: (input: unknown, unified: LeanUnifiedDeps, observation: () => CallerPhysicalSnapshot, judgeDescriptor?: JudgeDescriptor) => Promise<{ result: LeanResult; value: T }>, signal?: AbortSignal): Promise<{ value: T; projected: CommandResult; secrets: string[] }> {
   const owned = beginOwnedInterruption(deps);
   const abort = (): void => owned.controller.abort();
   signal?.addEventListener("abort", abort, { once: true }); if (signal?.aborted) abort();
   try {
     let value!: T;
-    const run = await runWithRuntime(input, deps, host, owned, async (contract, unified, observation) => {
-      const answer = await execute(contract, unified, observation); value = answer.value; return answer.result;
+    const run = await runWithRuntime(input, deps, host, owned, async (contract, unified, observation, judgeDescriptor) => {
+      const answer = await execute(contract, unified, observation, judgeDescriptor); value = answer.value; return answer.result;
     });
     // Caller adapter returns an inspectable cancelled handoff; ordinary requirements still settle 130 above.
     return { value, projected: projectResult(run.result, run.secrets, host, run.physical, run.provenance), secrets: run.secrets };
@@ -731,12 +800,34 @@ export async function handleInvestigateRequirements(
 
 /** Compose the runtime (injected or production default), run the
  *  engine, and collect the physical totals. */
+/**
+ * The run's OWN judge-settings snapshot.
+ *
+ * The caller's settings object (and its nested route profiles) may be
+ * mutated by anyone at any time — including while the asynchronous quota
+ * setup below is pending. The run therefore owns a VALIDATED CLONE taken
+ * before that await: `parseJudgeSettings` re-validates the accepted shape and
+ * returns fresh objects, so no nested profile is borrowed. Only this clone is
+ * frozen; the caller's object is never frozen, mutated or adopted. Absent
+ * settings stay absent.
+ */
+function ownJudgeSettings(settings: JudgeSettings | undefined): JudgeSettings | undefined {
+  if (settings === undefined) return undefined;
+  const parsed = parseJudgeSettings(settings);
+  const owned: JudgeSettings = { ...parsed };
+  for (const route of ["openrouter", "typesafe"] as const) {
+    const profile = owned[route];
+    if (profile !== undefined) owned[route] = Object.freeze({ ...profile });
+  }
+  return Object.freeze(owned);
+}
+
 async function runWithRuntime(
   input: unknown,
   deps: InvestigateRequirementsDeps,
   host: RuntimeContextHost,
   owned: OwnedInterruption,
-  execute: (input: unknown, deps: LeanUnifiedDeps, observation: () => CallerPhysicalSnapshot) => Promise<LeanResult> = runLeanInvestigation,
+  execute: (input: unknown, deps: LeanUnifiedDeps, observation: () => CallerPhysicalSnapshot, judgeDescriptor?: JudgeDescriptor) => Promise<LeanResult> = runLeanInvestigation,
 ): Promise<{
   result: LeanResult;
   secrets: string[];
@@ -783,6 +874,14 @@ async function runWithRuntime(
   const now = deps.now;
 
   const runtime = deps.requirementsRuntime ?? defaultRequirementsRuntime;
+  // OWNED selection snapshot: the judge-relevant environment and the
+  // config's judge section are captured HERE — BEFORE the asynchronous
+  // quota setup below — so a stalled or injected callback cannot change
+  // the selected route, model or key midway through the run. The
+  // captured env is a shallow copy owned by this run; the judge settings
+  // are this run's OWN validated clone (never the caller's object).
+  const capturedEnv: NodeJS.ProcessEnv = { ...(host.env ?? {}) };
+  const capturedJudgeSettings = ownJudgeSettings(host.judgeSettings);
   // Selection snapshot (findings 4/6): the dispatcher-supplied
   // fail-open read of the production quotaStore, awaited ONCE here and
   // only when the lane actually resolves a provider. Undefined stays
@@ -831,7 +930,7 @@ async function runWithRuntime(
     runPhysical += 1;
   };
   const context: RequirementsRuntimeContext = {
-    ...runtimeContextFrom({ ...host, quotaState: snapshot }),
+    ...runtimeContextFrom({ ...host, env: capturedEnv, judgeSettings: capturedJudgeSettings, quotaState: snapshot }),
     // The producer's pre-dispatch admission: reserve FIRST (a refusal
     // throws before any producer side effect), then count the one
     // dispatch that reservation admitted. Authoritative producer count —
@@ -1022,7 +1121,7 @@ async function runWithRuntime(
     validateCallerPhysical(snapshot); return JSON.parse(JSON.stringify(snapshot)) as CallerPhysicalSnapshot;
   };
   let result: LeanResult;
-  try { result = await execute(input, unified, observation); }
+  try { result = await execute(input, unified, observation, composed.judgeDescriptor); }
   catch (error) { throw measurementError ?? error; }
   if (measurementError) throw measurementError;
   safeSum(physical.acquisitionAttempts,physical.judgeDispatches,physical.producerDispatches);
@@ -1104,6 +1203,12 @@ interface RuntimeContextHost {
    *  when no snapshot was threaded — never refreshes, never transports. */
   readonly readQuotaSnapshot?: () => unknown;
   readonly providerDescriptors?: readonly ProviderDescriptor[];
+  /**
+   * The owned judge-settings snapshot from the loaded config (frozen
+   * clone). Absent → the runtime sees no stored judge preferences and
+   * resolves from the environment alone.
+   */
+  readonly judgeSettings?: JudgeSettings;
 }
 
 function runtimeContextFrom(host: RuntimeContextHost): RequirementsRuntimeContext {
@@ -1147,6 +1252,7 @@ function runtimeContextFrom(host: RuntimeContextHost): RequirementsRuntimeContex
     cache: host.noCache === true ? nullCache() : host.cache ?? nullCache(),
     sleep: host.sleep ?? realSleep,
     random: host.random ?? Math.random,
+    judgeSettings: host.judgeSettings,
   };
 }
 
@@ -1172,7 +1278,7 @@ const defaultRequirementsRuntime: RequirementsRuntimeFactory = (context) => {
       `provider "${provider}" does not serve both search and reader in requirements mode.`,
     );
   }
-  const secrets = [env.TYPESAFE_API_KEY].filter((v): v is string => typeof v === "string" && v !== "");
+  const secrets = collectJudgeSecrets(env, context.judgeSettings ?? {});
 
   // Production runtime's budget view (final boundary repair, root 1):
   // there is NO second counter here. The handler's single pre-dispatch
@@ -1189,7 +1295,12 @@ const defaultRequirementsRuntime: RequirementsRuntimeFactory = (context) => {
     );
   }
   const MAX_RUN_PHYSICAL_ATTEMPTS = physicalAttemptCeiling(env);
-  const judge = selectRequirementsJudge(env, reserveRun);
+  // The public native selection resolves ONCE here: a refused selection
+  // (unsupported control, consent without the selected route's
+  // credential, unsupported model) throws BEFORE the acquisition
+  // options exist, so no HTTP, no record mutation and no incidental
+  // quota refresh can follow it.
+  const judge = selectRequirementsJudge(env, reserveRun, context.judgeSettings);
   return {
     acquisitionOptions: {
       searchDescriptor: descriptor,
@@ -1215,6 +1326,10 @@ const defaultRequirementsRuntime: RequirementsRuntimeFactory = (context) => {
     },
     secrets,
     judgeAdmission: "shared",
+    // The TRUSTED descriptor of the profile that was actually
+    // constructed. Disabled selection produces none — the caller then
+    // uses the no-judge path instead of a native certification.
+    ...(judge.descriptor !== undefined ? { judgeDescriptor: judge.descriptor } : {}),
   };
 };
 

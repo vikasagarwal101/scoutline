@@ -30,7 +30,7 @@ async function run({cap=48, observe=false, producer=false}={}) {
     throw new Error(`Unexpected HTTP blocked: ${target}`);
   };
   const stdout=[],stderr=[];
-  const env={TAVILY_API_KEY:'synthetic-acquisition-key',TYPESAFE_API_KEY:'synthetic-judge-key',SCOUTLINE_JUDGE_TRANSMIT:'1',SCOUTLINE_REQUIREMENTS_MAX_PHYSICAL:String(cap),SCOUTLINE_CONFIG_DIR:join(sandbox,'config'),SCOUTLINE_CACHE_DIR:join(sandbox,'cache'),SCOUTLINE_ARTIFACTS_DIR:join(sandbox,'artifacts')};
+  const env={TAVILY_API_KEY:'synthetic-acquisition-key',TYPESAFE_API_KEY:'synthetic-judge-key',SCOUTLINE_JUDGE:'typesafe',SCOUTLINE_JUDGE_TRANSMIT:'1',SCOUTLINE_REQUIREMENTS_MAX_PHYSICAL:String(cap),SCOUTLINE_CONFIG_DIR:join(sandbox,'config'),SCOUTLINE_CACHE_DIR:join(sandbox,'cache'),SCOUTLINE_ARTIFACTS_DIR:join(sandbox,'artifacts')};
   const deps=hermeticMainDeps({env,invocation:{stdoutIsTTY:false,stdinIsTTY:false,readStdin:async()=>'',writeStdout:s=>stdout.push(s),writeStderr:s=>stderr.push(s),runQuietly:async op=>op(),setExitCode:()=>{}}});
   if(observe) deps.requirementsRuntime = context => {
     const reserve=()=>{try {context.reserveAttempt();} catch(e) {refusals.push(e); throw e;}};
@@ -86,9 +86,13 @@ import * as pureOutput from '../dist/lib/output.js';
 const pureCopy=value=>structuredClone(value);
 const pureHash=value=>crypto.createHash('sha256').update(value).digest('hex');
 const pureContract=()=>({schemaVersion:1,question:'Version?',requirements:{version:{question:'Version?',schema:{type:'string'}}},limits:{maxSearchAttempts:1,maxUniqueReads:1,maxJudgeAttempts:1}});
+/** Scalar-only observation of the options the compiled handler actually passes
+ *  into executeCallerInvestigation. Callback presence is recorded as a
+ *  boolean; functions are never cloned or serialized. */
+const observeCallerOptions=options=>{const o=options??{},deps=o.deps??{};return {judgeIdentity:o.judgeIdentity,policyRevision:o.policyRevision,judgePresent:deps.judge!==null&&deps.judge!==undefined,candidateJudgePresent:deps.candidateJudge!==null&&deps.candidateJudge!==undefined};};
 async function pureFixture(config={}) {
   let nextReference=0;
-  const records=new Map(), gates={create:null}, calls={create:0,begin:0,release:0,search:[],producer:0,resolved:[],unregister:0,sink:[],rankingInputs:[],runtimeInputs:[],formatSecrets:[]};
+  const records=new Map(), gates={create:null}, calls={create:0,begin:0,release:0,search:[],producer:0,resolved:[],unregister:0,sink:[],rankingInputs:[],runtimeInputs:[],callerOptions:[],formatSecrets:[]};
   let createReached;const reached=new Promise(resolve=>{createReached=resolve;});
   const store={
     recoveryRecords:[],
@@ -117,11 +121,13 @@ async function pureFixture(config={}) {
     'lib/lean-acquisition-bridge.js':synthetic({createLeanAcquisitionDeps:()=>({search:async q=>{calls.search.push(q);config.onSearch?.();return [];},read:async()=>''})},'successful-memory-acquisition'),
     'lib/quota-store.js':synthetic({[horizonName]:constantCompiled.value},'source-verified-single-constant-only'),
     'providers/registry.js':inert('registry',['getProviderDescriptor','getConfiguredProviderDescriptors']),
-    'lib/lean-typesafe-judge.js':inert('native-judge',['resolveTypesafeJudgeProfile']),
+    'lib/lean-typesafe-judge.js':inert('native-judge',['resolveTypesafeJudgeProfile','createSelectedNativeJudge']),
+    'lib/lean-openrouter-judge.js':inert('openrouter-judge',['createOpenRouterJudge']),
   };
   for(const [provider,name]of [['tavily','Tavily'],['exa','Exa'],['firecrawl','Firecrawl'],['linkup','Linkup'],['spider','Spider']])fixed[`providers/${provider}/adapter.js`]=inert(provider,[`create${name}Descriptor`]);
   fixed['test:runtime-input-observer']=synthetic({observe:input=>calls.runtimeInputs.push(pureCopy(input))},'test-only-input-observer');
-  const bodies=new Set(['commands/investigate-caller.js','commands/investigate-requirements.js','lib/caller-investigation.js','lib/lean-caller-rounds.js','lib/caller-physical.js','providers/selection.js','providers/types.js','lib/quota-mapping.js']);
+  fixed['test:caller-options-observer']=synthetic({observe:options=>calls.callerOptions.push(observeCallerOptions(options))},'test-only-caller-options-observer');
+  const bodies=new Set(['commands/investigate-caller.js','commands/investigate-requirements.js','lib/caller-investigation.js','lib/lean-caller-rounds.js','lib/caller-physical.js','providers/selection.js','providers/types.js','lib/quota-mapping.js','lib/judge-config.js']);
   for(const name of ['lib/lean-investigation','lib/lean-candidates','lib/lean-composed-stop','lib/errors','lib/redact','lib/output'])for(const ext of ['src','dist']){const url=new URL(`../${ext}/${name}.${ext==='src'?'ts':'js'}`,import.meta.url);hashes[url.href]=pureHash(readFileSync(url));}
   const load=name=>{if(modules.has(name))return modules.get(name);
     if(config.observeRuntimeInput&&name==='commands/investigate-requirements.js'){
@@ -130,18 +136,26 @@ async function pureFixture(config={}) {
     if(name==='commands/actual-investigate-requirements.js'){
       const bytes=readFileSync(new URL('../dist/commands/investigate-requirements.js',import.meta.url));const actual=new SourceTextModule(bytes.toString(),{identifier:new URL('../dist/commands/actual-investigate-requirements.js',import.meta.url).href});hashes['actual-delegated-runtime']=pureHash(bytes);modules.set(name,actual);return actual;
     }
+    if(config.observeCallerOptions&&name==='lib/caller-investigation.js'){
+      const facade=new SourceTextModule(`export * from './actual-caller-investigation.js'; import {executeCallerInvestigation as actual} from './actual-caller-investigation.js'; import {observe} from 'test:caller-options-observer'; export function executeCallerInvestigation(...args){observe(args[1]);return Reflect.apply(actual,this,args);}`,{identifier:new URL('../dist/commands/caller-options-observer.js',import.meta.url).href});modules.set(name,facade);return facade;
+    }
+    if(name==='commands/actual-caller-investigation.js'){
+      // The delegated module keeps its OWN directory so its sibling imports
+      // (./errors.js, ./redact.js, ...) resolve exactly as they do in dist/lib.
+      const bytes=readFileSync(new URL('../dist/lib/caller-investigation.js',import.meta.url));const actual=new SourceTextModule(bytes.toString(),{identifier:new URL('../dist/lib/actual-caller-investigation.js',import.meta.url).href});hashes['actual-delegated-caller-investigation']=pureHash(bytes);modules.set(name,actual);return actual;
+    }
 if(fixed[name]){modules.set(name,fixed[name]);return fixed[name];}assert(bodies.has(name),`Unauthorized module ${name}`);const url=new URL(`../dist/${name}`,import.meta.url),bytes=readFileSync(url);hashes[url.href]=pureHash(bytes);hashes[new URL(`../src/${name.replace(/\.js$/,'.ts')}`,import.meta.url).href]=pureHash(readFileSync(new URL(`../src/${name.replace(/\.js$/,'.ts')}`,import.meta.url)));const module=new SourceTextModule(bytes.toString(),{identifier:url.href});modules.set(name,module);return module;};
   const caller=load('commands/investigate-caller.js');
-  await caller.link((specifier,importing)=>{const name=specifier.startsWith('node:')||specifier==='test:runtime-input-observer'?specifier:new URL(specifier,importing.identifier).pathname.split('/dist/')[1];assert(name);links.push({from:importing.identifier,specifier,target:name});return load(name);});
+  await caller.link((specifier,importing)=>{const name=specifier.startsWith('node:')||specifier==='test:runtime-input-observer'||specifier==='test:caller-options-observer'?specifier:new URL(specifier,importing.identifier).pathname.split('/dist/')[1];assert(name);links.push({from:importing.identifier,specifier,target:name});return load(name);});
   await caller.evaluate();
   const noRankingAccess=label=>new Proxy([],{get(_target,key){calls.rankingInputs.push(`${label}:${String(key)}`);throw new Error('Explicit provider must bypass ranking inputs');}});
   const host={provider:' TaViLy ',quotaState:noRankingAccess('quota'),providerDescriptors:noRankingAccess('descriptors'),env:config.env??{},secrets:config.secrets??[]};
   let interrupt;
   const deps={now:()=>0,readFile:async()=>{throw new Error('No input file read permitted');},readStdin:async()=>{throw new Error('No stdin permitted');},registerUserInterrupt:fn=>{interrupt=fn;return()=>{calls.unregister++;};},onResolvedProvider:p=>calls.resolved.push(p),onRuntimeSecrets:values=>{calls.sink.push(values);config.onRuntimeSecrets?.(values);},requirementsRuntime:context=>{
     if(config.runtimeError)throw config.runtimeError;
-    return {acquisitionOptions:{},engineDeps:{judge:null,candidateJudge:null,...(config.producer===false?{}:{extract:async()=>{calls.producer++;if(config.observe)context.observeProducerDispatch();return {rawOutput:'{}',attempts:config.attempts};}})},...(config.declared?{producerPhysical:{reserve:context.observeProducerDispatch}}:{}),secrets:config.runtimeSecrets??[]};
+    return {acquisitionOptions:{},engineDeps:{judge:config.judge??null,candidateJudge:config.candidateJudge??null,...(config.producer===false?{}:{extract:async()=>{calls.producer++;if(config.observe)context.observeProducerDispatch();return {rawOutput:'{}',attempts:config.attempts};}})},...(config.declared?{producerPhysical:{reserve:context.observeProducerDispatch}}:{}),secrets:config.runtimeSecrets??[]};
   }};
-  const f={store,api:load('lib/caller-investigation.js').namespace,rounds:load('lib/lean-caller-rounds.js').namespace,requirements:load('commands/investigate-requirements.js').namespace,handler:caller.namespace.handleInvestigateCaller,calls,gates,reached,host,deps,interrupt:()=>{assert(interrupt);interrupt();},binding:{hashes,links,constantSource,constantCompiled,unused},check(){assert.deepEqual(Object.values(unused),Array(8).fill(0));assert.deepEqual(calls.rankingInputs,[]);assert(calls.resolved.every(p=>p==='tavily'));}};
+  const f={store,api:load('lib/caller-investigation.js').namespace,rounds:load('lib/lean-caller-rounds.js').namespace,requirements:load('commands/investigate-requirements.js').namespace,handler:caller.namespace.handleInvestigateCaller,calls,gates,reached,host,deps,interrupt:()=>{assert(interrupt);interrupt();},binding:{hashes,links,constantSource,constantCompiled,unused},check(){assert.deepEqual(Object.values(unused),Array(10).fill(0));assert.deepEqual(calls.rankingInputs,[]);assert(calls.resolved.every(p=>p==='tavily'));}};
   return f;
 }
 
@@ -204,6 +218,36 @@ test('L7 pure F4: readonly secret ownership preserves runtime sink and redaction
     assert(body.data.content.includes('[REDACTED]'));assert(!body.data.content.includes(judgeKey));assert(!body.data.content.includes(runtimeKey));assert.equal(forwarded.length,1,'offline read must not initialize runtime');f.check();
   }
   console.log(JSON.stringify({family:'F4',frozenAndSharedListsPreserved:true,dynamicRuntimeBasisAndSink:true,binding:offline.binding}));
+});
+
+test('L7 pure F5: a candidate-only semantic collaborator keeps the caller identity opaque',async()=>{
+  const request={schemaVersion:1,operation:'start',requirements:pureContract(),dataScope:'synthetic'};
+  // The observation seam records the identity options the COMPILED handler
+  // actually passes into the ACTUAL executeCallerInvestigation, then delegates.
+  const candidateOnly=await pureFixture({producer:false,observeCallerOptions:true,candidateJudge:async()=>({documents:[]})});
+  await candidateOnly.handler(request,'memory',candidateOnly.deps,candidateOnly.host);
+  assert.equal(candidateOnly.calls.callerOptions.length,1,'the compiled handler reached the actual investigation seam exactly once');
+  const observed=candidateOnly.calls.callerOptions[0];
+  assert.equal(observed.candidateJudgePresent,true,'the candidate-only runtime really carries a candidate judge');
+  assert.equal(observed.judgePresent,false,'no judge collaborator is present in the candidate-only case');
+  assert.equal(observed.judgeIdentity,undefined,'a candidate-only collaborator is never certified as the no-judge identity');
+  assert.equal(observed.policyRevision,undefined,'a candidate-only collaborator carries no policy revision');
+  candidateOnly.check();
+  const judgeOnly=await pureFixture({producer:false,observeCallerOptions:true,judge:async()=>({documents:[]})});
+  await judgeOnly.handler(request,'memory',judgeOnly.deps,judgeOnly.host);
+  const judgeObserved=judgeOnly.calls.callerOptions[0];
+  assert.equal(judgeObserved.judgePresent,true,'the judge-only runtime really carries a judge');
+  assert.equal(judgeObserved.candidateJudgePresent,false,'no candidate judge is present in the judge-only case');
+  assert.equal(judgeObserved.judgeIdentity,undefined,'a judge-only collaborator stays unknown as well');
+  judgeOnly.check();
+  const neither=await pureFixture({producer:false,observeCallerOptions:true});
+  await neither.handler(request,'memory',neither.deps,neither.host);
+  const bare=neither.calls.callerOptions[0];
+  assert.equal(bare.judgePresent,false);assert.equal(bare.candidateJudgePresent,false);
+  assert.equal(bare.judgeIdentity,'no-judge','both collaborators absent is exactly the no-judge identity');
+  assert.equal(bare.policyRevision,'caller-v1');
+  neither.check();
+  console.log(JSON.stringify({family:'F5',candidateOnlyIdentity:observed.judgeIdentity,judgeOnlyIdentity:judgeObserved.judgeIdentity,bothAbsentIdentity:bare.judgeIdentity,binding:candidateOnly.binding}));
 });
 
 

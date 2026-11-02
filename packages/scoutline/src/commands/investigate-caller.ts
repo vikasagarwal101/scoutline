@@ -1,7 +1,9 @@
+import { createHash } from "node:crypto";
 import { ScoutlineError, ValidationError } from "../lib/errors.js";
 import { executeCallerInvestigation, validateCallerRequest, validateCallerRequirementIds } from "../lib/caller-investigation.js";
 import { readCallerRecord } from "../lib/lean-caller-rounds.js";
 import { readRequirementsFileBounded, MAX_REQUIREMENTS_BYTES, withRequirementsRuntime, type InvestigateRequirementsDeps } from "./investigate-requirements.js";
+import { collectJudgeSecrets, type JudgeDescriptor } from "../lib/judge-config.js";
 import type { CommandResult } from "../command-invocation.js";
 
 export const INVESTIGATE_CALLER_HELP = `
@@ -13,7 +15,9 @@ EXPERIMENTAL caller-assisted operations:
   Start IDs: [A-Za-z0-9_-]{1,64}; continuation IDs remain bounded to 128 UTF-8 bytes.
   Unsafe recovery profiles refuse before work. A committed-view error carries
   an inspect selector in JSON help; do not repeat the mutation.
-  Inspect/readEvidence/delete are offline and credential-free.
+  Start/continue use the shared judge selection. Inspect/readEvidence/delete
+  are offline and credential-free but read local config for redaction; an
+  unsafe, corrupt or unreadable basis refuses before deletion.
   maxChars defaults to 16384 (1024..65536; mutating header minimum 8192).
   Records: SCOUTLINE_INVESTIGATIONS_DIR or <config-root>/investigations.
 `;
@@ -43,11 +47,65 @@ export async function readCallerRequest(source: {kind:"file";path:string}|{kind:
   let request:unknown;try{request=JSON.parse(text);}catch{throw new ValidationError("Caller request is not valid JSON.");}
   validateCallerRequest(request);return request;
 }
+/** Bounded non-secret digest of the selected native judge's canonical
+ *  descriptor fields. No key, no credential fingerprint and no request
+ *  content enters the hash — only the explicit route/policy identity. */
+function sha256Hex(value:string):string{return createHash("sha256").update(value,"utf8").digest("hex");}
+
+/**
+ * The caller's semantic identity for one round.
+ *
+ *   - a TRUSTED descriptor (produced by the profile factory that
+ *     actually constructed the native judge) yields the bounded native
+ *     hashes. A route, model, expected-resolved-model or policy change
+ *     changes the hash, so a retained acceptance can never suppress a
+ *     required rejudgment;
+ *   - NO descriptor while a semantic collaborator IS present stays
+ *     UNKNOWN (no identity at all): an opaque injected judge is never
+ *     certified as native, and a credential's presence never derives an
+ *     identity. EITHER collaborator counts — a runtime that carries only a
+ *     candidate judge is still a semantic runtime;
+ *   - no descriptor and no collaborator is the no-judge case.
+ */
+function callerJudgeIdentity(descriptor:JudgeDescriptor|undefined, hasSemanticCollaborator:boolean):{
+  judgeIdentity?:string;policyRevision?:string;
+}{
+  if(descriptor!==undefined){
+    const identityFields=JSON.stringify([
+      descriptor.route,
+      descriptor.endpoint,
+      descriptor.requestedModel,
+      descriptor.expectedResolvedModel,
+      descriptor.questionRevision,
+      descriptor.thresholdRevision,
+      descriptor.uncertaintyRevision,
+      descriptor.maxAttempts,
+      descriptor.allowFallbacks,
+    ]);
+    const policyFields=JSON.stringify([
+      descriptor.questionRevision,
+      descriptor.thresholdRevision,
+      descriptor.uncertaintyRevision,
+      descriptor.maxAttempts,
+      descriptor.allowFallbacks,
+    ]);
+    return {judgeIdentity:`native-jev:${sha256Hex(identityFields)}`,policyRevision:`native-jev-policy-v1:${sha256Hex(policyFields)}`};
+  }
+  if(hasSemanticCollaborator)return {};
+  return {judgeIdentity:"no-judge",policyRevision:"caller-v1"};
+}
+
 export async function handleInvestigateCaller(request:unknown, storeRoot:string, deps:InvestigateRequirementsDeps,
   host:Parameters<typeof withRequirementsRuntime>[2]):Promise<CommandResult>{
   validateCallerRequest(request);const req=request as Record<string,any>;
+  // Redaction basis (F5): the invocation's own secret list UNION the
+  // COMPLETE judge-secret union — both routes' env keys AND both stored
+  // route keys, including an inactive or overridden one. A credential
+  // that is not the selected route's is still a credential.
   const secrets=[...(host.secrets??[])];
-  if(host.env?.TYPESAFE_API_KEY&&!secrets.includes(host.env.TYPESAFE_API_KEY))secrets.push(host.env.TYPESAFE_API_KEY);
+  for(const value of collectJudgeSecrets(host.env??{},host.judgeSettings??{})){
+    if(value&&!secrets.includes(value))secrets.push(value);
+  }
   if(!["start","continue"].includes(req.operation)){
     const data=await executeCallerInvestigation(request,{storeRoot,secrets});return {kind:"data",data,exitCode:0};
   }
@@ -56,11 +114,12 @@ export async function handleInvestigateCaller(request:unknown, storeRoot:string,
   const runtime=await withRequirementsRuntime(contract,{...deps,onRuntimeSecrets:values=>{
     for(const value of values)if(value&&!secrets.includes(value))secrets.push(value);
     deps.onRuntimeSecrets?.(values);
-  }},host,async (_contract,unified,nativeObservation)=>{
+  }},host,async (_contract,unified,nativeObservation,judgeDescriptor)=>{
     let data: Awaited<ReturnType<typeof executeCallerInvestigation>>;
     try {
+      const identity=callerJudgeIdentity(judgeDescriptor,unified.judge!==null||unified.candidateJudge!==null);
       data=await executeCallerInvestigation(request,{storeRoot,deps:unified,secrets,nativeObservation,
-        judgeIdentity:host.env?.TYPESAFE_API_KEY?"direct-typesafe":"no-judge",policyRevision:"caller-v1"});
+        ...identity});
     } catch(error) {
       if(unified.externalSignal?.aborted && error instanceof ValidationError && error.code==="VALIDATION_ERROR" && error.message==="Round cancelled before dispatch.") {
         throw new ScoutlineError(error.message,error.code,{statusCode:error.statusCode,help:error.help,

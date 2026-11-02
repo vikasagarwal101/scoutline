@@ -36,8 +36,8 @@ after(async()=>{await rm(sandbox,{recursive:true,force:true});});
 const preload = join(sandbox, 'refuse-network.mjs');
 await writeFile(preload, `import http from 'node:http'; import https from 'node:https';
 const refuse=()=>{throw new Error('REAL_NETWORK_FORBIDDEN')};http.request=refuse;https.request=refuse;
-globalThis.fetch=async(url,init)=>{process.stderr.write('OFFLINE_HTTP_ATTEMPT\\n');
-const p=new URL(url).pathname;return new Response(JSON.stringify(p==='/search'?{results:[]}:{results:[{url:'https://offline.test/final',raw_content:'offline content'}]}));};`);
+globalThis.fetch=async(url,init)=>{const target=new URL(url);process.stderr.write('OFFLINE_HTTP_ATTEMPT '+target.hostname+'\\n');
+if(target.hostname!=='api.tavily.com'||!['/search','/extract'].includes(target.pathname))throw Error('UNAPPROVED_OFFLINE_ENDPOINT');const p=target.pathname;return new Response(JSON.stringify(p==='/search'?{results:[]}:{results:[{url:'https://offline.test/final',raw_content:'offline content'}]}));};`);
 function child(args, extra = {}, stdin = '') {
   return new Promise((resolve, reject) => {
     const proc = spawn(process.execPath, ['--import', preload, ...args], { cwd: root, env: { PATH: process.env.PATH, NODE_OPTIONS:process.env.NODE_OPTIONS,TMPDIR:process.env.TMPDIR, HOME: sandbox, SCOUTLINE_CONFIG_DIR: join(sandbox, 'config'), SCOUTLINE_CACHE_DIR: join(sandbox, 'cache'), SCOUTLINE_ARTIFACTS_DIR: join(sandbox, 'artifacts'), TAVILY_API_KEY: 'sentinel-ambient-not-a-real-key', ...extra }, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -59,14 +59,22 @@ test('actual stdin pipe is read and validated, not treated as a zero-length regu
   assert.doesNotMatch(result.stderr, /not valid JSON|Unexpected end of JSON input/, 'valid pipe bytes must not disappear');
 });
 
-test('judge credentials without transmit consent fail closed before acquisition, not deterministic-only downgrade', async () => {
-  const result = await child([script, 'investigate', '--requirements-json', JSON.stringify(input())], { TYPESAFE_API_KEY: 'synthetic-partial-key' });
-  const error=assertionErrorDocument(result.stderr);
-  assertionSnapshot('consent-cold',{...result,...assertionStdout(result.stdout),error,httpMarkers:result.stderr.match(/OFFLINE_HTTP_ATTEMPT/g)??[]});
-  assert.equal(result.code,1);assert.equal(result.stdout,'');assert.equal(error?.success,false);assert.equal(error?.code,'VALIDATION_ERROR');
-  assert.equal(error.error,"requirements-mode judge selection is incomplete: TYPESAFE_API_KEY and SCOUTLINE_JUDGE_TRANSMIT=1 must be supplied together (credentials alone are not consent; consent alone has no judge).");
-  assert.equal(result.calls, 0);
-  assert.doesNotMatch(result.stdout, /deterministic-only/);
+for (const [route, keyName] of [['typesafe', 'TYPESAFE_API_KEY'], ['openrouter', 'OPENROUTER_API_KEY']]) test(`judge ${route} credential without transmit consent stays inert`, async () => {
+  // MIGRATION (dual-route Jev): credentials alone are NOT consent, so a
+  // bare credential no longer refuses. It stays INERT — the run stays
+  // deterministic-only and no judge request is made. Acquisition may
+  // run inside the existing bounds; it is NOT native work.
+  const result = await child([script, 'investigate', '--requirements-json', JSON.stringify(input())], { SCOUTLINE_JUDGE: route, [keyName]: 'synthetic-partial-key' });
+  const document=assertionStdout(result.stdout);
+  assertionSnapshot('consent-cold',{...result,...document,httpMarkers:result.stderr.match(/OFFLINE_HTTP_ATTEMPT/g)??[]});
+  assert.equal(result.code,1);
+  assert.equal(document.parseError,null,`expected a delivered envelope: ${result.stderr}`);
+  assert.equal(document.envelope.assessment,'deterministic-only');
+  assert.equal(document.envelope.usage.judgeCalls,0);
+  assert.equal(document.envelope.usage.candidateJudgeCalls,0);
+  assert.equal(document.envelope.admission.judge,undefined,'an inert credential configures no judge stage');
+  assert.doesNotMatch(result.stdout,/synthetic-partial-key/,'an inert credential never reaches the output');
+  assert.doesNotMatch(result.stderr,/OFFLINE_HTTP_ATTEMPT (?:api\.typesafe\.ai|openrouter\.ai)/,'neither native endpoint was contacted');
 });
 
 test('bridge reused sequentially with same transport binds second run signal and its own physical budget', async () => {

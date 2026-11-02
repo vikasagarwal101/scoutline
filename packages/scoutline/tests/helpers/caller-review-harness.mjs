@@ -13,7 +13,7 @@ export const content='ExampleApp release 2.4.0. License MIT applies to release 2
 export async function sandbox() {
   const path=await mkdtemp(join(tmpdir(),'compiled-caller-proof-'));
   const home=await mkdtemp(join(tmpdir(),'caller-review-home-'));
-  const env={PATH:'/usr/bin:/bin',HOME:home,NODE_OPTIONS:process.env.NODE_OPTIONS,TMPDIR:process.env.TMPDIR,XDG_CONFIG_HOME:join(home,'xdg-config'),XDG_CACHE_HOME:join(home,'xdg-cache'),SCOUTLINE_CONFIG_DIR:join(path,'config'),SCOUTLINE_CACHE_DIR:join(path,'cache'),SCOUTLINE_ARTIFACTS_DIR:join(path,'artifacts'),SCOUTLINE_INVESTIGATIONS_DIR:join(path,'investigations'),TAVILY_API_KEY:'synthetic-acquisition-key',TYPESAFE_API_KEY:'synthetic-judge-key',SCOUTLINE_JUDGE_TRANSMIT:'1'};
+  const env={PATH:'/usr/bin:/bin',HOME:home,NODE_OPTIONS:process.env.NODE_OPTIONS,TMPDIR:process.env.TMPDIR,XDG_CONFIG_HOME:join(home,'xdg-config'),XDG_CACHE_HOME:join(home,'xdg-cache'),SCOUTLINE_CONFIG_DIR:join(path,'config'),SCOUTLINE_CACHE_DIR:join(path,'cache'),SCOUTLINE_ARTIFACTS_DIR:join(path,'artifacts'),SCOUTLINE_INVESTIGATIONS_DIR:join(path,'investigations'),TAVILY_API_KEY:'synthetic-acquisition-key',TYPESAFE_API_KEY:'synthetic-judge-key',SCOUTLINE_JUDGE:'typesafe',SCOUTLINE_JUDGE_TRANSMIT:'1'};
   await mkdir(env.SCOUTLINE_CONFIG_DIR,{recursive:true});
   // Empty directory intentionally has no config; default loader must not read ambient HOME.
   return {path,home,env};

@@ -457,11 +457,12 @@ accepted-only `data`, per-field outcome rows, evidence with
 original/display digests, physical HTTP accounting, `resultSha256`.
 Exit 0 complete / 1 partial. Mutually exclusive with the positional
 question and `--verify/--synthesize/--context/--sources/--max-chars`.
-Semantic judge: `TYPESAFE_API_KEY` + `SCOUTLINE_JUDGE_TRANSMIT=1`
-(both or neither; absent judge = honest deterministic-only partial;
-a selected failing judge never silently downgrades). The official
-TypeSafe route is verified only against fake-HTTP protocol fixtures —
-no live-attested service operation or calibrated accuracy is claimed.
+Semantic judging defaults to OpenRouter Jev 1.14; direct TypeSafe is
+optional. The selected route needs its own key and explicit consent; a key
+alone is inert. Without consent deterministic evaluation remains, with semantic
+fields potentially unresolved. No route/model fallback occurs. See the
+[configuration guide](../../../../docs/configuration.md#investigation-judge).
+Fake-HTTP fixtures do not establish live account access or semantic accuracy.
 Executable bounded-transport
 suppliers only (tavily, exa, firecrawl, linkup, spider — search AND
 reader over an injected transport); provider precedence preserved
@@ -510,9 +511,10 @@ Output paging is bounded with
 `maxChars` (1024..65536; mutating headers require at least 8192);
 whole metadata/body redaction runs before paging, and changed
 secret bases invalidate old cursors rather than mixing pages. Offline
-`inspect` and `readEvidence` discover configured secrets from local settings
-without provider runtime or HTTP; unreadable or corrupt settings yield a fixed
-view-unavailable response. `delete` bypasses discovery. Caller accounting
+`inspect`, `readEvidence` and `delete` read local settings for redaction
+without judge activation or HTTP. Unreadable, corrupt or unsafe secret bases
+refuse before deletion; correct the basis before retrying. Display redaction
+does not encrypt or scrub original private retained source bytes. Caller accounting
 retains complete validated stages; partial prefixes from unknown stages are
 omitted, so `knownSubtotal` is not a complete HTTP total.
 `--provider`/`--no-cache` carry over.

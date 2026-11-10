@@ -3,6 +3,7 @@ import { validateCallerPhysical, type CallerPhysicalSnapshot } from "./caller-ph
 import { ValidationError } from "./errors.js";
 import { compileLeanContract, frozenLeanQueryPlan, runLeanInvestigation, prepareLeanCallerHistory, type LeanDeps, type LeanUnifiedDeps, type LeanResult, type LeanUsage, type LeanEvidenceRecord, type LeanSeed, type LeanRoundCheckpoint } from "./lean-investigation.js";
 import { ExpectedRevisionError, CorruptRecordError, openStore, type OwnershipHandle, type RetainedRecordStore, type RevisionSnapshot, type RetainedBodyRef, type OpenStoreOptions } from "./retained-record-store.js";
+import { assertCallerUrl } from "./caller-url.js";
 
 export interface CallerProposal {
   fieldId: string; mode: "string" | "classification"; value: string;
@@ -233,8 +234,7 @@ function validateFeedback(input: StartCallerRoundInput | ContinueCallerRoundInpu
   if ((input.leads?.length ?? 0) > 32 || (input.representations?.length ?? 0) > 16 || ((input as ContinueCallerRoundInput).proposals?.length ?? 0) > 24) throw new ValidationError("Feedback count cap exceeded.");
   for (const l of input.leads ?? []) {
     if (!l || typeof l !== "object" || Array.isArray(l) || typeof l.url !== "string" || (l.title !== undefined && typeof l.title !== "string")) throw new ValidationError("Invalid URL lead.");
-    let u: URL; try { u = new URL(l.url); } catch { throw new ValidationError("Invalid URL lead."); }
-    if (!["https:", "http:"].includes(u.protocol) || u.username || u.password) throw new ValidationError("Invalid URL lead.");
+    assertCallerUrl(l.url);
   }
   for (const r of input.representations ?? []) if (!r || typeof r !== "object" || Array.isArray(r) || (Object.hasOwn(r, "claimedSource") && typeof r.claimedSource !== "string") || (r.label !== undefined && typeof r.label !== "string") || !["text", "markdown", "json"].includes(r.format) || typeof r.content !== "string" || !r.content || Buffer.byteLength(r.content) > 16384) throw new ValidationError("Invalid bounded supplied representation.");
   let text: string;
@@ -482,7 +482,16 @@ async function execute(input: StartCallerRoundInput | ContinueCallerRoundInput, 
     issuedQueries, history: checkpoint.history,
     identity, callerHistory: prepared.history,
     retainEvidence: async e => { await retain(e); }, capture: s => { checkpoint = s; }, captureUsage: u => { engineUsage = u; } };
-  const deps: { -readonly [K in keyof LeanUnifiedDeps]: LeanUnifiedDeps[K] } & { seed: LeanSeed } = { ...input.deps, seed };
+  const originalRead = input.deps.read;
+  const deps: { -readonly [K in keyof LeanUnifiedDeps]: LeanUnifiedDeps[K] } & { seed: LeanSeed } = {
+    ...input.deps, seed,
+    read: (url, options) => {
+      // Restored leads and search results pass the same screen immediately
+      // before the reader collaborator, not only at public input validation.
+      assertCallerUrl(url);
+      return originalRead.call(deps, url, options);
+    },
+  };
   const originalExtract = deps.extract;
   const stringBound = proposals.filter(p => p.mode === "string" && p.representationId !== undefined);
   if (stringBound.length > 0) deps.extract = async (request, options) => {

@@ -8,6 +8,7 @@ import * as crypto from 'node:crypto';
 import { SourceTextModule, SyntheticModule } from 'node:vm';
 import * as engine from '../dist/lib/lean-investigation.js';
 import * as errors from '../dist/lib/errors.js';
+import * as callerUrl from '../dist/lib/caller-url.js';
 
 const copy = value => structuredClone(value);
 const digest = value => crypto.createHash('sha256').update(value).digest('hex');
@@ -46,6 +47,7 @@ async function fixture(observeAdmission = false) {
   const physical = body('caller-physical'), caller = body('lean-caller-rounds');
   const modules = {
     'node:crypto': synthetic(crypto, 'real-crypto'), './errors.js': synthetic(errors, 'real-errors'),
+    './caller-url.js': synthetic(callerUrl, 'real-caller-url'),
     // Optional observation delegates unchanged to the actual engine/preflight;
     // it records their input references, never substitutes proof decisions.
     './lean-investigation.js': synthetic(observeAdmission ? { ...engine,

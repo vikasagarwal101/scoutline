@@ -641,7 +641,17 @@ continue declares `dataScope: "public" | "synthetic"`; this is a caller
 assertion, not a privacy classifier — the tool rejects a declared
 `private` scope and unsupported formats, unknown keys, malformed
 bindings and output header bounds before any HTTP, but cannot detect
-every sensitive fact inside public-labelled pasted text. The response is
+every sensitive fact inside public-labelled pasted text.
+
+Caller URL leads reject local hostname forms and non-public/special-use IP
+literals before work. The same screen runs before caller reader callbacks,
+including restored and search-discovered URLs. This does not resolve hostnames
+locally or certify a remote Reader's DNS/redirect policy: fetching is delegated
+to the selected Provider, which owns that network boundary. Qualified synthetic
+fixture names remain supported. `--help`/`-h` with either investigation input
+mode prints help without reading input, loading config or constructing a runtime.
+
+The response is
 `kind: "caller-assisted-investigation"` with investigation reference,
 revision, settled round identity, fulfillment counts, current outcome
 rows, retained evidence derivatives (original and redacted-display

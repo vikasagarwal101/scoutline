@@ -81,6 +81,37 @@ const fakeJudge = async (input) => ({
     return { evidenceId: doc.evidenceId, relevant: true, supportsClaim: doc.content.includes("CSV export is supported"), refutesClaim: false };
   }),
 });
+
+for (const source of [
+  ['--requirements', '/does-not-exist/pr294-help.json'],
+  ['--requirements-json', '{not-json'],
+  ['--caller-request', '/does-not-exist/pr294-help.json'],
+  ['--caller-request-json', '{not-json'],
+]) {
+  for (const help of ['--help', '-h']) {
+    test(`investigation ${source[0]} ${help} renders help before input/config/runtime work`, async () => {
+      const touched = [], stdout = [], stderr = [];
+      const exit = await main(['investigate', ...source, help], {
+        env: { SCOUTLINE_PROVIDER: 'not-a-provider', SCOUTLINE_JUDGE: 'not-a-route' },
+        loadScoutlineConfig: async () => { touched.push('config'); throw new Error('help must not load config'); },
+        agentRegistrationCheck: async () => { touched.push('registration'); return { refreshed: false }; },
+        requirementsUserInterrupt: () => { touched.push('interrupt'); return () => {}; },
+        requirementsRuntime: () => { touched.push('runtime'); throw new Error('help must not create a runtime'); },
+        invocation: {
+          stdoutIsTTY: false, stdinIsTTY: false, environmentOutputMode: 'data',
+          readStdin: async () => { touched.push('stdin'); throw new Error('help must not read input'); },
+          writeStdout: value => stdout.push(value), writeStderr: value => stderr.push(value),
+          runQuietly: fn => fn(), setExitCode: () => {},
+        },
+      });
+      assert.equal(exit, 0, stderr.join(''));
+      assert.match(stdout.join(''), /--requirements/);
+      assert.match(stdout.join(''), /--caller-request/);
+      assert.equal(stderr.join(''), '');
+      assert.deepEqual(touched, [], 'help must return before any lane preflight');
+    });
+  }
+}
 const failingJudge = async () => {
   const err = new Error("judge backend unavailable (guard fixture)");
   err.attempts = 2;

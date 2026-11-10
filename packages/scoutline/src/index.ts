@@ -6806,6 +6806,14 @@ export async function main(
   const command = rest[0] ?? "";
   const commandArgs = rest.slice(1);
 
+  // Experimental lane flags must not turn documentation into input parsing,
+  // record work or a paid investigation. Keep plain-mode flag precedence intact.
+  if (command === "investigate" && isCommandHelpInvocation(commandArgs) &&
+      commandArgs.some(arg => ["--requirements", "--requirements-json", "--caller-request", "--caller-request-json"].includes(arg))) {
+    invocation.writeStdout(INVESTIGATE_HELP + INVESTIGATE_REQUIREMENTS_HELP + INVESTIGATE_CALLER_HELP);
+    return 0;
+  }
+
   // Caller operation input is validated before credential/config work; offline reads never initialize a runtime.
   let callerRequest: unknown;
   let callerInterrupt: AbortController | undefined;

@@ -83,6 +83,7 @@ import * as pureEngine from '../dist/lib/lean-investigation.js';
 import * as pureErrors from '../dist/lib/errors.js';
 import * as pureRedactor from '../dist/lib/redact.js';
 import * as pureOutput from '../dist/lib/output.js';
+import * as pureCallerUrl from '../dist/lib/caller-url.js';
 const pureCopy=value=>structuredClone(value);
 const pureHash=value=>crypto.createHash('sha256').update(value).digest('hex');
 const pureContract=()=>({schemaVersion:1,question:'Version?',requirements:{version:{question:'Version?',schema:{type:'string'}}},limits:{maxSearchAttempts:1,maxUniqueReads:1,maxJudgeAttempts:1}});
@@ -116,7 +117,7 @@ async function pureFixture(config={}) {
   const constantSource=constantText('ts'),constantCompiled=constantText('js');assert.equal(constantSource.expression,constantCompiled.expression);assert.equal(constantSource.value,constantCompiled.value);assert.equal(constantCompiled.value,86400000);
   const fixed={
     'node:crypto':synthetic(crypto,'real:crypto'),'node:fs':synthetic(fs,'real:fs-unused-IO'),'node:fs/promises':synthetic(fsPromises,'real:fs-promises-unused-IO'),'node:util':synthetic(util,'real:util'),
-    'lib/errors.js':synthetic(pureErrors,'real:errors'),'lib/redact.js':synthetic(pureRedactor,'real:redactor'),'lib/output.js':synthetic({...pureOutput,formatErrorOutput:(...args)=>{calls.formatSecrets.push([...args[2]]);return Reflect.apply(pureOutput.formatErrorOutput,pureOutput,args);}},'real:output-observed-delegation'),'lib/lean-investigation.js':synthetic(pureEngine,'real:engine'),
+    'lib/errors.js':synthetic(pureErrors,'real:errors'),'lib/caller-url.js':synthetic(pureCallerUrl,'real:caller-url'),'lib/redact.js':synthetic(pureRedactor,'real:redactor'),'lib/output.js':synthetic({...pureOutput,formatErrorOutput:(...args)=>{calls.formatSecrets.push([...args[2]]);return Reflect.apply(pureOutput.formatErrorOutput,pureOutput,args);}},'real:output-observed-delegation'),'lib/lean-investigation.js':synthetic(pureEngine,'real:engine'),
     'lib/retained-record-store.js':synthetic({ExpectedRevisionError,CorruptRecordError,openStore:()=>store},'successful-memory-store'),
     'lib/lean-acquisition-bridge.js':synthetic({createLeanAcquisitionDeps:()=>({search:async q=>{calls.search.push(q);config.onSearch?.();return [];},read:async()=>''})},'successful-memory-acquisition'),
     'lib/quota-store.js':synthetic({[horizonName]:constantCompiled.value},'source-verified-single-constant-only'),
@@ -128,7 +129,7 @@ async function pureFixture(config={}) {
   fixed['test:runtime-input-observer']=synthetic({observe:input=>calls.runtimeInputs.push(pureCopy(input))},'test-only-input-observer');
   fixed['test:caller-options-observer']=synthetic({observe:options=>calls.callerOptions.push(observeCallerOptions(options))},'test-only-caller-options-observer');
   const bodies=new Set(['commands/investigate-caller.js','commands/investigate-requirements.js','lib/caller-investigation.js','lib/lean-caller-rounds.js','lib/caller-physical.js','providers/selection.js','providers/types.js','lib/quota-mapping.js','lib/judge-config.js']);
-  for(const name of ['lib/lean-investigation','lib/lean-candidates','lib/lean-composed-stop','lib/errors','lib/redact','lib/output'])for(const ext of ['src','dist']){const url=new URL(`../${ext}/${name}.${ext==='src'?'ts':'js'}`,import.meta.url);hashes[url.href]=pureHash(readFileSync(url));}
+  for(const name of ['lib/lean-investigation','lib/lean-candidates','lib/lean-composed-stop','lib/caller-url','lib/errors','lib/redact','lib/output'])for(const ext of ['src','dist']){const url=new URL(`../${ext}/${name}.${ext==='src'?'ts':'js'}`,import.meta.url);hashes[url.href]=pureHash(readFileSync(url));}
   const load=name=>{if(modules.has(name))return modules.get(name);
     if(config.observeRuntimeInput&&name==='commands/investigate-requirements.js'){
       const facade=new SourceTextModule(`export * from './actual-investigate-requirements.js'; import {withRequirementsRuntime as actual} from './actual-investigate-requirements.js'; import {observe} from 'test:runtime-input-observer'; export function withRequirementsRuntime(...args){observe(args[0]);return Reflect.apply(actual,this,args);}`,{identifier:new URL('../dist/commands/runtime-input-observer.js',import.meta.url).href});modules.set(name,facade);return facade;

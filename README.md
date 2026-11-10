@@ -290,6 +290,10 @@ native Jev semantic judge. OpenRouter is the default route; select direct TypeSa
 with `SCOUTLINE_JUDGE=typesafe`. Explicit consent and the selected route’s own key
 are required. See [judge setup and migration](docs/configuration.md#investigation-judge).
 
+Caller URL acquisition screens local hostname forms and non-public IP literals
+before the reader callback; remote Reader Providers retain control of DNS and
+redirects. Investigation input modes honor `--help`/`-h` before doing lane work.
+
 `scoutline investigate <question>` composes Scoutline's own capabilities into a local, transparent, cache-resumable pipeline ([ADR-0013](docs/adr/0013-local-investigation-pipeline.md)): plan sub-queries → fan-out search → Fusion merge → read the top `--sources` (default 5) → deterministic passage extraction → an EvidencePack. No provider-side job runs — distinct from Research, an opaque billed provider job. The pack is data, not prose: agents consume it directly, text output modes fall back to JSON, and `--synthesize` attaches an additive Z.AI brief for humans (Z.AI-only, absent by default). Sources surfaced but unread land in `coverage.unread` with a reason code — never silently dropped.
 
 ```bash

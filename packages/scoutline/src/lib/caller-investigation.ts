@@ -6,6 +6,7 @@ import { openStore, ExpectedRevisionError, CorruptRecordError } from "./retained
 import { startCallerRound, continueCallerRound, readCallerRecord, type CallerProposal } from "./lean-caller-rounds.js";
 import { compileLeanContract, type LeanDeps } from "./lean-investigation.js";
 import { preflightRequirements } from "../commands/investigate-requirements.js";
+import { assertCallerUrl } from "./caller-url.js";
 
 const COLLECTIONS = ["evidence", "outcomes", "proposals", "assessments", "changes", "gaps", "rounds"] as const;
 const HANDOFF_KIND = "caller-assisted-investigation";
@@ -96,8 +97,7 @@ export function validateCallerRequest(value: unknown): asserts value is Obj {
   }
   for (const lead of v.leads ?? []) {
     object(lead, ["url", "title"], "URL lead"); string(lead.url, "URL", 8192);
-    let u: URL; try { u = new URL(lead.url); } catch { throw new ValidationError("Invalid URL lead."); }
-    if (!["https:", "http:"].includes(u.protocol) || u.username || u.password) throw new ValidationError("Invalid public URL lead.");
+    assertCallerUrl(lead.url);
     if (lead.title !== undefined) string(lead.title, "lead title");
   }
   for (const rep of v.representations ?? []) {

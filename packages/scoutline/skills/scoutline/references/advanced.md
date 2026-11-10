@@ -10,6 +10,13 @@ The default OpenRouter and optional direct TypeSafe judge routes are independent
 of acquisition Provider selection. Configure their credentials, consent and
 compatible models through [judge configuration](../../../../../docs/configuration.md#investigation-judge).
 
+Caller URL leads and caller reader callbacks reject local hostname forms and
+non-public/special-use IP literals, including restored and search-discovered
+targets. This is destination screening, not a DNS/redirect guarantee for a remote
+Reader Provider. Qualified synthetic fixture domains are supported. Add `--help`
+or `-h` to either requirements/caller input mode to print help without processing
+the input or constructing an investigation runtime.
+
 ## Provider Selection
 
 Shared commands (`search`, `vision analyze`, `quota`, `doctor`),

@@ -19,6 +19,9 @@
 
 ### Fixed
 
+- **Investigation help is zero-work:** requirements and caller input modes now honor `--help`/`-h` before reading input, loading configuration, registering lane interruption or constructing a runtime.
+- **Caller acquisition destinations:** caller leads and reader callbacks reject local hostname forms and non-public/special-use IP literals, including restored and search-discovered URLs. Remote Reader Providers still control hostname resolution and redirects; this is not a provider-side SSRF guarantee.
+
 - **Caller start preflight and committed-view recovery:** native-incompatible initial requirement IDs now refuse at public validation (`[A-Za-z0-9_-]{1,64}` for starts; continuation/replacement keeps its 128-byte cap). Unsafe identity/recovery redaction profiles refuse before record mutation or paid work. A later result-view refusal after a confirmed commit returns the exact retained reference/revision in JSON error help, with explicit guidance not to repeat the mutation. Shared redaction, stored schema and offline paging semantics are unchanged.
 
 - Caller delete validates its acknowledgement before removing the record, preventing an unavailable response from hiding successful deletion.

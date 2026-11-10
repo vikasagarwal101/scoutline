@@ -12,6 +12,8 @@ EXPERIMENTAL caller-assisted operations:
   --caller-request-json '<json>'   Inline versioned operation JSON
   schemaVersion:1; operation:start|continue|inspect|readEvidence|delete.
   Start/continue require explicit public/synthetic dataScope; no automatic extractor.
+  URL leads and caller reads reject local names and non-public IP literals.
+  Remote Reader Providers control hostname DNS resolution and redirects.
   Start IDs: [A-Za-z0-9_-]{1,64}; continuation IDs remain bounded to 128 UTF-8 bytes.
   Unsafe recovery profiles refuse before work. A committed-view error carries
   an inspect selector in JSON help; do not repeat the mutation.

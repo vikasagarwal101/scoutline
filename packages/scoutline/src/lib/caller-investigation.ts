@@ -3,7 +3,7 @@ import { ValidationError } from "./errors.js";
 import { redactSecrets } from "./redact.js";
 import { formatErrorOutput } from "./output.js";
 import { openStore, ExpectedRevisionError, CorruptRecordError } from "./retained-record-store.js";
-import { startCallerRound, continueCallerRound, readCallerRecord, type CallerProposal } from "./lean-caller-rounds.js";
+import { startCallerRound, continueCallerRound, readCallerRecord, type CallerProposal, type StartCallerRoundInput } from "./lean-caller-rounds.js";
 import { compileLeanContract, type LeanDeps } from "./lean-investigation.js";
 import { preflightRequirements } from "../commands/investigate-requirements.js";
 import { assertCallerUrl } from "./caller-url.js";
@@ -22,6 +22,7 @@ export interface CallerInvestigationOptions {
    * Unknown stages remain null. The closed native carrier drops partial counts
    * within an unknown stage; knownSubtotal sums complete stages only. */
   nativeObservation?: () => import("./caller-physical.js").CallerPhysicalSnapshot;
+  readProvenance?: StartCallerRoundInput["readProvenance"];
 }
 const digest = (text: string): string => `sha256:${createHash("sha256").update(text).digest("hex")}`;
 function object(v: unknown, keys: readonly string[], label: string): asserts v is Obj {
@@ -218,7 +219,7 @@ async function view(options: CallerInvestigationOptions, ref: string, revision?:
   const evidence = record.payload.result.evidence.map(e => {
     const originalDigest = digest(e.content), content = safe(e.content, secrets) as string;
     const displayedDigest = digest(content);
-    return { ...safe({ ...e, content: undefined }, secrets), content,
+    return { ...safe({ ...e, content: undefined, attribution: e.attribution ?? null }, secrets), content,
       representationId: `d:${digest(JSON.stringify([originalDigest, displayedDigest, basis])).slice(7)}`,
       digest: displayedDigest, originalRepresentationId: `b:${originalDigest.slice(7)}`, originalDigest,
       displayRedacted: content !== e.content, originalByteLength: Buffer.byteLength(e.content), displayByteLength: Buffer.byteLength(content),
@@ -275,6 +276,19 @@ function bounded(value: Obj, maxChars: number, secrets: readonly string[]): Obj 
   if (JSON.stringify(output).length > maxChars) throw new CallerProjectionError("maxChars cannot fit this caller page header.");
   return stablePage(output,secrets);
 }
+/** A late invocation interrupt does not rewrite an already committed round.
+ * Keep its result/reference accessible, distinguish the retained stop reason,
+ * and hash/bound the actual cancelled response through the same projection. */
+export function projectCallerInterruption(value: Obj, maxChars: number, secrets: readonly string[]): Obj {
+  if (value.stopReason === "cancelled") return value;
+  const { resultSha256: _oldHash, ...header } = value;
+  try {
+    return bounded({ ...header, stopReason: "cancelled", retainedStopReason: value.stopReason, invocationCancelled: true }, maxChars, secrets);
+  } catch (error) {
+    if (error instanceof CallerProjectionError) throw Object.assign(new ValidationError(COMMITTED_MESSAGE, recoveryHelp(value.investigationRef, value.revision)), { exitCode: 130 });
+    throw error;
+  }
+}
 function cut(text: string, start: number, size: number): string {
   let end=Math.min(text.length,start+size); if (end<text.length && /[\uD800-\uDBFF]/.test(text[end-1]!)) end--;
   return text.slice(start,end);
@@ -325,7 +339,7 @@ export async function executeCallerInvestigation(request: unknown, options: Call
         }proposals.push(item);
       }
     }
-    const args={storeRoot:options.storeRoot,contract:req.requirements,deps:options.deps,dataScope:req.dataScope,leads:req.leads,representations:req.representations,roundLimits:req.roundLimits,judgeIdentity:options.judgeIdentity,policyRevision:options.policyRevision,nativeObservation:options.nativeObservation};
+    const args={storeRoot:options.storeRoot,contract:req.requirements,deps:options.deps,dataScope:req.dataScope,leads:req.leads,representations:req.representations,roundLimits:req.roundLimits,judgeIdentity:options.judgeIdentity,policyRevision:options.policyRevision,nativeObservation:options.nativeObservation,readProvenance:options.readProvenance};
     const round=req.operation==="start"?await startCallerRound(args):await continueCallerRound({...args,investigationRef:ref,expectedRevision:req.expectedRevision,proposals,acknowledgeInterruptedRound:req.acknowledgeInterruptedRound});
     const expectedRevision=req.operation==="start"?1:req.expectedRevision+1;
     if((req.operation==="start"?!/^inv_[0-9a-f]{32}$/.test(round.investigationRef):round.investigationRef!==ref)||round.handoff.revision!==expectedRevision) throw new ValidationError("Caller round returned an unexpected identity.");

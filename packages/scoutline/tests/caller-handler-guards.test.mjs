@@ -103,9 +103,9 @@ async function pureFixture(config={}) {
     async deleteInvestigation(ref){records.delete(ref);},
     async acquireOwnership(ref){const record=records.get(ref);return {
       async readRecoveryPage(){return {records:pureCopy(store.recoveryRecords),cursor:null,complete:true,revision:record.snapshot.revision,viewDigest:pureHash(JSON.stringify(record.snapshot))};},
-      async beginRound(){calls.begin++;},async appendAudit(){},async settleRound(){},async release(){calls.release++;},
-      async stageBody(text){const bytes=Buffer.from(text),bodyId=`b:${pureHash(bytes)}`;record.bodies.set(bodyId,bytes);return {bodyId,bytes:bytes.length};},
-      async commitRevision({snapshot}){record.snapshot=pureCopy(snapshot);},
+      async beginRound(){calls.begin++;},async appendAudit(){},async settleRound(){config.onSettle?.();},async release(){calls.release++;},
+      async stageBody(text){const bytes=Buffer.from(text),bodyId=`b:${pureHash(bytes)}`;record.bodies.set(bodyId,bytes);config.onStageBody?.(text);return {bodyId,bytes:bytes.length};},
+      async commitRevision({snapshot}){record.snapshot=pureCopy(snapshot);config.onCommit?.();},
     };},
   };
   class ExpectedRevisionError extends Error{} class CorruptRecordError extends Error{}
@@ -500,3 +500,32 @@ test('promotion compiled admission refuses dangerous profile contributions and i
   console.log(JSON.stringify({case:'promotion compiled refusal',rows:rows.map(x=>({source:x.source,bytes:Buffer.byteLength(x.id),code:x.code,http:x.http.length,factories:x.factories,configs:x.configs,refs:x.refs,stdout:x.stdout,stderr:x.stderr}))}));
   for(const x of rows){assert.equal(x.stdout,'');assert.equal(x.code,1);assert.equal(JSON.parse(x.stderr).code,'VALIDATION_ERROR');assert.equal(x.http.length,0);assert.deepEqual(x.refs,[]);assert.equal(x.inputsUnchanged,true);if(x.id!=='version'){assert.equal(x.configs,0);assert.equal(x.factories,0);assert.equal(JSON.parse(x.stderr).error,'Caller start requirement IDs must match [A-Za-z0-9_-]{1,64}.');}else{assert.equal(x.factories,1);assert.equal(JSON.parse(x.stderr).error,'Caller view unavailable under the active redaction profile.');}}
 });
+
+
+for (const phase of ['payload','settlement','commit']) {
+  test(`L7 late cancellation during ${phase} keeps committed data and exits 130`,async()=>{
+    // Existing successful memory store is the storage boundary only; actual
+    // handler/runtime/rounds/engine/projection execute. No durability claim.
+    const requirements={schemaVersion:1,question:'Optional observation?',requirements:{observation:{question:'Supported?',schema:{enum:['supported','refuted','disputed']},required:false}},limits:{maxSearchAttempts:1,maxUniqueReads:1,maxJudgeAttempts:1}};
+    const request={schemaVersion:1,operation:'start',dataScope:'synthetic',requirements};
+    const control=await pureFixture({producer:false});
+    const good=await control.handler(request,'memory',control.deps,control.host);
+    assert.equal(good.exitCode,0);assert.equal(good.data.status,'complete');assert.equal(good.data.stopReason,'work-fulfilled');
+    let f,fired=false;
+    const interrupt=()=>{if(!fired){fired=true;f.interrupt();}};
+    f=await pureFixture({producer:false,
+      onStageBody:text=>{if(phase==='payload'&&text.includes('"stopReason":"work-fulfilled"'))interrupt();},
+      onSettle:()=>{if(phase==='settlement')interrupt();},onCommit:()=>{if(phase==='commit')interrupt();}});
+    const actual=await f.handler(request,'memory',f.deps,f.host);
+    assert.equal(fired,true,'interrupt must hit the selected publication boundary');
+    assert.equal(actual.exitCode,130,'a late interrupted invocation must not report success');
+    assert.equal(actual.data.stopReason,'cancelled');assert.equal(actual.data.invocationCancelled,true);
+    assert.equal(actual.data.retainedStopReason,'work-fulfilled','completed round work is not rewritten by a late invocation interrupt');
+    const {resultSha256,...value}=actual.data;
+    assert.equal(resultSha256,'sha256:'+pureHash(JSON.stringify(value)),'cancelled projection hash must cover the actual returned header');
+    const inspected=await f.handler({schemaVersion:1,operation:'inspect',investigationRef:actual.data.investigationRef},'memory',f.deps,f.host);
+    assert.equal(inspected.exitCode,0);assert.equal(inspected.data.revision,actual.data.revision);
+    assert.equal(inspected.data.status,'complete');assert.equal(inspected.data.stopReason,'work-fulfilled');
+    assert.equal(f.calls.begin,1,'one round only');assert.equal(f.calls.search.length,control.calls.search.length,'late cancellation starts no extra acquisition');f.check();control.check();
+  });
+}

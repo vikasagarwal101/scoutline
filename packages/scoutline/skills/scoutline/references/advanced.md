@@ -17,6 +17,12 @@ Reader Provider. Qualified synthetic fixture domains are supported. Add `--help`
 or `-h` to either requirements/caller input mode to print help without processing
 the input or constructing an investigation runtime.
 
+Caller evidence pages retain known Reader/final-URL/cache attribution and supplied
+representation metadata; unavailable or legacy metadata stays unknown. A late
+invocation interrupt reports exit 130 without undoing a committed round. When
+`invocationCancelled` is present, `retainedStopReason` describes that committed
+round separately from the cancelled invocation; inspect the reference before retrying.
+
 ## Provider Selection
 
 Shared commands (`search`, `vision analyze`, `quota`, `doctor`),

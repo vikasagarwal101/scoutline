@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { ScoutlineError, ValidationError } from "../lib/errors.js";
-import { executeCallerInvestigation, validateCallerRequest, validateCallerRequirementIds } from "../lib/caller-investigation.js";
+import { executeCallerInvestigation, projectCallerInterruption, validateCallerRequest, validateCallerRequirementIds } from "../lib/caller-investigation.js";
 import { readCallerRecord } from "../lib/lean-caller-rounds.js";
 import { readRequirementsFileBounded, MAX_REQUIREMENTS_BYTES, withRequirementsRuntime, type InvestigateRequirementsDeps } from "./investigate-requirements.js";
 import { collectJudgeSecrets, type JudgeDescriptor } from "../lib/judge-config.js";
@@ -14,6 +14,8 @@ EXPERIMENTAL caller-assisted operations:
   Start/continue require explicit public/synthetic dataScope; no automatic extractor.
   URL leads and caller reads reject local names and non-public IP literals.
   Remote Reader Providers control hostname DNS resolution and redirects.
+  Evidence pages retain known Reader/cache attribution; unavailable metadata stays unknown.
+  A late invocation interrupt exits 130 without undoing a committed round.
   Start IDs: [A-Za-z0-9_-]{1,64}; continuation IDs remain bounded to 128 UTF-8 bytes.
   Unsafe recovery profiles refuse before work. A committed-view error carries
   an inspect selector in JSON help; do not repeat the mutation.
@@ -116,11 +118,11 @@ export async function handleInvestigateCaller(request:unknown, storeRoot:string,
   const runtime=await withRequirementsRuntime(contract,{...deps,onRuntimeSecrets:values=>{
     for(const value of values)if(value&&!secrets.includes(value))secrets.push(value);
     deps.onRuntimeSecrets?.(values);
-  }},host,async (_contract,unified,nativeObservation,judgeDescriptor)=>{
+  }},host,async (_contract,unified,nativeObservation,judgeDescriptor,readProvenance)=>{
     let data: Awaited<ReturnType<typeof executeCallerInvestigation>>;
     try {
       const identity=callerJudgeIdentity(judgeDescriptor,unified.judge!==null||unified.candidateJudge!==null);
-      data=await executeCallerInvestigation(request,{storeRoot,deps:unified,secrets,nativeObservation,
+      data=await executeCallerInvestigation(request,{storeRoot,deps:unified,secrets,nativeObservation,readProvenance,
         ...identity});
     } catch(error) {
       if(unified.externalSignal?.aborted && error instanceof ValidationError && error.code==="VALIDATION_ERROR" && error.message==="Round cancelled before dispatch.") {
@@ -132,5 +134,6 @@ export async function handleInvestigateCaller(request:unknown, storeRoot:string,
     const retained=await readCallerRecord(storeRoot,data.investigationRef);
     return {result:retained.payload.result,value:data};
   });
-  return {kind:"data",data:runtime.value,exitCode:runtime.value.stopReason==="cancelled"?130:runtime.value.status==="complete"?0:1};
+  const data=runtime.interrupted ? projectCallerInterruption(runtime.value,req.maxChars??16384,secrets) : runtime.value;
+  return {kind:"data",data,exitCode:runtime.interrupted||data.stopReason==="cancelled"?130:data.status==="complete"?0:1};
 }

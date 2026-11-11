@@ -308,7 +308,7 @@ async function lineageFixture() {
   const first = await start(f, { contract: lineageContract(), leads: [{ url, title: 'Caller title' }] });
   return { f, first, calls, judged };
 }
-const metadata = ({ content: _, suppliedProvenance: __, ...rest }) => rest;
+const metadata = ({ content: _, suppliedProvenance: __, attribution: ___, ...rest }) => rest;
 
 test('R5 forward reconciliation owns final metadata in state/outcome and the next seed without changing early judgments or history', async () => {
   const { f, first, calls, judged } = await lineageFixture();
@@ -322,6 +322,7 @@ test('R5 forward reconciliation owns final metadata in state/outcome and the nex
   assert.notDeepEqual(judged[0].before[0].origins, final.origins, 'final metadata must add later discoveries');
   const stored = await currentState(f, first.investigationRef);
   assert.deepEqual(stored.state.evidence[0].record, metadata(final));
+  assert.deepEqual(stored.state.evidence[0].attribution, final.attribution, "caller attribution is retained separately from semantic engine metadata");
   assert.deepEqual(stored.snapshot.outcome.evidence, [metadata(final)]);
   const saved = copy((await f.api.readCallerRecord(first.storeRoot, first.investigationRef, 1)).payload);
   const before = calls.length;
@@ -881,7 +882,9 @@ test('L1 legacy exact disposition refuses prospective events before writes; cont
   const saved = await currentState(c.f, next.investigationRef);
   for (const [i, e] of prepared.entries()) {
     const retained = next.result.evidence.find(r => r.evidenceId === e.evidenceId);
-    assert.deepEqual({ ...retained, suppliedProvenance: undefined }, { ...e, suppliedProvenance: undefined });
+    const { attribution, ...semantic } = retained;
+    assert.deepEqual({ ...semantic, suppliedProvenance: undefined }, { ...e, suppliedProvenance: undefined });
+    assert.deepEqual(saved.state.evidence[i].attribution, attribution, "publication keeps attribution without adding it to the prepared judge context");
     assert.equal(saved.state.evidence[i].record.url, e.url);
   }
   assert.deepEqual(next.result.evidence.slice(1).map(e => e.suppliedProvenance), claims.map(claimedSource => ({ claimedSource, verification: 'unverified' })));

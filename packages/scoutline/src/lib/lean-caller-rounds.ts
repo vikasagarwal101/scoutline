@@ -4,6 +4,7 @@ import { ValidationError } from "./errors.js";
 import { compileLeanContract, frozenLeanQueryPlan, runLeanInvestigation, prepareLeanCallerHistory, type LeanDeps, type LeanUnifiedDeps, type LeanResult, type LeanUsage, type LeanEvidenceRecord, type LeanSeed, type LeanRoundCheckpoint } from "./lean-investigation.js";
 import { ExpectedRevisionError, CorruptRecordError, openStore, type OwnershipHandle, type RetainedRecordStore, type RevisionSnapshot, type RetainedBodyRef, type OpenStoreOptions } from "./retained-record-store.js";
 import { assertCallerUrl } from "./caller-url.js";
+import type { LeanReadProvenance } from "./lean-acquisition-bridge.js";
 
 export interface CallerProposal {
   fieldId: string; mode: "string" | "classification"; value: string;
@@ -19,6 +20,8 @@ export interface StartCallerRoundInput {
   storeOptions?: Pick<OpenStoreOptions, "deps" | "caps">;
   /** Internal production adapter snapshot, not a request or collaborator response. */
   nativeObservation?: () => CallerPhysicalSnapshot;
+  /** Handler-owned serve observations, never caller request JSON. */
+  readProvenance?: () => readonly (LeanReadProvenance & { servedAt: number })[];
 }
 export interface ContinueCallerRoundInput extends Omit<StartCallerRoundInput, "contract" | "requirements"> {
   investigationRef: string; expectedRevision: number; contract?: unknown;
@@ -28,14 +31,32 @@ interface Pointer { digest: string; chunks: RetainedBodyRef[] }
 interface DefinitionPointer { schemaVersion: 1; definitionRevision: string; contract: Pointer; state: Pointer; baselineContract?: Pointer }
 interface State {
   schemaVersion: 1;
-  evidence: { record: Omit<LeanEvidenceRecord, "content">; body: RetainedBodyRef; format: string; suppliedAt: number }[];
+  evidence: { record: Omit<LeanEvidenceRecord, "content">; body: RetainedBodyRef; format: string; suppliedAt: number; attribution?: CallerEvidenceAttribution }[];
   historyContinuity?: { schemaVersion: 1; fromRevision: 1 };
   accountingContinuity?: { schemaVersion: 1; fromRevision: 1 };
   checkpoint: LeanRoundCheckpoint; proposals: CallerProposal[]; coverageBasis: string;
   results?: { revision: number; roundId: string; intent: "start" | "continue"; contract: Pointer; result: Pointer }[];
 }
 export interface SuppliedProvenance { claimedSource: string; verification: "unverified" }
-export type CallerEvidenceRecord = LeanEvidenceRecord & { suppliedProvenance?: SuppliedProvenance };
+export interface CallerEvidenceAttribution {
+  sourceClass: "engine-retrieved" | "caller-supplied";
+  discoveryProvider: string | null; readerProvider: string | null;
+  originalUrl: string; finalUrl: string | null;
+  fromCache: boolean | null; cacheProbeWarm: boolean | "unknown" | null;
+  /** Serve time is not a claim about original retrieval/publication freshness. */
+  servedAt: number | null; format: "text" | "markdown" | "json"; suppliedAt: number | null;
+}
+export type CallerEvidenceRecord = LeanEvidenceRecord & { suppliedProvenance?: SuppliedProvenance; attribution?: CallerEvidenceAttribution | null };
+function validateAttribution(v: unknown): asserts v is CallerEvidenceAttribution {
+  const a = v as CallerEvidenceAttribution;
+  const text = (s: unknown): boolean => typeof s === "string" && s.length > 0 && Buffer.byteLength(s) <= 8192;
+  const time = (n: unknown): boolean => n === null || typeof n === "number" && Number.isFinite(n) && n >= 0;
+  if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).length !== 10 || Object.keys(a).some(k => !["sourceClass", "discoveryProvider", "readerProvider", "originalUrl", "finalUrl", "fromCache", "cacheProbeWarm", "servedAt", "format", "suppliedAt"].includes(k)) ||
+    !["engine-retrieved", "caller-supplied"].includes(a.sourceClass) || !text(a.originalUrl) || ![a.discoveryProvider, a.readerProvider, a.finalUrl].every(s => s === null || text(s)) ||
+    !(a.fromCache === null || typeof a.fromCache === "boolean") || !(a.cacheProbeWarm === null || a.cacheProbeWarm === "unknown" || typeof a.cacheProbeWarm === "boolean") ||
+    !time(a.servedAt) || !time(a.suppliedAt) || !["text", "markdown", "json"].includes(a.format)) throw new CorruptRecordError("Invalid retained evidence attribution.");
+}
+
 export type CallerResult = Omit<LeanResult, "evidence"> & { evidence: readonly CallerEvidenceRecord[] };
 export interface CallerRoundHandoff {
   kind: "caller-assisted-investigation"; schemaVersion: 2; investigationRef: string; revision: number;
@@ -198,6 +219,7 @@ function storedState(value: unknown): asserts value is State {
   const s = value as State;
   if (!object(s) || s.schemaVersion !== 1 || !Array.isArray(s.evidence) || !Array.isArray(s.proposals) || s.proposals.length > 24 || !object(s.checkpoint) || !Array.isArray(s.checkpoint.history) || !Array.isArray(s.checkpoint.issuedQueries) || !s.checkpoint.issuedQueries.every(q => typeof q === "string") || !Array.isArray(s.checkpoint.leads) || !s.checkpoint.leads.every(l => object(l) && typeof l.url === "string" && typeof l.title === "string") || typeof s.coverageBasis !== "string") throw new CorruptRecordError("Invalid retained state.");
   for (const e of s.evidence) if (!object(e) || !object(e.record) || typeof e.record.evidenceId !== "string" || typeof e.record.url !== "string" || typeof e.record.title !== "string" || !Array.isArray(e.record.origins) || !e.record.origins.every(o => typeof o === "string") || !object(e.body) || typeof e.body.bodyId !== "string" || typeof e.body.digest !== "string" || !Number.isSafeInteger(e.body.bytes) || e.body.bytes < 0 || typeof e.format !== "string" || !Number.isFinite(e.suppliedAt)) throw new CorruptRecordError("Invalid retained evidence entry.");
+  for (const e of s.evidence) if (Object.hasOwn(e, "attribution")) validateAttribution(e.attribution);
 }
 async function definitionPointer(store: RetainedRecordStore, ref: string, snapshot: RevisionSnapshot): Promise<DefinitionPointer> {
   const row = [...snapshot.audit].reverse().find(r => r.kind === "definition-ref");
@@ -330,6 +352,7 @@ function validateRetainedResult(value: unknown): asserts value is RetainedCaller
   if (!object(r) || r.schemaVersion !== 1 || !["complete", "partial"].includes(r.status) || !["semantic", "deterministic-only"].includes(r.assessment) || typeof r.question !== "string" || !object(r.data) || !object(r.requirements) || !Array.isArray(r.evidence) || !Array.isArray(r.acquisitionLog) || !Array.isArray(r.coverageNotes) || !object(r.usage) || !Array.isArray(r.plan?.queries) || Object.keys(r.requirements).length > 3 || Buffer.byteLength(canonical(v)) > 524288) throw new CorruptRecordError("Invalid bounded retained result payload.");
   for (const e of r.evidence) {
     if (!e || typeof e.content !== "string" || Buffer.byteLength(e.content) > 16384 || typeof e.evidenceId !== "string" || typeof e.url !== "string" || !Array.isArray(e.origins)) throw new CorruptRecordError("Invalid retained result evidence.");
+    if (Object.hasOwn(e, "attribution") && e.attribution !== null) validateAttribution(e.attribution);
     if (Object.hasOwn(e, "suppliedProvenance")) {
       const p = e.suppliedProvenance;
       if (!p || typeof p !== "object" || Array.isArray(p) || Object.keys(p).some(k => !["claimedSource", "verification"].includes(k)) || typeof p.claimedSource !== "string" || p.verification !== "unverified") throw new CorruptRecordError("Invalid supplied provenance.");
@@ -459,14 +482,24 @@ async function execute(input: StartCallerRoundInput | ContinueCallerRoundInput, 
   const rid = `r-${randomUUID()}`; await handle.beginRound({ roundId: rid, intent });
   const bodies = [...base.bodies]; let newBytes = 0;
   const list = (b: RetainedBodyRef): void => { if (!bodies.some(x => x.bodyId === b.bodyId)) bodies.push(b); };
-  const retain = async (record: LeanEvidenceRecord, format = "text", claimedSource?: string): Promise<void> => {
+  const retain = async (record: LeanEvidenceRecord, format: "text" | "markdown" | "json" = "text", claimedSource?: string, supplied = false): Promise<void> => {
     const bytes = Buffer.byteLength(record.content), digest = hash(record.content);
     if (bytes > 16384) throw new ValidationError("Body exceeds representation ceiling.");
     if (!state.evidence.some(e => e.body.digest === digest)) { newBytes += bytes; if (newBytes > 262144) throw new ValidationError("New round byte cap exceeded."); }
     const staged = await handle.stageBody(record.content), body = { bodyId: staged.bodyId, digest, bytes: staged.bytes }; list(body);
-    if (!state.evidence.some(e => e.record.evidenceId === record.evidenceId)) { const { content: _, ...metadata } = record; state.evidence.push({ record: metadata, body: { ...body, ...(claimedSource !== undefined ? { claimedSource } : {}) }, format, suppliedAt: Date.now() }); }
+    if (!state.evidence.some(e => e.record.evidenceId === record.evidenceId)) {
+      const suppliedAt = Date.now();
+      const observed = supplied ? undefined : input.readProvenance?.().filter(row => row.url === record.url).at(-1);
+      const attribution: CallerEvidenceAttribution = { sourceClass: supplied ? "caller-supplied" : "engine-retrieved",
+        discoveryProvider: null, readerProvider: observed?.provider ?? null, originalUrl: record.url, finalUrl: observed?.finalUrl ?? null,
+        fromCache: observed?.fromCache ?? null, cacheProbeWarm: observed?.cacheProbeWarm ?? null,
+        servedAt: observed?.servedAt ?? null, format, suppliedAt: supplied ? suppliedAt : null };
+      validateAttribution(attribution);
+      const { content: _, ...metadata } = record;
+      state.evidence.push({ record: metadata, body: { ...body, ...(claimedSource !== undefined ? { claimedSource } : {}) }, format, suppliedAt, attribution });
+    }
   };
-  for (const r of supplied) await retain(r.record, r.format, r.claimedSource);
+  for (const r of supplied) await retain(r.record, r.format, r.claimedSource, true);
   const contractRef = await stage(handle, canonical(contract)); contractRef.chunks.forEach(list);
   const baselineRef = canonical(baselineContract) === canonical(contract) ? undefined : await stage(handle, canonical(baselineContract));
   baselineRef?.chunks.forEach(list);
@@ -528,7 +561,7 @@ async function execute(input: StartCallerRoundInput | ContinueCallerRoundInput, 
       state.evidence = reconcileEvidence(state.evidence, result.evidence);
       result = { ...result, evidence: result.evidence.map(e => {
         const retained = state.evidence.find(r => r.record.evidenceId === e.evidenceId && r.record.url === e.url && r.body.digest === hash(e.content));
-        return retained?.body.claimedSource === undefined ? e : { ...e, suppliedProvenance: { claimedSource: retained.body.claimedSource, verification: "unverified" as const } };
+        return { ...e, attribution: retained?.attribution ?? null, ...(retained?.body.claimedSource === undefined ? {} : { suppliedProvenance: { claimedSource: retained.body.claimedSource, verification: "unverified" as const } }) };
       }) };
       state.checkpoint = checkpoint; state.coverageBasis = basis;
       const stopReason = input.deps.externalSignal?.aborted ? "cancelled" : result.status === "complete" ? "work-fulfilled" : Object.values(result.requirements).some(r => r.reason === "no_extractor") ? "awaiting-caller-proposal" : Object.values(result.requirements).some(r => r.reason === "assessment_context_overflow") ? "assessment-context-overflow" : input.deps.judge === null ? "no-judge-evidence-retained" : "round-limit";

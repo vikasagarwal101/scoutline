@@ -737,17 +737,18 @@ async function raceWithInterrupt<T>(work: Promise<T>, owned: OwnedInterruption):
 }
 
 export async function withRequirementsRuntime<T>(input: unknown, deps: InvestigateRequirementsDeps, host: RuntimeContextHost,
-  execute: (input: unknown, unified: LeanUnifiedDeps, observation: () => CallerPhysicalSnapshot, judgeDescriptor?: JudgeDescriptor) => Promise<{ result: LeanResult; value: T }>, signal?: AbortSignal): Promise<{ value: T; projected: CommandResult; secrets: string[] }> {
+  execute: (input: unknown, unified: LeanUnifiedDeps, observation: () => CallerPhysicalSnapshot, judgeDescriptor?: JudgeDescriptor, readProvenance?: () => readonly (LeanReadProvenance & { servedAt: number })[]) => Promise<{ result: LeanResult; value: T }>, signal?: AbortSignal): Promise<{ value: T; projected: CommandResult; secrets: string[]; interrupted: boolean }> {
   const owned = beginOwnedInterruption(deps);
   const abort = (): void => owned.controller.abort();
   signal?.addEventListener("abort", abort, { once: true }); if (signal?.aborted) abort();
   try {
     let value!: T;
-    const run = await runWithRuntime(input, deps, host, owned, async (contract, unified, observation, judgeDescriptor) => {
-      const answer = await execute(contract, unified, observation, judgeDescriptor); value = answer.value; return answer.result;
+    const run = await runWithRuntime(input, deps, host, owned, async (contract, unified, observation, judgeDescriptor, readProvenance) => {
+      const answer = await execute(contract, unified, observation, judgeDescriptor, readProvenance); value = answer.value; return answer.result;
     });
     // Caller adapter returns an inspectable cancelled handoff; ordinary requirements still settle 130 above.
-    return { value, projected: projectResult(run.result, run.secrets, host, run.physical, run.provenance), secrets: run.secrets };
+    const projected = projectResult(run.result, run.secrets, host, run.physical, run.provenance);
+    return { value, projected, secrets: run.secrets, interrupted: owned.controller.signal.aborted };
   } finally { signal?.removeEventListener("abort", abort); owned.release(); }
 }
 
@@ -827,7 +828,7 @@ async function runWithRuntime(
   deps: InvestigateRequirementsDeps,
   host: RuntimeContextHost,
   owned: OwnedInterruption,
-  execute: (input: unknown, deps: LeanUnifiedDeps, observation: () => CallerPhysicalSnapshot, judgeDescriptor?: JudgeDescriptor) => Promise<LeanResult> = runLeanInvestigation,
+  execute: (input: unknown, deps: LeanUnifiedDeps, observation: () => CallerPhysicalSnapshot, judgeDescriptor?: JudgeDescriptor, readProvenance?: () => readonly (LeanReadProvenance & { servedAt: number })[]) => Promise<LeanResult> = runLeanInvestigation,
 ): Promise<{
   result: LeanResult;
   secrets: string[];
@@ -871,6 +872,7 @@ async function runWithRuntime(
     physical.judgeDispatches = next;
   };
   const provenance: LeanReadProvenance[] = [];
+  const callerProvenance: (LeanReadProvenance & { servedAt: number })[] = [];
   const now = deps.now;
 
   const runtime = deps.requirementsRuntime ?? defaultRequirementsRuntime;
@@ -970,6 +972,7 @@ async function runWithRuntime(
     },
     onReadProvenance: (record) => {
       provenance.push(record);
+      callerProvenance.push({ ...record, servedAt: now() });
       acquisitionOptions.onReadProvenance?.(record);
     },
     onPhysicalLedger: (ledger) => {
@@ -1121,7 +1124,7 @@ async function runWithRuntime(
     validateCallerPhysical(snapshot); return JSON.parse(JSON.stringify(snapshot)) as CallerPhysicalSnapshot;
   };
   let result: LeanResult;
-  try { result = await execute(input, unified, observation, composed.judgeDescriptor); }
+  try { result = await execute(input, unified, observation, composed.judgeDescriptor, () => callerProvenance.map(row => ({ ...row }))); }
   catch (error) { throw measurementError ?? error; }
   if (measurementError) throw measurementError;
   safeSum(physical.acquisitionAttempts,physical.judgeDispatches,physical.producerDispatches);

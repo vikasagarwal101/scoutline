@@ -171,6 +171,46 @@ test('I05 supported 8192 header fits and assessments paging retains the exact ph
   assert.equal(h1.physical.stages.acquisition,30);assert.equal(h1.physical.total,30);
   assert.equal(h1.physical.detailIncomplete,true);
 });
+test('I07 caller attribution survives publication, cached serving and historical inspection',async()=>{
+  const {handleInvestigateCaller}=await import('../dist/commands/investigate-caller.js');
+  const {createTavilyDescriptor}=await import('../dist/providers/tavily/adapter.js');
+  const s=await sandbox(),cacheEntries=new Map(),dispatches=[];
+  const url='https://example.test/attribution',finalUrl='https://example.test/canonical';
+  const env={TAVILY_API_KEY:'synthetic-attribution-key'};
+  const fetch=async(target,init)=>{
+    dispatches.push(String(target));const input=JSON.parse(init.body);
+    if(String(target)==='https://api.tavily.com/search')return Response.json({results:[{url,title:'Retrieved source',content:'Version 2.4.0.'}]});
+    assert.equal(String(target),'https://api.tavily.com/extract');assert.deepEqual(input.urls,[url]);
+    return Response.json({results:[{url:finalUrl,raw_content:'Version 2.4.0.'}],failed_results:[]});
+  };
+  const transport={fetch,env},descriptor=createTavilyDescriptor({transport});
+  const cache={get:async k=>cacheEntries.get(k)??null,set:async(k,v)=>{cacheEntries.set(k,v);}};
+  const deps={now:()=>1000,readFile:async()=>{throw new Error('no input read');},readStdin:async()=>'',
+    registerUserInterrupt:()=>()=>{},requirementsRuntime:()=>({acquisitionOptions:{searchDescriptor:descriptor,readerDescriptor:descriptor,transports:{tavily:transport},descriptorFactory:(_id,t)=>createTavilyDescriptor({transport:t}),env,cache,sleep:async()=>{},random:()=>0},engineDeps:{judge:null,candidateJudge:null}})};
+  const requirements={schemaVersion:1,question:'Version?',requirements:{version:{question:'Version?',schema:{type:'string'}}},limits:{maxSearchAttempts:1,maxUniqueReads:3}};
+  const request={schemaVersion:1,operation:'start',dataScope:'synthetic',requirements};
+  const options={storeRoot:s.env.SCOUTLINE_INVESTIGATIONS_DIR,secrets:[]};
+  const first=(await handleInvestigateCaller(request,options.storeRoot,deps,{provider:'tavily',env})).data;
+  const firstManifest=(await collection(first,'evidence',options)).items;
+  const retrieved=firstManifest.find(e=>e.url===url);assert(retrieved,'real Reader content must be retained');
+  assert.ok(dispatches.includes('https://api.tavily.com/extract'),'nonempty network baseline uses the fake boundary');
+  assert.deepEqual(retrieved.attribution,{sourceClass:'engine-retrieved',discoveryProvider:null,readerProvider:'tavily',originalUrl:url,finalUrl,fromCache:false,cacheProbeWarm:false,servedAt:1000,format:'text',suppliedAt:null});
+  const count=dispatches.length;
+  const second=(await handleInvestigateCaller(request,options.storeRoot,deps,{provider:'tavily',env})).data;
+  assert.equal(dispatches.length,count,'the second investigation must exercise an actual cache serve');
+  const cached=(await collection(second,'evidence',options)).items.find(e=>e.url===url);
+  assert.equal(cached.attribution.fromCache,true);assert.equal(cached.attribution.cacheProbeWarm,true);
+  const next=(await handleInvestigateCaller({schemaVersion:1,operation:'continue',investigationRef:first.investigationRef,expectedRevision:first.revision,dataScope:'synthetic',representations:[{format:'markdown',content:'# Supplied evidence',label:'Supplied'}]},options.storeRoot,deps,{provider:'tavily',env})).data;
+  const supplied=(await collection(next,'evidence',options)).items.find(e=>e.title==='Supplied');assert(supplied);
+  assert.equal(supplied.attribution.sourceClass,'caller-supplied');assert.equal(supplied.attribution.format,'markdown');
+  assert.ok(Number.isFinite(supplied.attribution.suppliedAt));assert.equal(supplied.attribution.readerProvider,null);
+  const afterContinuation=dispatches.length;
+  const historical=await run({schemaVersion:1,operation:'inspect',investigationRef:first.investigationRef,revision:first.revision},options);
+  assert.deepEqual((await collection(historical,'evidence',options)).items.map(e=>[e.evidenceId,e.originalDigest,e.attribution]),firstManifest.map(e=>[e.evidenceId,e.originalDigest,e.attribution]),'historical attribution and original content identity stay pinned after continuation');
+  assert.deepEqual((await collection(next,'evidence',options)).items.find(e=>e.url===url).attribution,retrieved.attribution,'reused bytes keep their original serve attribution');
+  assert.equal(dispatches.length,afterContinuation,'all metadata inspection remains offline');
+});
+
 test('I06 delete active ownership denied; safe-owned delete; missing ref typed',async()=>{
   const {h,options}=await setup();
   const {openStore}=await import('./../dist/lib/retained-record-store.js');

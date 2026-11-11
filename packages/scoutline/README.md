@@ -651,6 +651,17 @@ to the selected Provider, which owns that network boundary. Qualified synthetic
 fixture names remain supported. `--help`/`-h` with either investigation input
 mode prints help without reading input, loading config or constructing a runtime.
 
+Evidence pages expose `attribution`: source class, known serving Reader and
+original/final URL, actual cache-service state, serve time, and supplied format/time.
+Discovery Provider or original retrieval/publication time is not inferred from a
+cache serve; unavailable fields stay `null`, and legacy missing attribution is
+exposed as `null`. This metadata survives continuation and historical inspection.
+An interrupt during result publication exits 130 with an inspectable reference.
+If the round's work already settled, the response marks `invocationCancelled`
+and `retainedStopReason` separately; offline inspection retains the committed
+round outcome. Cancellation does not roll back completed data or prove remote
+termination.
+
 The response is
 `kind: "caller-assisted-investigation"` with investigation reference,
 revision, settled round identity, fulfillment counts, current outcome

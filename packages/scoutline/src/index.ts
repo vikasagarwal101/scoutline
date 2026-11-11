@@ -1323,7 +1323,7 @@ export interface HandlerDependencies {
    * Requirements-lane refresh disposition (cold-review finding 4):
    * a REQUEST-LOCAL one-shot cell main() creates per invocation and
    * consults after dispatch. handleInvestigate's requirements branch
-   * marks it when the run dies before/without acquisition, suppressing
+   * marks it on any requirements-lane error, suppressing
    * THIS invocation's quota due-refresh (the only incidental network
    * the dispatcher adds). Module-free by construction: an overlapping
    * main() entry owns a different cell.
@@ -7906,7 +7906,7 @@ export async function main(
   // Requirements-lane refresh disposition (cold-review finding 4):
   // REQUEST-LOCAL — an overlapping/reentrant main() entry owns its own
   // cell and can never clear or set this one. True only when THIS
-  // invocation's requirements run died before/without acquisition;
+  // invocation's requirements run errored, including after acquisition;
   // ordinary commands and successful runs keep the standard refresh.
   const requirementsRefreshDisposition = { value: false };
   try {
@@ -8029,14 +8029,14 @@ export async function main(
   //   - unrecognized commands (the default case above)
   //   - dry-run batch invocations — the preview contract promises no
   //     transport, and this refresh live-probes stale providers
-  //   - requirements-mode runs that FAILED preflight (cold-review
-  //     finding 3): the requirements lane's contract is zero HTTP
-  //     before a valid document + consented profile — a rejected run
-  //     must not then live-probe quota endpoints. A run that REACHES
-  //     acquisition refreshed like any other command (the flag below is
-  //     cleared on the success path), so plain-mode behavior is
-  //     untouched and only the failed-preflight lane is suppressed.
-  // Run even when the handler threw (commandRecognized + caught):
+  //   - any requirements-lane error, including a failure after
+  //     acquisition started. Preflight rejection must not trigger quota
+  //     HTTP; post-acquisition errors conservatively use the same
+  //     suppression. The request-local flag starts false and error paths
+  //     set it true; successful calls leave it false (there is no clear
+  //     assignment on the success path).
+  // For other command lanes, run even when the handler threw
+  // (commandRecognized + caught):
   // the refresh is independent of the command's outcome and the
   // snapshot stays live regardless. The staleness check inside
   // `refreshQuotaSnapshots` skips providers whose `observedAt` is

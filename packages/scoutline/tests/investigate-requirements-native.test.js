@@ -198,7 +198,9 @@ test("native admission: opaque judge discloses unknown enforcement AND unknown m
   );
 });
 
-test("durable stdin: a stalled quota snapshot settles 130 with zero runtime dispatch", async () => {
+test("durable stdin: a stalled quota snapshot settles 130 with zero runtime dispatch", { timeout: 5000 }, async () => {
+  let markSnapshotReached;
+  const snapshotReached = new Promise((resolve) => { markSnapshotReached = resolve; });
   const stdout = [];
   const stderr = [];
   let runtimeConstructed = false;
@@ -214,7 +216,10 @@ test("durable stdin: a stalled quota snapshot settles 130 with zero runtime disp
       runtimeConstructed = true;
       throw new Error("runtime must not be constructed after cancellation");
     },
-    readRequirementsQuotaSnapshot: () => new Promise(() => {}), // never resolves
+    readRequirementsQuotaSnapshot: () => {
+      markSnapshotReached();
+      return new Promise(() => {}); // observed stall never resolves
+    },
     invocation: {
       stdoutIsTTY: false,
       stdinIsTTY: false,
@@ -237,9 +242,9 @@ test("durable stdin: a stalled quota snapshot settles 130 with zero runtime disp
     ["investigate", "--provider", "tavily", "--requirements-json", JSON.stringify(CONTRACT), "--no-cache"],
     deps,
   );
-  // Wait until the run is parked on the stalled snapshot read, then
-  // fire the owned interrupt.
-  await new Promise((resolve) => setTimeout(resolve, 25));
+  // Observe the actual stalled read, not a wall-clock readiness guess.
+  // The test timeout fails loudly if this stage is never reached.
+  await snapshotReached;
   assert.equal(typeof fire, "function", "registrar must be live during the stalled wait");
   fire();
   const exit = await runPromise;

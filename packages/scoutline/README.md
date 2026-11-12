@@ -648,7 +648,10 @@ literals before work. The same screen runs before caller reader callbacks,
 including restored and search-discovered URLs. This does not resolve hostnames
 locally or certify a remote Reader's DNS/redirect policy: fetching is delegated
 to the selected Provider, which owns that network boundary. Qualified synthetic
-fixture names remain supported. `--help`/`-h` with either investigation input
+fixture names remain supported. Requirements/caller acquisition rejects redirects
+on the app-to-supplier API hop; it does not control the supplier's subsequent
+content-URL fetch. Other Reader command transport behavior is unchanged.
+`--help`/`-h` with either investigation input
 mode prints help without reading input, loading config or constructing a runtime.
 
 Evidence pages expose `attribution`: source class, known serving Reader and

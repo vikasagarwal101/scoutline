@@ -17,6 +17,10 @@ Reader Provider. Qualified synthetic fixture domains are supported. Add `--help`
 or `-h` to either requirements/caller input mode to print help without processing
 the input or constructing an investigation runtime.
 
+Requirements/caller acquisition refuses redirects on requests to supplier APIs.
+This protects that app-owned hop; the remote Reader's separate content-URL DNS
+and redirect behavior remains delegated. Other Reader command behavior is unchanged.
+
 Caller evidence pages retain known Reader/final-URL/cache attribution and supplied
 representation metadata; unavailable or legacy metadata stays unknown. A late
 invocation interrupt reports exit 130 without undoing a committed round. When

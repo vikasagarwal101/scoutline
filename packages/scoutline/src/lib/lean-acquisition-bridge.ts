@@ -487,7 +487,9 @@ function wrapFetchForOperation(original: OriginalFetch, state: OperationState, n
     };
     const isAborted = (): boolean => childAborted || runSignal?.aborted === true;
 
-    const nativeInit = { ...init, signal: child.signal };
+    // Refuse redirects on the app-to-supplier API hop. The supplier's
+    // separate content-URL DNS/redirect policy remains its responsibility.
+    const nativeInit = { ...init, redirect: "error", signal: child.signal };
     // Finish synchronous setup before admitting the actual native call.
     // Refusal creates no counted row and cannot finish a previous retry.
     if (Date.now() >= state.deadlineAt || callerAborted() ||

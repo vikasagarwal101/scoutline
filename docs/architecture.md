@@ -1037,6 +1037,13 @@ See the [DeepSeek provider guide](deepseek.md) for controls and lifecycle detail
 
 ## Investigation judge routes
 
+Requirements/caller acquisition's operation-owned transport refuses supplier
+API redirects. This prevents hidden redirect hops in a counted native fetch;
+it does not certify the remote Reader's content-URL DNS/redirect controls.
+The existing local-name/IP-literal screen remains defense in depth, with that
+content fetch delegated to the configured supplier. Other Reader commands do
+not gain a new redirect policy through this boundary.
+
 OpenRouter and direct TypeSafe are thin native Jev route policies over one
 shared bounded lifecycle. They are distinct from acquisition Providers and
 their routing/fallback. Selected judge failures never switch routes or models;

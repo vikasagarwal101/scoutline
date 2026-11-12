@@ -294,6 +294,9 @@ Caller URL acquisition screens local hostname forms and non-public IP literals
 before the reader callback; remote Reader Providers retain control of DNS and
 redirects. Investigation input modes honor `--help`/`-h` before doing lane work.
 
+Requirements/caller acquisition refuses HTTP redirects from supplier APIs.
+The supplier's separate content-URL resolution and redirect handling remain delegated.
+
 Caller evidence pages retain known acquisition attribution across rounds. Late
 invocation cancellation reports exit 130 while preserving inspectable committed work.
 

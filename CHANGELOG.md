@@ -19,6 +19,8 @@
 
 ### Fixed
 
+- **Bounded investigation API redirects:** requirements/caller acquisition refuses redirects on its app-to-supplier API requests, preventing hidden follow-up hops inside one counted fetch. This does not enforce the remote Reader's content-URL DNS or redirect policy; normal Reader commands are unchanged.
+
 - **Caller attribution and late interruption:** evidence pages retain known Reader provider, final URL, cache-service state, serve time and supplied representation metadata across continuation/history. Missing legacy or unobserved attribution stays unknown. An interrupt during publication returns exit 130 and an inspectable reference while preserving the committed round's work outcome; the cancelled response is bounded and rehashed.
 
 - **Investigation help is zero-work:** requirements and caller input modes now honor `--help`/`-h` before reading input, loading configuration, registering lane interruption or constructing a runtime.

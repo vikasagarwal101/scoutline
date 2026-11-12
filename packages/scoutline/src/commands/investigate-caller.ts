@@ -14,6 +14,7 @@ EXPERIMENTAL caller-assisted operations:
   Start/continue require explicit public/synthetic dataScope; no automatic extractor.
   URL leads and caller reads reject local names and non-public IP literals.
   Remote Reader Providers control hostname DNS resolution and redirects.
+  Bounded acquisition refuses redirects on the supplier API hop.
   Evidence pages retain known Reader/cache attribution; unavailable metadata stays unknown.
   A late invocation interrupt exits 130 without undoing a committed round.
   Start IDs: [A-Za-z0-9_-]{1,64}; continuation IDs remain bounded to 128 UTF-8 bytes.

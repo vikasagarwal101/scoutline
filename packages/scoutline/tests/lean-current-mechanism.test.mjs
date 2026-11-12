@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
 import { createTavilyDescriptor } from "../dist/providers/tavily/adapter.js";
 import { createExaDescriptor } from "../dist/providers/exa/adapter.js";
 import { createLeanAcquisitionDeps } from "../dist/lib/lean-acquisition-bridge.js";
@@ -24,6 +25,58 @@ function opts(transport) {
     random: () => 0,
     retryPolicy: policy,
   };
+}
+
+for (const kind of ["search", "reader"]) {
+  test(`bounded ${kind} refuses an API redirect without dispatching its target`, { timeout: 10000 }, async (t) => {
+    const sourceUrl = "https://example.test/redirect-fixture";
+    const payload = kind === "search"
+      ? { results: [{ url: sourceUrl, title: "Fixture source", content: "Fixture body" }] }
+      : { results: [{ url: sourceUrl, raw_content: "Fixture body" }], failed_results: [] };
+    let targetHits = 0, redirect = false;
+    const apiHits = [];
+    const target = createServer((req, res) => {
+      req.resume(); targetHits++;
+      res.setHeader("content-type", "application/json"); res.end(JSON.stringify(payload));
+    });
+    const api = createServer((req, res) => {
+      req.resume(); apiHits.push(req.url);
+      if (req.url === "/redirect") {
+        res.writeHead(302, { location: `http://127.0.0.1:${target.address().port}/target` });
+        res.end();
+      } else {
+        res.setHeader("content-type", "application/json"); res.end(JSON.stringify(payload));
+      }
+    });
+    const listen = server => new Promise((resolve, reject) => {
+      server.once("error", reject); server.listen(0, "127.0.0.1", resolve);
+    });
+    const close = server => new Promise((resolve, reject) => {
+      if (!server.listening) { resolve(); return; }
+      server.close(error => error ? reject(error) : resolve()); server.closeAllConnections();
+    });
+    t.after(() => close(api)); t.after(() => close(target));
+    await listen(target); await listen(api);
+    // Keep the real adapters/bridge and Node fetch redirect behavior. Only
+    // the external API address is replaced with a local test endpoint.
+    const transport = { env: { ...env, TAVILY_TIMEOUT: "5000" }, fetch: (_url, init) => globalThis.fetch(
+      `http://127.0.0.1:${api.address().port}/${redirect ? "redirect" : "normal"}`, init) };
+    const options = opts(transport);
+    options.env = { ...env, TAVILY_TIMEOUT: "5000" };
+    const deps = createLeanAcquisitionDeps(options);
+    const invoke = () => kind === "search" ? deps.search("fixture", { timeoutMs: 5000 })
+      : deps.read(sourceUrl, { timeoutMs: 5000 });
+    const normal = await invoke();
+    assert.equal(kind === "search" ? normal[0].url : normal, kind === "search" ? sourceUrl : "Fixture body");
+    assert.equal(deps.physicalLedger.perAttempt[0].outcome, "complete");
+    redirect = true;
+    await assert.rejects(invoke, "an API redirect must not become a successful acquisition");
+    assert.deepEqual(apiHits, ["/normal", "/redirect"], "both API attempts reached the real HTTP server");
+    assert.equal(targetHits, 0, "the redirect target must receive no hidden HTTP request");
+    assert.equal(deps.physicalLedger.attempts, 2);
+    assert.deepEqual(deps.physicalLedger.perAttempt.map(row => row.outcome), ["complete", "unknown"],
+      "opaque fetch rejection keeps the dispatched API attempt uncertain, not refunded");
+  });
 }
 
 test("partial selected provider map refuses Exa before its real HTTP", async () => {

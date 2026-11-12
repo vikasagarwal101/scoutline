@@ -164,6 +164,8 @@ Requirements mode (EXPERIMENTAL — unified-investigation):
   reader over a bounded transport in this mode (executable
   subset: ${[...EXECUTABLE_SUPPLIERS].join(", ")}) — otherwise
   a typed preflight error names the subset, never a reroute.
+  Acquisition supplier API redirects are refused. The remote Reader
+  still controls content-URL DNS resolution and redirects.
   Semantic judge: OpenRouter Jev 1.14 is the default route/model;
   direct TypeSafe is optional. Configure with init/config or
   SCOUTLINE_JUDGE, SCOUTLINE_JUDGE_MODEL, SCOUTLINE_JUDGE_TRANSMIT.

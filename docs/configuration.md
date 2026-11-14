@@ -12,7 +12,7 @@ export Z_AI_API_KEY="your-api-key"
 
 ## Investigation judge
 
-Requirements and caller start/continue use a native Jev judge separate from the
+Requirements and caller start/continue use a native SystemOne judge separate from the
 acquisition `--provider`. The default route/model is OpenRouter
 `typesafe/jev-1.14`; transmission requires the selected route’s own key and
 explicit consent. Keys alone are inert. Without consent, deterministic
@@ -21,8 +21,34 @@ There is no judge route or model fallback.
 
 | Route | Supported request models (default first) | Credential |
 | --- | --- | --- |
-| `openrouter` | `typesafe/jev-1.14`, `typesafe/jev-1.13` | `OPENROUTER_API_KEY` |
+| `openrouter` | Closed SystemOne list below; default `typesafe/jev-1.14` | `OPENROUTER_API_KEY` |
 | `typesafe` | `jev-1.13.0`, `jev-1.14.0` | `TYPESAFE_API_KEY` |
+
+OpenRouter accepts these explicit request IDs (the author is not a separate
+acquisition Provider):
+
+| Model family | Request IDs |
+| --- | --- |
+| TypeSafe | `typesafe/jev-1.14`, `typesafe/jev-1.13` |
+| Liquid | `liquid/d1`, `liquid/d1.1`, `liquid/d1-ultra` |
+| Baseten | `baseten/joey-1`, `baseten/elephant-1`, `baseten/mammoth-1` |
+| Nace | `nace-ai/drex-v1.5`, `nace-ai/drex-v2.0`, `nace-ai/drex-max`, `nace-ai/drex-max-finance` |
+| Perplexity | `perplexity/pplx-decider-v1.2`, `perplexity/pplx-decider-flash-v1.2`, `perplexity/pplx-decider-v1.3:free`, `perplexity/pplx-decider-flash-v1.3:free` |
+
+Each profile pins an exact expected response snapshot in `judge-config.ts`;
+model drift refuses rather than following a moving alias. The new families
+are experimental, metadata-pinned and offline-tested; this is not live
+compatibility or calibrated-quality evidence. Perplexity V1.1 has no serving
+endpoint in the checked metadata and is not included. `:free` variants are
+explicit choices, never automatic fallbacks. Chat models, Sonar, moving aliases
+and other authors are unsupported. Only text-based Noul classification and
+candidate judgments are integrated; extraction/locate and multimodal operations
+are not enabled. The unchanged trial thresholds are not calibrated per model.
+
+All these model authors are reached through the OpenRouter route and key;
+selecting a different model changes the underlying model provider. Route consent
+still applies to the selected model's requests. Direct-TypeSafe keys cannot
+activate these OpenRouter profiles.
 
 Use interactive `scoutline init` to select a route, model, hidden key or
 env-only credential, and per-route consent. Judge setup saves without live
@@ -33,7 +59,7 @@ ordinary editing preserves the inactive profile, while full reset discards all.
 ```bash
 scoutline config get judge
 scoutline config set judge.route openrouter
-scoutline config set judge.openrouter.model typesafe/jev-1.14
+scoutline config set judge.openrouter.model liquid/d1.1
 scoutline config set judge.openrouter.transmitConsent true
 scoutline config unset judge.openrouter.model
 ```

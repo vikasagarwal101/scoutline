@@ -167,7 +167,8 @@ Requirements mode (EXPERIMENTAL — unified-investigation):
   Acquisition supplier API redirects are refused. The remote Reader
   still controls content-URL DNS resolution and redirects.
   Semantic judge: OpenRouter Jev 1.14 is the default route/model;
-  direct TypeSafe is optional. Configure with init/config or
+  Liquid, Baseten, Nace and Perplexity decision profiles are also supported.
+  Direct TypeSafe is optional. Configure with init/config or
   SCOUTLINE_JUDGE, SCOUTLINE_JUDGE_MODEL, SCOUTLINE_JUDGE_TRANSMIT.
   The selected route needs its own key and explicit consent. Without
   consent deterministic evaluation remains; semantic fields may remain

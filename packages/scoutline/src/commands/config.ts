@@ -254,7 +254,7 @@ Keys:
   judge.openrouter           The openrouter route's judge profile (view
                              only): model and transmission consent.
   judge.typesafe             The typesafe route's judge profile (view only).
-  judge.openrouter.model     The openrouter route's Jev request id to use.
+  judge.openrouter.model     The openrouter route's supported SystemOne model id.
   judge.typesafe.model       The typesafe route's Jev request id to use.
   judge.openrouter.transmitConsent
   judge.typesafe.transmitConsent

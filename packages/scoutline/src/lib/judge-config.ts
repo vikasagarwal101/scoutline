@@ -19,7 +19,26 @@ export const JUDGE_ROUTE_DEFAULT = "openrouter" as const;
 const ROUTES = Object.freeze({
   openrouter: Object.freeze({
     endpoint: "https://openrouter.ai/api/v1/systemone", envKey: "OPENROUTER_API_KEY",
-    models: Object.freeze({ "typesafe/jev-1.14": "typesafe/jev-1.14-20261014", "typesafe/jev-1.13": "typesafe/jev-1.13-20260917" }),
+    // Explicit response snapshots from OpenRouter public endpoint metadata
+    // (2026-11-13). A different returned identity fails closed; no discovery.
+    models: Object.freeze({
+      "typesafe/jev-1.14": "typesafe/jev-1.14-20261014",
+      "typesafe/jev-1.13": "typesafe/jev-1.13-20260917",
+      "liquid/d1": "liquid/d1-20260930",
+      "liquid/d1.1": "liquid/d1.1-20261027",
+      "liquid/d1-ultra": "liquid/d1-ultra-20261015",
+      "baseten/joey-1": "baseten/joey-1-20261029",
+      "baseten/elephant-1": "baseten/elephant-1-20261021",
+      "baseten/mammoth-1": "baseten/mammoth-1-20261021",
+      "nace-ai/drex-v1.5": "nace-ai/drex-v1.5-20261009",
+      "nace-ai/drex-v2.0": "nace-ai/drex-v2.0-20261009",
+      "nace-ai/drex-max": "nace-ai/drex-max-20261016",
+      "nace-ai/drex-max-finance": "nace-ai/drex-max-finance-20261110",
+      "perplexity/pplx-decider-v1.2": "perplexity/pplx-decider-v1.2-20261016",
+      "perplexity/pplx-decider-flash-v1.2": "perplexity/pplx-decider-flash-v1.2-20261016",
+      "perplexity/pplx-decider-v1.3:free": "perplexity/pplx-decider-v1.3-20261112:free",
+      "perplexity/pplx-decider-flash-v1.3:free": "perplexity/pplx-decider-flash-v1.3-20261112:free",
+    }),
   }),
   typesafe: Object.freeze({
     endpoint: "https://api.typesafe.ai/v1/systemone", envKey: "TYPESAFE_API_KEY",

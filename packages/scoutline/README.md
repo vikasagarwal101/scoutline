@@ -599,7 +599,10 @@ over the selected provider produces an accepted-only structured answer
 evidence identity digests, and physical HTTP accounting. Exit 0
 complete / 1 partial. Mutually exclusive with the positional question
 and plain-mode controls. Semantic judging defaults to OpenRouter Jev 1.14;
-direct TypeSafe is optional. The selected route needs its own credential
+direct TypeSafe is optional. OpenRouter also offers the explicit Liquid, Baseten,
+Nace and Perplexity decision profiles listed in judge configuration. These new
+profiles are metadata-pinned and offline-tested; live compatibility is unverified.
+The selected route needs its own credential
 and explicit transmission consent; keys alone are inert. Without consent,
 deterministic evaluation remains and semantic fields may remain unresolved.
 No selected-route/model fallback occurs. See [judge configuration](../../docs/configuration.md#investigation-judge).

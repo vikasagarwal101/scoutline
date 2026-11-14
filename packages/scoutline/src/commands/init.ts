@@ -139,7 +139,7 @@ The fresh flow:
     no provider-call volume: savings come from using
     \`history recall\` instead of re-running searches)
   - asks the judge access setup: which route (OpenRouter is the
-    default, TypeSafe direct is the alternative), which supported Jev
+    default, TypeSafe direct is the alternative), which supported SystemOne
     model, that route's API key (hidden input, or leave empty to remove
     its stored key and use the route's environment variable), and explicit transmission
     consent for that route. Declining consent stores the preference

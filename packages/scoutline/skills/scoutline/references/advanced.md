@@ -9,6 +9,11 @@ gate.
 The default OpenRouter and optional direct TypeSafe judge routes are independent
 of acquisition Provider selection. Configure their credentials, consent and
 compatible models through [judge configuration](../../../../../docs/configuration.md#investigation-judge).
+OpenRouter keeps Jev 1.14 as default and adds explicit Liquid, Baseten, Nace
+and Perplexity decision profiles. Only the configured model is called; no
+automatic discovery, model fallback or new extraction operation is enabled.
+The new profiles are metadata-pinned and offline-tested; live compatibility
+and model-specific calibration remain unverified.
 
 Caller URL leads and caller reader callbacks reject local hostname forms and
 non-public/special-use IP literals, including restored and search-discovered

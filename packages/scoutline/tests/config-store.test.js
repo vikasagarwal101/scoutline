@@ -560,6 +560,22 @@ describe("config key registry", () => {
     });
   });
 
+
+  it("scoped SystemOne model settings round-trip without changing route or consent", async (t) => {
+    const { setConfigValue, readConfig } = await import("../dist/lib/config-store.js");
+    const inactive = { model: "jev-1.13.0", apiKey: "inactive-synthetic-key", transmitConsent: false };
+    await withConfig(t, { version: 1, providers: {}, judge: { route: "typesafe", typesafe: inactive } }, async (filePath) => {
+      for (const model of ["liquid/d1","liquid/d1.1","liquid/d1-ultra","baseten/joey-1","baseten/elephant-1","baseten/mammoth-1","nace-ai/drex-v1.5","nace-ai/drex-v2.0","nace-ai/drex-max","nace-ai/drex-max-finance","perplexity/pplx-decider-v1.2","perplexity/pplx-decider-flash-v1.2","perplexity/pplx-decider-v1.3:free","perplexity/pplx-decider-flash-v1.3:free"]) {
+        await setConfigValue("judge.openrouter.model", model, { filePath });
+        const saved = await readConfig({ filePath });
+        assert.equal(saved.judge.openrouter.model, model);
+        assert.equal(saved.judge.openrouter.transmitConsent, undefined);
+        assert.equal(saved.judge.route, "typesafe");
+        assert.deepEqual(saved.judge.typesafe, inactive);
+      }
+    });
+  });
+
   it("registers judge settings keys and refuses credential paths", async (t) => {
     const { resolveConfigKey, setConfigValue, unsetConfigValue } = await import("../dist/lib/config-store.js");
     assert.ok(resolveConfigKey("judge")?.gettable);

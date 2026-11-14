@@ -28,6 +28,10 @@ const TAVILY_EXTRACT = "https://api.tavily.com/extract";
 const RESOLVED_MODELS = {
   "typesafe/jev-1.14": "typesafe/jev-1.14-20261014",
   "typesafe/jev-1.13": "typesafe/jev-1.13-20260917",
+  "liquid/d1.1": "liquid/d1.1-20261027",
+  "baseten/elephant-1": "baseten/elephant-1-20261021",
+  "nace-ai/drex-max": "nace-ai/drex-max-20261016",
+  "perplexity/pplx-decider-v1.2": "perplexity/pplx-decider-v1.2-20261016",
   "jev-1.13.0": "jev-1.13.0",
   "jev-1.14.0": "jev-1.14.0",
 };
@@ -1177,4 +1181,86 @@ test("F5 real disk unreadable config refuses before deleting a record", async ()
     if (restricted) await chmod(configFile, 0o600);
     await rm(root, { recursive: true, force: true });
   }
+});
+
+
+const SCOPED_PUBLIC_MODELS = [
+  [
+    "liquid/d1.1",
+    "liquid/d1.1-20261027"
+  ],
+  [
+    "baseten/elephant-1",
+    "baseten/elephant-1-20261021"
+  ],
+  [
+    "nace-ai/drex-max",
+    "nace-ai/drex-max-20261016"
+  ],
+  [
+    "perplexity/pplx-decider-v1.2",
+    "perplexity/pplx-decider-v1.2-20261016"
+  ]
+];
+for (const [model, resolved] of SCOPED_PUBLIC_MODELS) {
+  test(`scoped SystemOne model ${model} reaches requirements and default caller runtime`, async () => {
+    const run = await runRequirements({
+      env: { TAVILY_API_KEY: "synthetic-acquisition-key" },
+      config: openRouterConfig({ model }), loads: { count: 0 },
+    });
+    assert.equal(run.code, 0, run.stderr);
+    const requests = judgeRequests(run.record);
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].model, model);
+    assert.equal(requests[0].resolvedModel, resolved);
+    assert.equal(requests[0].allowFallbacks, false);
+    assert.deepEqual(refusedAttempts(run.record), []);
+    const storeRoot = await mkdtemp(join(tmpdir(), "judge-scoped-public-"));
+    try {
+      const caller = await runCaller({
+        env: { ...OR_CALLER_ENV, SCOUTLINE_JUDGE_MODEL: model },
+        storeRoot, request: callerStart(),
+      });
+      assert.equal(caller.result.exitCode, 0, JSON.stringify(caller.result.data));
+      const calls = judgeRequests(caller.record);
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].model, model);
+      assert.equal(calls[0].resolvedModel, resolved);
+      assert.equal(caller.result.data.physical.stages.judge, 1);
+      assert.ok(nativeIdentity(await storedBytes(storeRoot)));
+      assert.deepEqual(refusedAttempts(caller.record), []);
+    } finally { await rm(storeRoot, { recursive: true, force: true }); }
+  });
+}
+
+test("scoped cross-family selection rejudges while same-profile continuation reuses proof", async () => {
+  const storeRoot = await mkdtemp(join(tmpdir(), "judge-scoped-reuse-"));
+  try {
+    let header;
+    const dispatchedModels = [];
+    for (const [model, resolved] of SCOPED_PUBLIC_MODELS) {
+      const env = { ...OR_CALLER_ENV, SCOUTLINE_JUDGE_MODEL: model };
+      const request = header === undefined ? callerStart() : {
+        schemaVersion: 1, operation: "continue", investigationRef: header.investigationRef,
+        expectedRevision: header.committedRevision, dataScope: "synthetic",
+      };
+      const changed = await runCaller({ env, storeRoot, request });
+      assert.equal(changed.result.exitCode, 0, JSON.stringify(changed.result.data));
+      const calls = judgeRequests(changed.record);
+      assert.equal(calls.length, 1, "each new model must obtain its own judgment");
+      assert.equal(calls[0].model, model);
+      assert.equal(calls[0].resolvedModel, resolved);
+      dispatchedModels.push(calls[0].model);
+      header = changed.result.data;
+      const reused = await runCaller({ env, storeRoot, request: {
+        schemaVersion: 1, operation: "continue", investigationRef: header.investigationRef,
+        expectedRevision: header.committedRevision, dataScope: "synthetic",
+      } });
+      assert.equal(reused.result.exitCode, 0, JSON.stringify(reused.result.data));
+      assert.equal(judgeRequests(reused.record).length, 0, "unchanged selected profile reuses accepted proof");
+      assert.equal(reused.result.data.physical.stages.judge, 0);
+      header = reused.result.data;
+    }
+    assert.deepEqual(dispatchedModels, ["liquid/d1.1", "baseten/elephant-1", "nace-ai/drex-max", "perplexity/pplx-decider-v1.2"]);
+  } finally { await rm(storeRoot, { recursive: true, force: true }); }
 });

@@ -1759,6 +1759,39 @@ describe("init re-config: change-fallback persists the new preference", () => {
 });
 
 describe("init judge setup: fresh flow, re-config and cancel", () => {
+
+  it("judge setup lists scoped SystemOne profiles and preserves inactive TypeSafe settings", async () => {
+    const models = ["liquid/d1.1","baseten/elephant-1","nace-ai/drex-max","perplexity/pplx-decider-v1.2"];
+    for (const model of models) {
+      const inactive = { model: "jev-1.13.0", apiKey: "inactive-synthetic-key", transmitConsent: false };
+      const store = createFakeConfigStore({ initial: {
+        version: 1, providers: { zai: { apiKey: "provider" } },
+        judge: { route: "typesafe", typesafe: inactive },
+      } });
+      const script = createScriptedPrompts();
+      script.queueSelect("setup-judge"); script.queueSelect("openrouter"); script.queueSelect(model);
+      script.queuePassword("selected-synthetic-key"); script.queueConfirm(false); script.queueSelect("cancel");
+      let choices;
+      const select = script.prompts.select;
+      script.prompts.select = async (message, items) => {
+        if (message.startsWith("Which model should")) choices = items.map(item => item.value);
+        return select(message, items);
+      };
+      const { deps, stdoutChunks, stderrChunks } = createInitDeps({
+        descriptors: [], prompts: script.prompts, configStore: store,
+      });
+      assert.equal(await handleInitWithHelp([], deps), 0);
+      assert.equal(choices.length, 16);
+      for (const expected of models) assert.ok(choices.includes(expected));
+      assert.equal(choices[0], "typesafe/jev-1.14", "shipped default stays first");
+      const saved = store.getConfig().judge;
+      assert.equal(saved.openrouter.model, model);
+      assert.equal(saved.openrouter.transmitConsent, false);
+      assert.deepEqual(saved.typesafe, inactive);
+      assert.match(stdoutChunks.join(""), /saved, not live-verified/);
+      assert.doesNotMatch(stdoutChunks.join("") + stderrChunks.join(""), /selected-synthetic-key|inactive-synthetic-key/);
+    }
+  });
   it("full reset discards both prior judge profiles before new setup", async () => {
     const initial = { version: 1, providers: { zai: { apiKey: "provider" } }, judge: { route: "typesafe", openrouter: { apiKey: "old-or", transmitConsent: true }, typesafe: { apiKey: "old-direct", model: "jev-1.14.0", transmitConsent: true } } };
     const store = createFakeConfigStore({ initial });

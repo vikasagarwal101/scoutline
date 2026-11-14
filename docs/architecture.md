@@ -1044,8 +1044,11 @@ The existing local-name/IP-literal screen remains defense in depth, with that
 content fetch delegated to the configured supplier. Other Reader commands do
 not gain a new redirect policy through this boundary.
 
-OpenRouter and direct TypeSafe are thin native Jev route policies over one
-shared bounded lifecycle. They are distinct from acquisition Providers and
+OpenRouter SystemOne and direct TypeSafe are thin route policies over one
+shared bounded lifecycle. OpenRouter model choices are an explicit map in
+`judge-config.ts`: existing Jev plus selected Liquid, Baseten, Nace and
+Perplexity decision profiles. Init/config and native response identity use
+that same map; no runtime discovery or separate model-specific engine is added. They are distinct from acquisition Providers and
 their routing/fallback. Selected judge failures never switch routes or models;
 each logical judgment has one attempt, while multiple judgments share the
 existing physical admission ceiling. See [judge configuration](configuration.md#investigation-judge).

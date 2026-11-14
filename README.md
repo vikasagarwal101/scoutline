@@ -286,9 +286,10 @@ Selecting a provider that doesn't support a capability auto-reroutes to the next
 
 Requirements investigations produce structured answers to declared fields; caller
 investigations retain evidence for explicit follow-up rounds. Both can use a
-native Jev semantic judge. OpenRouter is the default route; select direct TypeSafe
+native SystemOne semantic judge. OpenRouter Jev 1.14 is the default; select direct TypeSafe
 with `SCOUTLINE_JUDGE=typesafe`. Explicit consent and the selected route’s own key
-are required. See [judge setup and migration](docs/configuration.md#investigation-judge).
+are required. Selected Liquid, Baseten, Nace and Perplexity decision models
+are also available on OpenRouter. See [judge setup and migration](docs/configuration.md#investigation-judge).
 
 Caller URL acquisition screens local hostname forms and non-public IP literals
 before the reader callback; remote Reader Providers retain control of DNS and

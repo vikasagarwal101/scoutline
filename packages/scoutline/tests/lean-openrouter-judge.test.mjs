@@ -310,3 +310,116 @@ test("unknown and missing answer keys cannot authorize a judgment", async () => 
     await assert.rejects(() => profile.judge(input), e => e.code === "TYPESAFE_PROTOCOL");
   }
 });
+
+
+// Literal response identities are an external-protocol oracle, not derived
+// from the production profile registry. Only HTTP is faked.
+const SCOPED_SYSTEMONE_MODELS = [
+  [
+    "liquid/d1",
+    "liquid/d1-20260930"
+  ],
+  [
+    "liquid/d1.1",
+    "liquid/d1.1-20261027"
+  ],
+  [
+    "liquid/d1-ultra",
+    "liquid/d1-ultra-20261015"
+  ],
+  [
+    "baseten/joey-1",
+    "baseten/joey-1-20261029"
+  ],
+  [
+    "baseten/elephant-1",
+    "baseten/elephant-1-20261021"
+  ],
+  [
+    "baseten/mammoth-1",
+    "baseten/mammoth-1-20261021"
+  ],
+  [
+    "nace-ai/drex-v1.5",
+    "nace-ai/drex-v1.5-20261009"
+  ],
+  [
+    "nace-ai/drex-v2.0",
+    "nace-ai/drex-v2.0-20261009"
+  ],
+  [
+    "nace-ai/drex-max",
+    "nace-ai/drex-max-20261016"
+  ],
+  [
+    "nace-ai/drex-max-finance",
+    "nace-ai/drex-max-finance-20261110"
+  ],
+  [
+    "perplexity/pplx-decider-v1.2",
+    "perplexity/pplx-decider-v1.2-20261016"
+  ],
+  [
+    "perplexity/pplx-decider-flash-v1.2",
+    "perplexity/pplx-decider-flash-v1.2-20261016"
+  ],
+  [
+    "perplexity/pplx-decider-v1.3:free",
+    "perplexity/pplx-decider-v1.3-20261112:free"
+  ],
+  [
+    "perplexity/pplx-decider-flash-v1.3:free",
+    "perplexity/pplx-decider-flash-v1.3-20261112:free"
+  ]
+];
+
+for (const [requested, resolved] of SCOPED_SYSTEMONE_MODELS) {
+  test(`scoped SystemOne profile ${requested} binds both callbacks and refuses model drift`, async () => {
+    const calls = [], admissions = [];
+    let wrongModel = false;
+    const profile = createOpenRouterJudge({
+      apiKey: "synthetic-systemone-key",
+      reserveAttempt: context => admissions.push(context),
+      maxAttempts: 4,
+      retrySettings: { maxTransientRetries: 3 },
+      fetchLike: async (url, init) => {
+        const body = JSON.parse(init.body);
+        calls.push({ url, init, body });
+        const answers = Object.fromEntries(Object.keys(body.questions).map(id =>
+          [id, { type: "noul", noul: /[fc]$/.test(id) ? 0.05 : 0.95 }]));
+        return response(wrongModel ? "typesafe/jev-1.14-20261014" : resolved, answers);
+      },
+    }, requested);
+    const classified = await profile.judge(input);
+    const meta = classified[Symbol.for("leanJevAttemptMeta")];
+    assert.equal(meta.requestedModel, requested);
+    assert.equal(meta.resolvedModel, resolved);
+    assert.equal(meta.attempts, 1);
+    assert.deepEqual(classified.documents, [{ evidenceId: "e0", relevant: true, supportsClaim: true, refutesClaim: false }]);
+    const candidate = {
+      source: { evidenceId: "e0", url: "https://example.test/a", content: "v", fetchedAt: "2026-11-13", digest: "d" },
+      fieldMeanings: { f0: "version" }, scope: {},
+      candidates: [{ fieldId: "f0", value: "v", quote: "v", charRange: [0, 1] }],
+      opposingContext: [], depBindings: {},
+    };
+    const judged = await profile.candidateJudge(candidate);
+    assert.equal(judged.model, resolved);
+    assert.equal(judged.answers.q0s.noul, 0.95);
+    assert.equal(judged.answers.q0c.noul, 0.05);
+    assert.equal(calls.length, 2);
+    assert.deepEqual(Object.keys(calls[0].body.questions), ["q0r", "q0s", "q0f"]);
+    assert.deepEqual(Object.keys(calls[1].body.questions), ["q0s", "q0c"]);
+    for (const call of calls) {
+      assert.equal(call.url, "https://openrouter.ai/api/v1/systemone");
+      assert.equal(call.body.model, requested);
+      assert.deepEqual(call.body.provider, { allow_fallbacks: false });
+      assert.equal(call.init.redirect, "error");
+    }
+    wrongModel = true;
+    for (const invoke of [() => profile.judge(input), () => profile.candidateJudge(candidate)])
+      await assert.rejects(invoke, error => error.code === "TYPESAFE_MODEL" && error.observed.resolvedModel === null);
+    assert.equal(calls.length, 4, "each refused response consumes one call, without retries or fallback");
+    assert.equal(admissions.length, 4);
+    assert.ok(admissions.every(row => row.attempt === 0));
+  });
+}

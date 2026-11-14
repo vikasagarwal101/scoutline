@@ -96,7 +96,24 @@ test("finite profiles bind immutable exact model identities", () => {
 
 test("route model lists and helpers match the immutable descriptor table", () => {
   const expected = {
-    openrouter: ["OPENROUTER_API_KEY", "https://openrouter.ai/api/v1/systemone", [["typesafe/jev-1.14", "typesafe/jev-1.14-20261014"], ["typesafe/jev-1.13", "typesafe/jev-1.13-20260917"]]],
+    openrouter: ["OPENROUTER_API_KEY", "https://openrouter.ai/api/v1/systemone", [
+      ["typesafe/jev-1.14", "typesafe/jev-1.14-20261014"],
+      ["typesafe/jev-1.13", "typesafe/jev-1.13-20260917"],
+      ["liquid/d1", "liquid/d1-20260930"],
+      ["liquid/d1.1", "liquid/d1.1-20261027"],
+      ["liquid/d1-ultra", "liquid/d1-ultra-20261015"],
+      ["baseten/joey-1", "baseten/joey-1-20261029"],
+      ["baseten/elephant-1", "baseten/elephant-1-20261021"],
+      ["baseten/mammoth-1", "baseten/mammoth-1-20261021"],
+      ["nace-ai/drex-v1.5", "nace-ai/drex-v1.5-20261009"],
+      ["nace-ai/drex-v2.0", "nace-ai/drex-v2.0-20261009"],
+      ["nace-ai/drex-max", "nace-ai/drex-max-20261016"],
+      ["nace-ai/drex-max-finance", "nace-ai/drex-max-finance-20261110"],
+      ["perplexity/pplx-decider-v1.2", "perplexity/pplx-decider-v1.2-20261016"],
+      ["perplexity/pplx-decider-flash-v1.2", "perplexity/pplx-decider-flash-v1.2-20261016"],
+      ["perplexity/pplx-decider-v1.3:free", "perplexity/pplx-decider-v1.3-20261112:free"],
+      ["perplexity/pplx-decider-flash-v1.3:free", "perplexity/pplx-decider-flash-v1.3-20261112:free"],
+    ]],
     typesafe: ["TYPESAFE_API_KEY", "https://api.typesafe.ai/v1/systemone", [["jev-1.13.0", "jev-1.13.0"], ["jev-1.14.0", "jev-1.14.0"]]],
   };
   assert.ok(Object.isFrozen(judgeConfig.JUDGE_ROUTE_MODELS));

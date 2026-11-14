@@ -4,6 +4,34 @@ This reference covers advanced commands and performance tuning for
 `scoutline`, plus Provider-specific configuration and the package publication
 gate.
 
+## Investigation judge
+
+The default OpenRouter and optional direct TypeSafe judge routes are independent
+of acquisition Provider selection. Configure their credentials, consent and
+compatible models through [judge configuration](../../../../../docs/configuration.md#investigation-judge).
+OpenRouter keeps Jev 1.14 as default and adds explicit Liquid, Baseten, Nace
+and Perplexity decision profiles. Only the configured model is called; no
+automatic discovery, model fallback or new extraction operation is enabled.
+The new profiles are metadata-pinned and offline-tested; live compatibility
+and model-specific calibration remain unverified.
+
+Caller URL leads and caller reader callbacks reject local hostname forms and
+non-public/special-use IP literals, including restored and search-discovered
+targets. This is destination screening, not a DNS/redirect guarantee for a remote
+Reader Provider. Qualified synthetic fixture domains are supported. Add `--help`
+or `-h` to either requirements/caller input mode to print help without processing
+the input or constructing an investigation runtime.
+
+Requirements/caller acquisition refuses redirects on requests to supplier APIs.
+This protects that app-owned hop; the remote Reader's separate content-URL DNS
+and redirect behavior remains delegated. Other Reader command behavior is unchanged.
+
+Caller evidence pages retain known Reader/final-URL/cache attribution and supplied
+representation metadata; unavailable or legacy metadata stays unknown. A late
+invocation interrupt reports exit 130 without undoing a committed round. When
+`invocationCancelled` is present, `retainedStopReason` describes that committed
+round separately from the cancelled invocation; inspect the reference before retrying.
+
 ## Provider Selection
 
 Shared commands (`search`, `vision analyze`, `quota`, `doctor`),

@@ -33,7 +33,7 @@ import { getHermeticArtifactsDir } from "./helpers/hermetic-main.js";
 // without arming they scan/empty the developer's real ~/.scoutline/cache
 // and ~/.scoutline/tools. Same shape as useTempConfigDir() above.
 import { after, before } from "node:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 {
@@ -682,5 +682,202 @@ describe("hermeticity: main() tests inject in-memory config stores", () => {
     });
     const captured = zai.getCapturedEnv();
     assert.strictEqual(captured.Z_AI_API_KEY, "injected-file-key");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F5: the judge section's config views under the secret union.
+//
+// The stored judge credentials join the SAME redaction basis as every
+// other credential, so the config views never print them — and a stored
+// value that is ALSO a plain model string masks wherever it appears.
+// ---------------------------------------------------------------------------
+
+describe("F5: judge config views redact the stored judge credentials", () => {
+  /** The private roots this block creates; removed when the block ends. */
+  const ownedRoots = new Set();
+  after(() => {
+    for (const root of ownedRoots) rmSync(root, { recursive: true, force: true });
+    ownedRoots.clear();
+  });
+
+  /** One `config get` run over a private config root. */
+  async function configGet(path, { config, env = {} } = {}) {
+    const root = mkdtempSync(join(tmpdir(), "scoutline-judge-view-"));
+    ownedRoots.add(root);
+    const configDir = join(root, "config");
+    mkdirSync(configDir, { recursive: true });
+    writeFileSync(join(configDir, "config.json"), JSON.stringify(config, null, 2));
+    const { adapter, stdout, stderr } = createTestAdapter();
+    const code = await main(
+      path === undefined ? ["config", "get"] : ["config", "get", path],
+      {
+        invocation: adapter,
+        env: { SCOUTLINE_CONFIG_DIR: configDir, ...env },
+        loadScoutlineConfig: async () => config,
+      },
+    );
+    return { code, stdout: stdout.join(""), stderr: stderr.join(""), root };
+  }
+
+  it("masks both stored route keys in the full config view", async () => {
+    const storedSelected = "or-stored-key-0001";
+    const storedInactive = "ts-stored-key-0002";
+    const run = await configGet(undefined, {
+      config: {
+        version: 1, providers: {},
+        judge: {
+          route: "openrouter",
+          openrouter: { model: "typesafe/jev-1.14", transmitConsent: true, apiKey: storedSelected },
+          typesafe: { model: "jev-1.13.0", transmitConsent: false, apiKey: storedInactive },
+        },
+      },
+    });
+    assert.strictEqual(run.code, 0, run.stderr);
+    assert.ok(!run.stdout.includes(storedSelected), "the selected stored key must never print");
+    assert.ok(!run.stdout.includes(storedInactive), "the inactive stored key must never print");
+    assert.ok(run.stdout.includes("[REDACTED]"), "the redaction marker must appear");
+    // The public structure around it survives.
+    const view = JSON.parse(run.stdout);
+    assert.strictEqual(view.judge.route, "openrouter");
+    assert.strictEqual(view.judge.openrouter.model, "typesafe/jev-1.14");
+    assert.strictEqual(view.judge.openrouter.transmitConsent, true);
+    assert.strictEqual(view.judge.typesafe.model, "jev-1.13.0");
+    assert.strictEqual(view.judge.typesafe.transmitConsent, false);
+  });
+
+  it("keeps the stored route key out of the profile and scalar views too", async () => {
+    const storedSelected = "or-stored-key-0003";
+    const config = {
+      version: 1, providers: {},
+      judge: {
+        route: "openrouter",
+        openrouter: { model: "typesafe/jev-1.14", transmitConsent: true, apiKey: storedSelected },
+      },
+    };
+    // The profile views carry the model and the consent, never the key.
+    for (const path of ["judge", "judge.openrouter"]) {
+      const run = await configGet(path, { config });
+      assert.strictEqual(run.code, 0, run.stderr);
+      assert.ok(!run.stdout.includes(storedSelected), `the ${path} view must not print the stored key`);
+    }
+    const profile = JSON.parse((await configGet("judge.openrouter", { config })).stdout);
+    assert.strictEqual(profile.model, "typesafe/jev-1.14");
+    assert.strictEqual(profile.transmitConsent, true);
+    // The scalar route view is not a credential at all.
+    const route = await configGet("judge.route", { config });
+    assert.strictEqual(route.code, 0, route.stderr);
+    assert.strictEqual(JSON.parse(route.stdout), "openrouter");
+  });
+
+  it("masks a stored model string that is ALSO an inactive route's credential", async () => {
+    // The stored OpenRouter model string is the exact value of a synthetic
+    // INACTIVE TYPESAFE_API_KEY. The model is not an apiKey field, but the
+    // LITERAL is a credential, so the scalar view must still mask it.
+    const literal = "typesafe/jev-1.14";
+    const run = await configGet("judge.openrouter.model", {
+      config: {
+        version: 1, providers: {},
+        judge: { route: "openrouter", openrouter: { model: literal, transmitConsent: true } },
+      },
+      env: { TYPESAFE_API_KEY: literal },
+    });
+    assert.strictEqual(run.code, 0, run.stderr);
+    assert.strictEqual(JSON.parse(run.stdout), "[REDACTED]", "the model scalar must mask the credential literal");
+  });
+
+  it("masks a plain model scalar that equals an ENV-ONLY inactive route credential", async () => {
+    // The ENV-ONLY case: there is NO stored copy at all. The shipped
+    // OpenRouter model default is "typesafe/jev-1.14", and a synthetic
+    // INACTIVE TYPESAFE_API_KEY carries exactly that literal. The model is
+    // not an apiKey field, but the LITERAL is a credential, so the plain
+    // scalar must still mask.
+    const literal = "typesafe/jev-1.14";
+    const run = await configGet("judge.openrouter.model", {
+      config: { version: 1, providers: {} },
+      env: { TYPESAFE_API_KEY: literal },
+    });
+    assert.strictEqual(run.code, 0, run.stderr);
+    assert.strictEqual(JSON.parse(run.stdout), "[REDACTED]", "the model scalar must mask the env-only credential literal");
+    // The profile view around it keeps its public structure.
+    const profile = await configGet("judge.openrouter", {
+      config: { version: 1, providers: {} },
+      env: { TYPESAFE_API_KEY: literal },
+    });
+    assert.strictEqual(profile.code, 0, profile.stderr);
+    const view = JSON.parse(profile.stdout);
+    assert.strictEqual(view.model, "[REDACTED]");
+    assert.strictEqual(view.transmitConsent, false);
+  });
+
+  it("keeps env-only preferences inspectable without constructing a judge or any HTTP", async () => {
+    // A valid consented env-only selection stores no credential, so the
+    // preferences stay inspectable — and nothing native is constructed.
+    const httpCalls = [];
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = async (url) => { httpCalls.push(String(url)); throw new Error("no HTTP permitted"); };
+    try {
+      const run = await configGet("judge", {
+        config: { version: 1, providers: {} },
+        env: { OPENROUTER_API_KEY: "or-env-only-key-0004", SCOUTLINE_JUDGE_TRANSMIT: "1" },
+      });
+      assert.strictEqual(run.code, 0, run.stderr);
+      const view = JSON.parse(run.stdout);
+      assert.strictEqual(view.route, "openrouter");
+      assert.strictEqual(view.openrouter.model, "typesafe/jev-1.14");
+      assert.strictEqual(httpCalls.length, 0, "the config view performed no HTTP");
+      assert.ok(!run.stdout.includes("or-env-only-key-0004"), "the env credential never prints");
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F5: a normal save-capable command path.
+//
+// A served plain marker that is a credential must not reach the stdout, the
+// stderr or the saved artifact bytes. The saved artifact path is compared
+// EXACTLY — this suite creates its own root and reads only its own files.
+// ---------------------------------------------------------------------------
+
+describe("F5: a save-capable command path keeps a served credential out of every byte", () => {
+  it("redacts a served credential from stdout, stderr and the saved artifact", async () => {
+    const marker = "tavily-served-marker-0005";
+    const publicFact = "ExampleApp release 2.4.0 supports CSV.";
+    const tavily = makeKeyCapturingDescriptor({ id: "tavily", credentialEnvVars: ["TAVILY_API_KEY"], resultMode: "embed-key" });
+    const { adapter, stdout, stderr } = createTestAdapter();
+    const artifactsDir = mkdtempSync(join(tmpdir(), "scoutline-judge-save-"));
+    const cacheDir = mkdtempSync(join(tmpdir(), "scoutline-judge-save-cache-"));
+    try {
+      const exportPath = join(artifactsDir, "export.json");
+      const code = await main(["--provider", "tavily", "search", "probe", "--save", exportPath], {
+        invocation: adapter,
+        env: {
+          TAVILY_API_KEY: marker,
+          SCOUTLINE_ARTIFACTS_DIR: artifactsDir,
+          SCOUTLINE_CACHE_DIR: cacheDir,
+        },
+        providerDescriptors: [tavily.descriptor],
+        searchCache: inMemoryCache(),
+        searchSleep: async () => {},
+        searchRandom: () => 0.5,
+        loadScoutlineConfig: async () => ({ version: 1, providers: {} }),
+      });
+      assert.strictEqual(code, 0, stderr.join(""));
+      const out = stdout.join("");
+      // The POSITIVE visible fact: the redaction marker, not mere omission.
+      assert.ok(out.includes("[REDACTED]"), "the redaction marker must appear in stdout");
+      assert.ok(out.includes(publicFact) || out.includes("result with key="), "the public result structure survives");
+      assert.ok(!out.includes(marker), "the served credential must not reach stdout");
+      assert.ok(!stderr.join("").includes(marker), "the served credential must not reach stderr");
+      // Only the EXACT artifact paths this run created are compared.
+      const saved = readFileSync(exportPath, "utf8");
+      assert.ok(!saved.includes(marker), "the served credential must not reach the saved export bytes");
+      assert.ok(saved.includes("[REDACTED]"), "the saved export carries the redaction marker");
+    } finally {
+      rmSync(artifactsDir, { recursive: true, force: true });
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
   });
 });

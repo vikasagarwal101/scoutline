@@ -20,10 +20,12 @@
   "files": [
     "bin",
     "dist",
-    "skills"
+    "skills",
+    "!dist/lib/lean-jev-adapter.*",
+    "!dist/lib/lean-candidate-transport.*"
   ],
   "scripts": {
-    "build": "node scripts/generate-minimax-vision-revisions.mjs && tsc",
+    "build": "node scripts/generate-minimax-vision-revisions.mjs && node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc",
     "dev": "tsc --watch",
     "test": "npm run test:offline",
     "test:offline": "npm run build && node scripts/run-tests.mjs offline",

@@ -1,0 +1,23 @@
+import fs from 'node:fs';
+import { runLeanInvestigation } from '../../dist/lib/lean-investigation.js';
+import { inputs } from '../unified-review-corpus.mjs';
+import { offlineDeps } from '../unified-review-offline-deps.mjs';
+const mode = process.argv[2];
+const c = structuredClone(inputs[0]);
+c.contract.requirements = { version: c.contract.requirements.version };
+c.contract.limits = { deadlineMs: 200 };
+const { deps } = offlineDeps(c);
+const controller = new AbortController();
+deps.externalSignal = controller.signal;
+deps.now = mode === 'real-clock' ? Date.now : () => 0;
+const judge = deps.candidateJudge;
+deps.candidateJudge = async (input) => {
+  const response = await judge(input);
+  if (mode === 'unknown') response.answers.q0s.noul = .5;
+  if (mode === 'owned-timer') await new Promise(r => setTimeout(r, 220));
+  else if (mode !== 'uncancelled') controller.abort();
+  fs.writeSync(1, JSON.stringify({ marker: 'candidate-return', mode, aborted: controller.signal.aborted }) + '\n');
+  return response;
+};
+const r = await runLeanInvestigation(c.contract, deps);
+fs.writeSync(1, JSON.stringify({ result: r }) + '\n');

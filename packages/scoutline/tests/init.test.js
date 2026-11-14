@@ -29,12 +29,28 @@ import * as path from "node:path";
 import * as fs from "node:fs/promises";
 
 import { main } from "../dist/index.js";
-import { handleInitWithHelp, INIT_HELP } from "../dist/commands/init.js";
+import { handleInitWithHelp as runInitWithHelp, INIT_HELP } from "../dist/commands/init.js";
+async function handleInitWithHelp(args, deps) {
+  const result = await runInitWithHelp(args, deps);
+  deps.prompts.assertJudgeScripted?.();
+  return result;
+}
 import { AuthError, ApiError, NetworkError } from "../dist/lib/errors.js";
 import { withTempDir } from "./helpers/temp-dir.js";
 import { useTempConfigDir } from "./helpers/config-dir-pin.js";
 
 useTempConfigDir();
+
+it("preserves a real handler throw instead of the secondary judge guard error", async () => {
+  const primary = new Error("help output failed");
+  const secondary = new Error("judge guard failed");
+  let guardCalls = 0;
+  await assert.rejects(() => handleInitWithHelp(["--help"], {
+    prompts: { assertJudgeScripted: () => { guardCalls += 1; throw secondary; } },
+    writeStdout: () => { throw primary; },
+  }), (error) => error === primary);
+  assert.equal(guardCalls, 0);
+});
 
 // ---------------------------------------------------------------------------
 // Test doubles
@@ -146,6 +162,7 @@ function createScriptedPrompts() {
     async select(message, choices) {
       calls.select.push({ message, choices });
       if (queue.select.length === 0) {
+        if (message.startsWith("Which judge access route")) calls.judgeExhausted = true;
         throw new Error("scripted select queue exhausted: " + message);
       }
       const { answer, cancel } = queue.select.shift();
@@ -180,6 +197,7 @@ function createScriptedPrompts() {
       return answer;
     },
   };
+  prompts.assertJudgeScripted = () => assert.notEqual(calls.judgeExhausted, true, "judge route prompt queue exhausted");
   return {
     prompts,
     calls,
@@ -471,6 +489,7 @@ describe("init fresh-onboarding happy path: multi-provider, atomic write", () =>
         configStore: store,
       });
 
+      script.queueSelect(undefined); // Explicitly skip judge setup.
       const status = await handleInitWithHelp([], deps);
 
       assert.strictEqual(status, 0);
@@ -549,6 +568,7 @@ describe("init fresh-onboarding happy path: multi-provider, atomic write", () =>
           env: { OTHER_VAR: "preserved" },
         });
 
+        script.queueSelect(undefined); // Explicitly skip judge setup.
         const status = await handleInitWithHelp([], deps);
         assert.strictEqual(status, 0);
 
@@ -611,6 +631,7 @@ describe("init validation classification: honest broad taxonomy", () => {
         configStore: store,
       });
 
+      script.queueSelect(undefined); // Explicitly skip judge setup.
       const status = await handleInitWithHelp([], deps);
 
       assert.strictEqual(status, 0);
@@ -665,6 +686,7 @@ describe("init validation classification: honest broad taxonomy", () => {
         configStore: store,
       });
 
+      script.queueSelect(undefined); // Explicitly skip judge setup.
       const status = await handleInitWithHelp([], deps);
       assert.strictEqual(status, 0);
 
@@ -713,6 +735,7 @@ describe("init validation classification: honest broad taxonomy", () => {
         configStore: store,
       });
 
+      script.queueSelect(undefined); // Explicitly skip judge setup.
       const status = await handleInitWithHelp([], deps);
       assert.strictEqual(status, 0);
       const written = JSON.parse(await fs.readFile(filePath, "utf8"));
@@ -810,6 +833,7 @@ describe("init credit-cost disclosure: shown before paid probes, absent for free
         configStore: store,
       });
 
+      script.queueSelect(undefined); // Explicitly skip judge setup.
       const status = await handleInitWithHelp([], deps);
       assert.strictEqual(status, 0);
       // Disclosure line emitted to stderr BEFORE the probe.
@@ -847,6 +871,7 @@ describe("init credit-cost disclosure: shown before paid probes, absent for free
         configStore: store,
       });
 
+      script.queueSelect(undefined); // Explicitly skip judge setup.
       const status = await handleInitWithHelp([], deps);
       assert.strictEqual(status, 0);
       const joined = stderrChunks.join("");
@@ -1001,6 +1026,7 @@ describe("init zero-provider confirmation: default No returns to checklist", () 
         configStore: store,
       });
 
+      script.queueSelect(undefined); // Explicitly skip judge setup.
       const status = await handleInitWithHelp([], deps);
       assert.strictEqual(status, 0);
       // Two checklist prompts observed (loop-back witness).
@@ -1044,6 +1070,7 @@ describe("init zero-provider confirmation: default No returns to checklist", () 
         configStore: store,
       });
 
+      script.queueSelect(undefined); // Explicitly skip judge setup.
       const status = await handleInitWithHelp([], deps);
       assert.strictEqual(status, 0);
       const written = JSON.parse(await fs.readFile(filePath, "utf8"));
@@ -1099,6 +1126,7 @@ describe("init registration link: hyperlink + literal URL both rendered", () => 
         configStore: store,
       });
 
+      script.queueSelect(undefined); // Explicitly skip judge setup.
       const status = await handleInitWithHelp([], deps);
       assert.strictEqual(status, 0);
       const joined = stderrChunks.join("");
@@ -1155,6 +1183,7 @@ describe("init env-key import: candidate offered when ambient env has a key", ()
       const priorProcessKey = process.env.Z_AI_API_KEY;
       delete process.env.Z_AI_API_KEY;
       try {
+        script.queueSelect(undefined); // Explicitly skip judge setup.
         const status = await handleInitWithHelp([], deps);
         assert.strictEqual(status, 0);
         // Imported key reached the file as the verified apiKey.
@@ -1206,6 +1235,7 @@ describe("init env-key import: candidate offered when ambient env has a key", ()
         env: { Z_AI_API_KEY: "env-imported-key" },
       });
 
+      script.queueSelect(undefined); // Explicitly skip judge setup.
       const status = await handleInitWithHelp([], deps);
       assert.strictEqual(status, 0);
       const written = JSON.parse(await fs.readFile(filePath, "utf8"));
@@ -1407,6 +1437,7 @@ describe("init wizard: minimum keyless branch for keyless science suppliers (T2)
         configStore: store,
       });
 
+      script.queueSelect(undefined); // Explicitly skip judge setup.
       const status = await handleInitWithHelp([], deps);
       assert.strictEqual(status, 0);
       // No key prompt: the confirm queue only saw fallback+journal.
@@ -1462,6 +1493,7 @@ describe("init wizard: minimum keyless branch for keyless science suppliers (T2)
         configStore: store,
       });
 
+      script.queueSelect(undefined); // Explicitly skip judge setup.
       const status = await handleInitWithHelp([], deps);
       assert.strictEqual(status, 0);
       assert.equal(arxiv.invokes.length, 1, "one keyless probe attempt, then skip");
@@ -1726,6 +1758,230 @@ describe("init re-config: change-fallback persists the new preference", () => {
   });
 });
 
+describe("init judge setup: fresh flow, re-config and cancel", () => {
+
+  it("judge setup lists scoped SystemOne profiles and preserves inactive TypeSafe settings", async () => {
+    const models = ["liquid/d1.1","baseten/elephant-1","nace-ai/drex-max","perplexity/pplx-decider-v1.2"];
+    for (const model of models) {
+      const inactive = { model: "jev-1.13.0", apiKey: "inactive-synthetic-key", transmitConsent: false };
+      const store = createFakeConfigStore({ initial: {
+        version: 1, providers: { zai: { apiKey: "provider" } },
+        judge: { route: "typesafe", typesafe: inactive },
+      } });
+      const script = createScriptedPrompts();
+      script.queueSelect("setup-judge"); script.queueSelect("openrouter"); script.queueSelect(model);
+      script.queuePassword("selected-synthetic-key"); script.queueConfirm(false); script.queueSelect("cancel");
+      let choices;
+      const select = script.prompts.select;
+      script.prompts.select = async (message, items) => {
+        if (message.startsWith("Which model should")) choices = items.map(item => item.value);
+        return select(message, items);
+      };
+      const { deps, stdoutChunks, stderrChunks } = createInitDeps({
+        descriptors: [], prompts: script.prompts, configStore: store,
+      });
+      assert.equal(await handleInitWithHelp([], deps), 0);
+      assert.equal(choices.length, 16);
+      for (const expected of models) assert.ok(choices.includes(expected));
+      assert.equal(choices[0], "typesafe/jev-1.14", "shipped default stays first");
+      const saved = store.getConfig().judge;
+      assert.equal(saved.openrouter.model, model);
+      assert.equal(saved.openrouter.transmitConsent, false);
+      assert.deepEqual(saved.typesafe, inactive);
+      assert.match(stdoutChunks.join(""), /saved, not live-verified/);
+      assert.doesNotMatch(stdoutChunks.join("") + stderrChunks.join(""), /selected-synthetic-key|inactive-synthetic-key/);
+    }
+  });
+  it("full reset discards both prior judge profiles before new setup", async () => {
+    const initial = { version: 1, providers: { zai: { apiKey: "provider" } }, judge: { route: "typesafe", openrouter: { apiKey: "old-or", transmitConsent: true }, typesafe: { apiKey: "old-direct", model: "jev-1.14.0", transmitConsent: true } } };
+    const store = createFakeConfigStore({ initial });
+    const script = createScriptedPrompts();
+    script.queueSelect("rerun-full");
+    script.queueCheckbox([]);
+    script.queueConfirm(true);
+    script.queueConfirm(true);
+    script.queueConfirm(true);
+    script.queueConfirm(true);
+    script.queueSelect("openrouter");
+    script.queueSelect("typesafe/jev-1.14");
+    script.queuePassword("");
+    script.queueConfirm(false);
+    const { deps } = createInitDeps({ descriptors: [], prompts: script.prompts, configStore: store });
+    assert.equal(await handleInitWithHelp([], deps), 0);
+    const saved = store.getConfig();
+    assert.deepEqual(saved.judge, { route: "openrouter", openrouter: { model: "typesafe/jev-1.14", transmitConsent: false } });
+  });
+
+  it("blank judge key removes the selected stored credential only", async () => {
+    const inactive = { apiKey: "other-key", model: "jev-1.14.0", transmitConsent: true };
+    const initial = { version: 1, providers: { zai: { apiKey: "provider" } }, judge: { route: "openrouter", openrouter: { apiKey: "wrong-key", model: "typesafe/jev-1.13", transmitConsent: true }, typesafe: inactive } };
+    const store = createFakeConfigStore({ initial });
+    const script = createScriptedPrompts();
+    script.queueSelect("setup-judge");
+    script.queueSelect("openrouter");
+    script.queueSelect("typesafe/jev-1.14");
+    script.queuePassword("");
+    script.queueConfirm(true);
+    script.queueSelect("cancel");
+    const { deps, stdoutChunks, stderrChunks } = createInitDeps({ descriptors: [], prompts: script.prompts, configStore: store });
+    assert.equal(await handleInitWithHelp([], deps), 0);
+    const judge = store.getConfig().judge;
+    assert.equal(Object.hasOwn(judge.openrouter, "apiKey"), false);
+    assert.deepEqual(judge.typesafe, inactive);
+    const { resolveJudgeSettings } = await import("../dist/lib/judge-config.js");
+    assert.throws(() => resolveJudgeSettings({}, judge));
+    assert.equal(resolveJudgeSettings({ OPENROUTER_API_KEY: "environment" }, judge).apiKey, "environment");
+    assert.match(script.calls.password[0].message, /remov/i);
+    assert.doesNotMatch(stdoutChunks.join("") + stderrChunks.join(""), /wrong-key|other-key/);
+  });
+
+  it("reconfiguration offers saved route and model first and replaces the selected key", async () => {
+    const inactive = { model: "typesafe/jev-1.13", apiKey: "other-key", transmitConsent: true };
+    const initial = { version: 1, providers: { zai: { apiKey: "provider" } }, judge: { route: "typesafe", openrouter: inactive, typesafe: { model: "jev-1.14.0", apiKey: "old-key", transmitConsent: true } } };
+    const store = createFakeConfigStore({ initial });
+    const script = createScriptedPrompts();
+    script.queueSelect("setup-judge");
+    const select = script.prompts.select;
+    script.prompts.select = async (message, choices) => {
+      if (message.startsWith("Which judge access route") || message.startsWith("Which model should")) {
+        script.queueSelect(choices[0].value);
+      }
+      return select(message, choices);
+    };
+    script.queuePassword("new-key");
+    script.queueConfirm(true);
+    const confirm = script.prompts.confirm;
+    script.prompts.confirm = async (...args) => {
+      const answer = await confirm(...args);
+      script.queueSelect("cancel");
+      return answer;
+    };
+    const { deps } = createInitDeps({ descriptors: [], prompts: script.prompts, configStore: store });
+    assert.equal(await handleInitWithHelp([], deps), 0);
+    const saved = store.getConfig().judge;
+    assert.equal(saved.route, "typesafe");
+    assert.deepEqual(saved.typesafe, { model: "jev-1.14.0", apiKey: "new-key", transmitConsent: true });
+    assert.deepEqual(saved.openrouter, inactive);
+  });
+
+  it("fresh flow stores route, model, key and per-route consent", async () => {
+    const store = createFakeConfigStore();
+    const script = createScriptedPrompts();
+    script.queueCheckbox([]);
+    script.queueConfirm(true); // continue with no providers
+    script.queueConfirm(true); // fallback
+    script.queueConfirm(true); // journal
+    script.queueConfirm(true); // fusion
+    script.queueSelect("openrouter"); // judge route
+    script.queueSelect("typesafe/jev-1.14"); // judge model
+    script.queuePassword("or-secret"); // judge key
+    script.queueConfirm(true); // transmission consent
+
+    const { deps, stdoutChunks, stderrChunks } = createInitDeps({
+      descriptors: [],
+      prompts: script.prompts,
+      configStore: store,
+    });
+
+    const status = await handleInitWithHelp([], deps);
+    assert.strictEqual(status, 0);
+    const writes = store.getWrites();
+    assert.strictEqual(writes.length, 1);
+    assert.deepStrictEqual(writes[0].config.judge, {
+      route: "openrouter",
+      openrouter: { model: "typesafe/jev-1.14", transmitConsent: true, apiKey: "or-secret" },
+    });
+    const output = stdoutChunks.join("") + stderrChunks.join("");
+    assert.ok(output.includes("not live-verified"));
+    assert.ok(!output.includes("or-secret"));
+  });
+
+  it("cancelling the judge step writes no judge section", async () => {
+    const initial = { version: 1, providers: { zai: { apiKey: "zai-secret" } }, judge: { route: "typesafe" } };
+    const store = createFakeConfigStore({ initial });
+    const script = createScriptedPrompts();
+    script.queueSelect("setup-judge");
+    script.queueSelectCancel(); // cancel at the route choice
+    script.queueSelect("cancel");
+
+    const { deps } = createInitDeps({
+      descriptors: [],
+      prompts: script.prompts,
+      configStore: store,
+    });
+
+    const status = await handleInitWithHelp([], deps);
+    assert.strictEqual(status, 0);
+    assert.strictEqual(store.getWrites().length, 0);
+    assert.equal(script.calls.select.length, 3);
+    assert.equal(script.calls.select[2].message, "What would you like to do?");
+    assert.deepEqual(store.getConfig(), initial);
+  });
+
+  it("a fresh run that skips judge setup keeps a saved judge section", async () => {
+    const store = createFakeConfigStore({ initial: { version: 1, providers: {}, judge: { route: "typesafe" } } });
+    const script = createScriptedPrompts();
+    script.queueCheckbox([]);
+    script.queueConfirm(true); // continue with no providers
+    script.queueConfirm(true); // fallback
+    script.queueConfirm(true); // journal
+    script.queueConfirm(true); // fusion
+    script.queueSelectCancel(); // cancel the judge step
+
+    const { deps } = createInitDeps({
+      descriptors: [],
+      prompts: script.prompts,
+      configStore: store,
+    });
+
+    const status = await handleInitWithHelp([], deps);
+    assert.strictEqual(status, 0);
+    const writes = store.getWrites();
+    assert.strictEqual(writes.length, 1);
+    assert.deepStrictEqual(writes[0].config.judge, { route: "typesafe" });
+  });
+
+  it("init re-config: judge setup preserves unrelated settings", async () => {
+    const initial = {
+      version: 1,
+      providers: { zai: { apiKey: "zai-secret" } },
+      routing: { search: ["tavily"] },
+      fallbackEnabled: false,
+      journal: false,
+      fusion: "occurrence",
+    };
+    const store = createFakeConfigStore({ initial });
+    const script = createScriptedPrompts();
+    script.queueSelect("setup-judge");
+    script.queueSelect("typesafe");
+    script.queueSelect("jev-1.14.0");
+    script.queuePassword("");
+    script.queueConfirm(false);
+    script.queueSelect("cancel");
+
+    const { deps } = createInitDeps({
+      descriptors: [],
+      prompts: script.prompts,
+      configStore: store,
+    });
+
+    const status = await handleInitWithHelp([], deps);
+    assert.strictEqual(status, 0);
+    const writes = store.getWrites();
+    assert.strictEqual(writes.length, 1);
+    assert.deepStrictEqual(writes[0].config.judge, {
+      route: "typesafe",
+      typesafe: { model: "jev-1.14.0", transmitConsent: false },
+    });
+    assert.deepStrictEqual(writes[0].config.providers, initial.providers);
+    assert.deepStrictEqual(writes[0].config.routing, initial.routing);
+    assert.strictEqual(writes[0].config.fallbackEnabled, false);
+    assert.strictEqual(writes[0].config.journal, false);
+    assert.strictEqual(writes[0].config.fusion, "occurrence");
+  });
+
+});
+
 // ---------------------------------------------------------------------------
 // T7 — Journal disclosure prompt (PRD AC9 / ADR-0008)
 // ---------------------------------------------------------------------------
@@ -1766,6 +2022,7 @@ describe("init journal prompt (T7): one-time disclosure, default enabled", () =>
         prompts: script.prompts,
         configStore: realStoreAdapter(filePath),
       });
+      script.queueSelect(undefined); // Explicitly skip judge setup.
       const status = await handleInitWithHelp([], deps);
       assert.strictEqual(status, 0);
       const written = JSON.parse(await fs.readFile(filePath, "utf8"));
@@ -1790,6 +2047,7 @@ describe("init journal prompt (T7): one-time disclosure, default enabled", () =>
         prompts: script.prompts,
         configStore: realStoreAdapter(filePath),
       });
+      script.queueSelect(undefined); // Explicitly skip judge setup.
       const status = await handleInitWithHelp([], deps);
       assert.strictEqual(status, 0);
       const written = JSON.parse(await fs.readFile(filePath, "utf8"));
@@ -1872,6 +2130,7 @@ describe("init fusion prompt (T6): one-time disclosure, default rrf", () => {
         prompts: script.prompts,
         configStore: realStoreAdapter(filePath),
       });
+      script.queueSelect(undefined); // Explicitly skip judge setup.
       const status = await handleInitWithHelp([], deps);
       assert.strictEqual(status, 0);
       const written = JSON.parse(await fs.readFile(filePath, "utf8"));
@@ -1899,6 +2158,7 @@ describe("init fusion prompt (T6): one-time disclosure, default rrf", () => {
         prompts: script.prompts,
         configStore: realStoreAdapter(filePath),
       });
+      script.queueSelect(undefined); // Explicitly skip judge setup.
       const status = await handleInitWithHelp([], deps);
       assert.strictEqual(status, 0);
       const written = JSON.parse(await fs.readFile(filePath, "utf8"));
@@ -2051,6 +2311,7 @@ describe("init re-config: remove-provider drops the entry", () => {
         configStore: store,
       });
 
+      script.queueSelect(undefined); // Explicitly skip judge setup.
       const status = await handleInitWithHelp([], deps);
       assert.strictEqual(status, 0);
 
@@ -2090,6 +2351,7 @@ describe("init re-config: remove-provider drops the entry", () => {
         configStore: store,
       });
 
+      script.queueSelect(undefined); // Explicitly skip judge setup.
       const status = await handleInitWithHelp([], deps);
       assert.strictEqual(status, 0);
 
@@ -2136,6 +2398,7 @@ describe("init re-config: remove-provider drops the entry", () => {
         agentRegistrationRoots: { home, configRoot },
       });
 
+      script.queueSelect(undefined); // Explicitly skip judge setup.
       const status = await handleInitWithHelp([], deps);
       assert.strictEqual(status, 0);
 
@@ -2225,6 +2488,7 @@ describe("init corrupt-config repair: backup + rewrite (T3b)", () => {
         configStore: store,
       });
 
+      script.queueSelect(undefined); // Explicitly skip judge setup.
       const status = await handleInitWithHelp([], deps);
       assert.strictEqual(status, 0);
       const joined = stderrChunks.join("");
@@ -2282,6 +2546,7 @@ describe("init env-import: stale-env-after-import warning (T3b edge case)", () =
       const prior = process.env.Z_AI_API_KEY;
       delete process.env.Z_AI_API_KEY;
       try {
+        script.queueSelect(undefined); // Explicitly skip judge setup.
         const status = await handleInitWithHelp([], deps);
         assert.strictEqual(status, 0);
         const joined = stderrChunks.join("");

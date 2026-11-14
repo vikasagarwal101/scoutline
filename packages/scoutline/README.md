@@ -586,6 +586,142 @@ pointers, and a negation-cue count. `contradicted` is a disclosed
 negation-cue heuristic (hint-grade), not semantic judgment;
 `--context` + `--verify` is a mode-conflict VALIDATION_ERROR.
 
+#### Requirements mode (EXPERIMENTAL)
+
+`investigate --requirements <path|->` (or `--requirements-json
+'<json>'`) runs the requirements-driven investigation engine instead of
+the EvidencePack pipeline: the document declares the authoritative
+question, scope tokens, and named fields (enum classifications or
+source-bound string values); a strict compiler rejects unknown
+keys/declarations BEFORE any acquisition; a bounded acquisition loop
+over the selected provider produces an accepted-only structured answer
+(`kind: "requirements-investigation"`) with per-field outcomes,
+evidence identity digests, and physical HTTP accounting. Exit 0
+complete / 1 partial. Mutually exclusive with the positional question
+and plain-mode controls. Semantic judging defaults to OpenRouter Jev 1.14;
+direct TypeSafe is optional. OpenRouter also offers the explicit Liquid, Baseten,
+Nace and Perplexity decision profiles listed in judge configuration. These new
+profiles are metadata-pinned and offline-tested; live compatibility is unverified.
+The selected route needs its own credential
+and explicit transmission consent; keys alone are inert. Without consent,
+deterministic evaluation remains and semantic fields may remain unresolved.
+No selected-route/model fallback occurs. See [judge configuration](../../docs/configuration.md#investigation-judge).
+Fake-HTTP fixtures do not establish live account access or semantic accuracy.
+Experimental:
+executable bounded-transport supplier subset (tavily, exa, firecrawl,
+linkup, spider — each serving search AND reader over an injected
+transport), no retention/ZDR promises, value production without a
+production extractor reports unsupported outcomes.
+Selection reuses the existing resolver unchanged, and its outcome is
+snapshot-sensitive exactly as everywhere else: with an undefined quota
+snapshot the Z.AI compatibility default stands; with a real snapshot and
+only Tavily configured, quota ranking legitimately picks Tavily
+(--provider > SCOUTLINE_PROVIDER > configured routing > quota-ranked
+pick > Z.AI). A resolved supplier outside the executable subset fails
+closed, naming it. `--no-cache` and `--provider` carry over.
+Runs share one finite physical-dispatch ceiling across acquisition,
+judge and an explicitly observing producer; `SCOUTLINE_REQUIREMENTS_MAX_PHYSICAL`
+may LOWER it (1..48, integer) and never raises it — any other value
+rejects before any HTTP. An injected producer that does not use the
+observer seam leaves its physical count explicitly unknown.
+
+```bash
+scoutline investigate --requirements reqs.json
+cat reqs.json | scoutline investigate --requirements -
+scoutline investigate --requirements-json '{"schemaVersion":1,"question":"What version?","requirements":{"version":{"question":"What version?","schema":{"type":"string"}}}}'
+```
+
+#### Caller-assisted Investigation (EXPERIMENTAL)
+
+`investigate --caller-request <file|->` (or `--caller-request-json
+'<json>'`) runs the retained caller-assisted investigation surface.
+Requests are closed versioned objects (`schemaVersion: 1`) selecting one
+operation: `start` and `continue` execute one explicit bounded round
+with the same compiler, explicit provider/judge wiring and shared
+physical ceiling as requirements mode; `inspect`, `readEvidence`, and
+`delete` are offline, credential-free record operations. Every start or
+continue declares `dataScope: "public" | "synthetic"`; this is a caller
+assertion, not a privacy classifier — the tool rejects a declared
+`private` scope and unsupported formats, unknown keys, malformed
+bindings and output header bounds before any HTTP, but cannot detect
+every sensitive fact inside public-labelled pasted text.
+
+Caller URL leads reject local hostname forms and non-public/special-use IP
+literals before work. The same screen runs before caller reader callbacks,
+including restored and search-discovered URLs. This does not resolve hostnames
+locally or certify a remote Reader's DNS/redirect policy: fetching is delegated
+to the selected Provider, which owns that network boundary. Qualified synthetic
+fixture names remain supported. Requirements/caller acquisition rejects redirects
+on the app-to-supplier API hop; it does not control the supplier's subsequent
+content-URL fetch. Other Reader command transport behavior is unchanged.
+`--help`/`-h` with either investigation input
+mode prints help without reading input, loading config or constructing a runtime.
+
+Evidence pages expose `attribution`: source class, known serving Reader and
+original/final URL, actual cache-service state, serve time, and supplied format/time.
+Discovery Provider or original retrieval/publication time is not inferred from a
+cache serve; unavailable fields stay `null`, and legacy missing attribution is
+exposed as `null`. This metadata survives continuation and historical inspection.
+An interrupt during result publication exits 130 with an inspectable reference.
+If the round's work already settled, the response marks `invocationCancelled`
+and `retainedStopReason` separately; offline inspection retains the committed
+round outcome. Cancellation does not roll back completed data or prove remote
+termination.
+
+The response is
+`kind: "caller-assisted-investigation"` with investigation reference,
+revision, settled round identity, fulfillment counts, current outcome
+rows, retained evidence derivatives (original and redacted-display
+digests), as-recorded usage accounting, and cursors for the seven paged
+collections (`evidence`, `outcomes`, `proposals`, `assessments`,
+`changes`, `gaps`, `rounds`). The handoff header carries a compact
+physical-attempt summary (stage counts, admission, total) with the
+attempt rows marked incomplete and located in the paged `assessments`
+collection, which retains complete validated stages of the native ledger. Partial
+prefixes from unknown stages are omitted; `knownSubtotal` is not a
+complete HTTP total. The
+caller proposes values only against
+accessible current redacted evidence; bindings must be UTF-16 half-open
+ranges whose exact quote binds an original retained range. Unchanged displays
+preserve the selected coordinates even when the quote repeats; changed displays
+still require a unique unchanged quote mapping. Identical bodies retain distinct
+submission events: supply `evidenceId` with a binding or `readEvidence` when
+content identity is ambiguous; evidence cursors pin that event. Response
+schema version is 2 (requests and cursors remain version 1). The bounded
+header points to complete redacted contract/schema/criteria/dependencies,
+executed limits, original per-field proof revisions and latest baseline in
+`changes`; exact retained usage, stop reason and physical ledger remain in
+`assessments`. Mutations require `maxChars >= 8192` (default 16384, maximum
+65536); read-only minimum stays 1024. New `start` requirement IDs must match
+`[A-Za-z0-9_-]{1,64}` so the initial retained requirements can store them.
+Continuation/replacement IDs retain the 128 UTF-8 byte addressability cap;
+legacy reads remain available, and an oversized baseline needs a compatible
+explicit replacement for continuation. `continue`
+requires the current `expectedRevision` and may acknowledge an
+interrupted settled round. Whole metadata/body redaction runs before
+bounded paging; changed secret bases invalidate old cursors rather
+than mixing pages. Offline `inspect`, `readEvidence` and `delete` read local settings for
+redaction without judge activation or HTTP. Corrupt, unreadable or unsafe
+secret bases yield a fixed view-unavailable refusal before deletion; correct
+the basis before retrying. Public display redaction does not encrypt or scrub
+the original private retained source bytes. Mutations conservatively refuse profiles that could redact
+mandatory handoff identities or any part of the recovery diagnostic, before
+record creation/ownership or paid work. If a result-dependent view fails only
+after a round commits, stderr remains an error with the fixed message
+`Caller round committed; do not repeat the mutation.` Its `help` is a JSON
+inspect selector containing the exact retained reference and committed revision.
+Parse that selector, add request `schemaVersion: 1`, and inspect the existing
+record (for example `collection: "outcomes"`); do not repeat `start` to recover
+the view. A restrictive profile may still refuse some pages; never disable
+credential redaction to force them. Local records are retained until explicit safe-owned
+deletion and are stored under `SCOUTLINE_INVESTIGATIONS_DIR` or
+`<config-root>/investigations`.
+
+```bash
+cat request.json | scoutline investigate --caller-request -
+scoutline investigate --caller-request-json '{"schemaVersion":1,"operation":"start","dataScope":"synthetic","requirements":{"schemaVersion":1,"question":"What version?","requirements":{"version":{"question":"What version?","schema":{"type":"string"}}}}}'
+```
+
 ## Usage
 
 The CLI is self-documenting. Use `--help` at any level:

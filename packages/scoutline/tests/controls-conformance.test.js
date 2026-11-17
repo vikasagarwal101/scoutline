@@ -10,8 +10,9 @@
  *   consumed — invoke() resolves and the control is observable either
  *
  * #134 fixture-secret classification: BENIGN. Adapter-level class-guard
- * suite (validate/invoke against fake transports; never drives main(), no
- * stdout redaction boundary) — outside the #120 collision class.
+ * adapter rows (validate/invoke against fake transports; never drives main(),
+ * no stdout redaction boundary) — outside the #120 collision class. The separate
+ * judge rows delegate hermetic public-boundary cases with synthetic credentials.
  *              on the outgoing request (body / query / header / MCP
  *              args, captured at the injected transport seam) or in
  *              the returned normalized content.
@@ -43,6 +44,8 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { execFile } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 import { createZaiDescriptor } from "../dist/providers/zai/adapter.js";
 import { createMiniMaxDescriptor } from "../dist/providers/minimax/adapter.js";
@@ -3929,6 +3932,38 @@ describe("controls class-guard — reject or consume, never silently drop", () =
     const variant = row.note ? ` [${JSON.stringify(row.input[row.control])}]` : "";
     it(`${row.expect} | ${row.provider} ${row.capability} ${row.control}${variant}`, async () => {
       await runRow(row);
+    });
+  }
+});
+
+
+describe("judge environment controls (public wire)", () => {
+  const rows = [
+    [["SCOUTLINE_JUDGE", "TYPESAFE_API_KEY"], "the explicit direct route selects the direct endpoint, key and model"],
+    [["SCOUTLINE_JUDGE_MODEL"], "the direct 1.14 model is an explicit compatible choice"],
+    [["OPENROUTER_API_KEY"], "the selected route's environment key overrides the stored key"],
+    [["SCOUTLINE_JUDGE_TRANSMIT"], "consent without the selected route's credential refuses before any HTTP"],
+    [["SCOUTLINE_JUDGE_ENDPOINT"], "an unsupported own judge control is refused, never accepted and dropped"],
+  ];
+  for (const [controls, title] of rows) {
+    it(controls.join(", "), async () => {
+      const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "judge-control-"));
+      try {
+        const cwd = fileURLToPath(new URL("..", import.meta.url));
+        const pattern = `^${title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`;
+        const env = { PATH: process.env.PATH, NODE_OPTIONS: process.env.NODE_OPTIONS, HOME: root, USERPROFILE: root, XDG_CONFIG_HOME: path.join(root, "xdg-config"), XDG_CACHE_HOME: path.join(root, "xdg-cache"), SCOUTLINE_CONFIG_DIR: path.join(root, "config"), SCOUTLINE_CACHE_DIR: path.join(root, "cache"), SCOUTLINE_ARTIFACTS_DIR: path.join(root, "artifacts"), TMPDIR: root, TEMP: root, TMP: root, SystemRoot: process.env.SystemRoot };
+        const result = await new Promise((resolve) => execFile(process.execPath, ["--experimental-vm-modules", "--test", "--test-reporter=tap", "--test-name-pattern", pattern, "tests/judge-public-routing.test.mjs"], { cwd, env, timeout: 60000, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => resolve({ error, stdout, stderr })));
+        const output = `${result.stdout}\n${result.stderr}`;
+        assert.equal(result.error, null, output);
+        for (const [key, value] of [["pass", 1], ["fail", 0], ["cancelled", 0], ["todo", 0]]) {
+          const matches = [...result.stdout.matchAll(new RegExp(`^# ${key} (\\d+)$`, "gm"))];
+          assert.ok(matches.length > 0, output);
+          assert.equal(Number(matches.at(-1)[1]), value, output);
+        }
+        assert.ok(result.stdout.split("\n").some(line => /^ok \d+ - /.test(line) && line.slice(line.indexOf(" - ") + 3) === title), output);
+      } finally {
+        await fs.promises.rm(root, { recursive: true, force: true });
+      }
     });
   }
 });

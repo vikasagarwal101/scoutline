@@ -30,6 +30,15 @@ jobs:
       - run: npm run build
       # Publish gate = offline suite (tests import dist/; build ran above)
       - run: node scripts/run-tests.mjs offline
+      # Caller-assisted engine/store/native regressions use ESM test files.
+      - name: Caller-assisted engine regressions
+        timeout-minutes: 5
+        env:
+          SCOUTLINE_LIVE_TESTS: ""
+          ZAI_LIVE_TESTS: ""
+        run: |
+          TEST_HOME="$(mktemp -d "$RUNNER_TEMP/scoutline-mjs-XXXXXX")"
+          HOME="$TEST_HOME" SCOUTLINE_CONFIG_DIR="$TEST_HOME/config" SCOUTLINE_ARTIFACTS_DIR="$TEST_HOME/artifacts" node --experimental-vm-modules --test tests/*.test.mjs
       # Store census: fake-HOME full suite must leave ~/.scoutline empty
       - run: node scripts/store-census.mjs
 

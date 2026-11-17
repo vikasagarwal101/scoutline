@@ -88,6 +88,50 @@ describe("config get", () => {
   });
 });
 
+describe("config judge views", () => {
+  const JUDGE_CONFIG = {
+    version: 1,
+    providers: {},
+    judge: { route: "typesafe", openrouter: { model: "typesafe/jev-1.14", apiKey: "or-secret" }, typesafe: { model: "jev-1.13.0", transmitConsent: true, apiKey: "ts-secret" } },
+  };
+
+  it("shows effective defaults without writing and masks stored keys", async () => {
+    const empty = await configGetCommand("judge.route", getDoubles({ version: 1, providers: {} }, []));
+    assert.strictEqual(empty.data, "openrouter");
+    const model = await configGetCommand("judge.openrouter.model", getDoubles({ version: 1, providers: {} }, []));
+    assert.strictEqual(model.data, "typesafe/jev-1.14");
+    const consent = await configGetCommand("judge.typesafe.transmitConsent", getDoubles({ version: 1, providers: {} }, []));
+    assert.strictEqual(consent.data, false);
+    const profile = await configGetCommand("judge.typesafe", getDoubles(JUDGE_CONFIG, ["or-secret", "ts-secret"]));
+    const text = JSON.stringify(profile.data);
+    assert.ok(!text.includes("ts-secret"));
+    assert.ok(text.includes("jev-1.13.0"));
+  });
+
+  it("the whole-config view masks stored judge keys", async () => {
+    const result = await configGetCommand(undefined, getDoubles(JUDGE_CONFIG, ["or-secret", "ts-secret"]));
+    const data = JSON.stringify(result.data);
+    assert.ok(!data.includes("ts-secret"));
+    assert.ok(!data.includes("or-secret"));
+    assert.ok(data.includes("jev-1.13.0"));
+  });
+
+  it("unknown-key guidance includes judge settings", async () => {
+    await assert.rejects(() => configGetCommand("unknown", getDoubles()), error => error.help.includes("judge.route"));
+  });
+
+  it("refuses the credential field and unknown judge paths", async () => {
+    await assert.rejects(
+      () => configGetCommand("judge.typesafe.apiKey", getDoubles(JUDGE_CONFIG, [])),
+      (error) => error.name === "ValidationError",
+    );
+    await assert.rejects(
+      () => configGetCommand("judge.nope", getDoubles(JUDGE_CONFIG, [])),
+      (error) => error.name === "ValidationError",
+    );
+  });
+});
+
 describe("config set", () => {
   function setDoubles() {
     let stored = { ...BASE_CONFIG, routing: { ...BASE_CONFIG.routing } };
@@ -130,6 +174,27 @@ describe("config set", () => {
     assert.ok(
       Object.values(result.presentations ?? {}).join("\n").includes("routing.search →"),
     );
+  });
+
+  it("emits the route billing notice when consent is saved", async () => {
+    const notices = [];
+    let stored;
+    const result = await configSetCommand("judge.typesafe.transmitConsent", "true", {
+      set: async (path, value) => {
+        assert.equal(path, "judge.typesafe.transmitConsent");
+        assert.equal(value, "true");
+        stored = { version: 1, providers: {}, judge: { typesafe: { transmitConsent: true, apiKey: "synthetic-private-key" } } };
+        return stored;
+      },
+      notify: notice => notices.push(notice),
+    });
+    assert.equal(stored.judge.typesafe.transmitConsent, true);
+    assert.equal(result.data.value, true);
+    assert.equal(notices.length, 1);
+    assert.match(notices[0], /TypeSafe/);
+    assert.match(notices[0], /billed/i);
+    assert.match(notices[0], /not live-verified/i);
+    assert.doesNotMatch(notices[0], /synthetic-private-key/);
   });
 
   it("registry strictness propagates (typo'd id)", async () => {
@@ -184,6 +249,11 @@ describe("config help", () => {
     assert.ok(CONFIG_HELP.includes("redacted"));
     assert.ok(CONFIG_HELP.includes("routing.search"));
     assert.ok(CONFIG_HELP.includes("never belong in"));
+    assert.ok(CONFIG_HELP.includes("judge.route"));
+    assert.ok(CONFIG_HELP.includes("judge.openrouter.model"));
+    assert.ok(CONFIG_HELP.includes("judge.openrouter.transmitConsent"));
+    assert.match(CONFIG_HELP, /stored preferences and shipped defaults/);
+    assert.match(CONFIG_HELP, /not runtime environment overrides or activation/);
   });
 });
 

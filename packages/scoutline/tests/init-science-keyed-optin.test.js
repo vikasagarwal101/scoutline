@@ -33,7 +33,7 @@
  * pinned to a temp filePath; agent-registration roots injected as temp
  * dirs. No TTY, no real HOME, no network (fake adapters).
  */
-import { describe, it } from "node:test";
+import { afterEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
@@ -93,15 +93,30 @@ function makeScienceDescriptors() {
   };
 }
 
+const scripts = [];
+afterEach(() => {
+  const current = scripts.splice(0);
+  assert.deepEqual(current.map((script) => ({
+    exhausted: script.exhausted,
+    selects: script.calls.select.length,
+    judgeSelects: script.calls.select.filter(({ message }) => /judge|jev/i.test(message)).length,
+    remainingSelects: script.queue.select.length,
+  })), current.map(() => ({ exhausted: [], selects: 1, judgeSelects: 1, remainingSelects: 0 })));
+});
+
 function createScriptedPrompts() {
   const queue = { checkbox: [], select: [], confirm: [], password: [], input: [] };
   const calls = { checkbox: [], select: [], confirm: [], password: [], input: [] };
   const prompts = {};
+  const exhausted = [];
+  scripts.push({ calls, queue, exhausted });
   for (const kind of Object.keys(queue)) {
     prompts[kind] = async (message, ...rest) => {
       calls[kind].push({ message, rest });
       if (queue[kind].length === 0) {
-        throw new Error(`scripted ${kind} queue exhausted: ${message}`);
+        const error = `scripted ${kind} queue exhausted: ${message}`;
+        exhausted.push({ kind, message, error });
+        throw new Error(error);
       }
       const { answer, cancel } = queue[kind].shift();
       if (cancel) throw new Error("cancel");
@@ -112,6 +127,7 @@ function createScriptedPrompts() {
     prompts,
     calls,
     queueCheckbox: (answer) => queue.checkbox.push({ answer }),
+    queueSelect: (answer) => queue.select.push({ answer }),
     queueConfirm: (answer) => queue.confirm.push({ answer }),
     queuePassword: (answer) => queue.password.push({ answer }),
   };
@@ -167,6 +183,7 @@ describe("init wizard: keyed science opt-in question (T11)", () => {
       const filePath = path.join(dir, "config.json");
       const science = makeScienceDescriptors();
       const script = createScriptedPrompts();
+      script.queueSelect(undefined);
       script.queueCheckbox(["openalex", "pubmed"]);
       script.queueConfirm(false); // opt-in: no
       script.queueConfirm(true); // fallback
@@ -200,6 +217,7 @@ script.queueConfirm(true); // fusion (T6)
       const filePath = path.join(dir, "config.json");
       const science = makeScienceDescriptors();
       const script = createScriptedPrompts();
+      script.queueSelect(undefined);
       script.queueCheckbox(["openalex", "pubmed"]);
       script.queueConfirm(false); // opt-in: no
       script.queueConfirm(true); // fallback
@@ -238,6 +256,7 @@ script.queueConfirm(true); // fusion (T6)
       const filePath = path.join(dir, "config.json");
       const science = makeScienceDescriptors();
       const script = createScriptedPrompts();
+      script.queueSelect(undefined);
       const log = [];
       script.queueCheckbox(["arxiv", "openalex", "crossref", "pubmed", "europepmc"]);
       script.queueConfirm(true); // keyed opt-in: yes
@@ -274,7 +293,7 @@ script.queueConfirm(true); // fusion (T6)
       assert.ok(!/Crossref/.test(passwordMessages), "no key prompt for Crossref");
       assert.ok(!/Europe PMC/.test(passwordMessages), "no key prompt for Europe PMC");
 
-      // The wizard ends on the standard fallback + journal + fusion confirms.
+      // The standard fallback + journal + fusion confirms retain their order.
       const confirmMessages = script.calls.confirm.map((c) => c.message);
       assert.match(confirmMessages[confirmMessages.length - 3], /Route automatically/);
       assert.match(confirmMessages[confirmMessages.length - 2], /journal/i);
@@ -324,6 +343,7 @@ script.queueConfirm(true); // fusion (T6)
       const trioPath = path.join(dir, "trio-config.json");
       const science = makeScienceDescriptors();
       const trioScript = createScriptedPrompts();
+      trioScript.queueSelect(undefined);
       trioScript.queueCheckbox(["arxiv", "crossref", "europepmc"]);
       trioScript.queueConfirm(true); // fallback
       trioScript.queueConfirm(true); // journal
@@ -345,6 +365,7 @@ script.queueConfirm(true); // fusion (T6)
       const zaiPath = path.join(dir, "zai-config.json");
       const zai = makeFakeDescriptor({ id: "zai", credentialEnvVars: ["Z_AI_API_KEY"] });
       const zaiScript = createScriptedPrompts();
+      zaiScript.queueSelect(undefined);
       zaiScript.queueCheckbox(["zai"]);
       zaiScript.queueConfirm(true); // ask-key-first
       zaiScript.queuePassword("z-key-1");
@@ -390,6 +411,7 @@ describe("init wizard: keyed opt-in coexists with agent-registration prompts (T1
 
       const science = makeScienceDescriptors();
       const script = createScriptedPrompts();
+      script.queueSelect(undefined);
       const log = [];
       script.queueConfirm(true); // agent registration: yes
       script.queueCheckbox(["openalex"]);
@@ -407,7 +429,7 @@ script.queueConfirm(true); // fusion (T6)
       const status = await handleInitWithHelp([], deps);
       assert.equal(status, 0);
 
-      assert.equal(log.length, 6, "exactly six prompts in the flow");
+      assert.equal(log.length, 7, "exactly seven prompts in the flow");
       assert.match(log[0].message, /Register scoutline with claude/i, "agent confirm first");
       assert.equal(log[1].kind, "checkbox", "checklist second");
       assert.ok(
@@ -416,7 +438,9 @@ script.queueConfirm(true); // fusion (T6)
       );
       assert.match(log[3].message, /Route automatically/, "fallback fourth");
       assert.match(log[4].message, /journal/i, "journal fifth");
-      assert.match(log[5].message, /fusion|rank merged/i, "fusion last (T6)");
+      assert.match(log[5].message, /fusion|rank merged/i, "fusion sixth (T6)");
+      assert.equal(log[6].kind, "select", "judge route selection seventh");
+      assert.match(log[6].message, /judge|jev/i, "judge route selection last");
 
       const written = await readWrittenConfig(filePath);
       assert.equal(written.agentRules?.claude, true, "agentRules survive the wizard's final write");

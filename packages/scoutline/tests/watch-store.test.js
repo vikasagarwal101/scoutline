@@ -34,6 +34,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { tmpdir } from "node:os";
 import { withTempDir } from "./helpers/temp-dir.js";
 import { ValidationError } from "../dist/lib/errors.js";
 import {
@@ -588,7 +589,7 @@ describe("watch store review fixes", () => {
     });
 
     it("addTarget preserves retiredIds tombstones across a remove-then-add (review)", async () => {
-        const root = await fs.mkdtemp(path.join("/tmp", "scoutline-store-review-"));
+        const root = await fs.mkdtemp(path.join(tmpdir(), "scoutline-store-review-"));
         try {
             const added = await addTarget(root, { url: "https://retire.example/a", name: "retire-a" });
             await removeTarget(root, added.id, { purge: true });
@@ -606,7 +607,7 @@ describe("watch store review fixes", () => {
     });
 
     it("extra blank JSONL lines in the log fail closed (review)", async () => {
-        const root = await fs.mkdtemp(path.join("/tmp", "scoutline-store-review-"));
+        const root = await fs.mkdtemp(path.join(tmpdir(), "scoutline-store-review-"));
         try {
             const added = await addTarget(root, { url: "https://blank.example/a", name: "blank-a" });
             await appendChangeLog(root, added.id, { at: NOW_1, kind: "baseline", exit: 0, gen: 1 });
@@ -625,7 +626,7 @@ describe("watch store review fixes", () => {
 
 describe("watch store review fixes round 2", () => {
     it("an empty change-log file reads as [] (review)", async () => {
-        const root = await fs.mkdtemp(path.join("/tmp", "scoutline-store-r2-"));
+        const root = await fs.mkdtemp(path.join(tmpdir(), "scoutline-store-r2-"));
         try {
             const added = await addTarget(root, { url: "https://empty.example/a", name: "empty-a" });
             const file = path.join(root, added.id, "change-log.jsonl");
@@ -638,7 +639,7 @@ describe("watch store review fixes round 2", () => {
     });
 
     it("a structurally malformed entry fails closed, not at:undefined/NaN (review)", async () => {
-        const root = await fs.mkdtemp(path.join("/tmp", "scoutline-store-r2-"));
+        const root = await fs.mkdtemp(path.join(tmpdir(), "scoutline-store-r2-"));
         try {
             const added = await addTarget(root, { url: "https://mal.example/a", name: "mal-a" });
             const file = path.join(root, added.id, "change-log.jsonl");

@@ -59,6 +59,10 @@ const CREDENTIAL_KEYS: ReadonlySet<string> = new Set([
   "deepseek_api_key",
   "ncbi_api_key",
   "openalex_api_key",
+  // Judge routes (dual-route Jev): both route credentials are real
+  // credentials and stay redacted even when their route is inactive.
+  "openrouter_api_key",
+  "typesafe_api_key",
 ]);
 
 const REDACTED = "[REDACTED]";
@@ -247,6 +251,13 @@ export function redactCredentialString(input: string, extraSecrets?: string | st
   // credentials — same [=:] assignment shape as the Provider keys.
   result = result.replace(/(?<![A-Za-z0-9_])NCBI_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
   result = result.replace(/(?<![A-Za-z0-9_])OPENALEX_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
+  // Judge route credentials (dual-route Jev): both route env names are
+  // real credentials. The `[=:]` separator shape matches every other
+  // Provider row, so `OPENROUTER_API_KEY: sk-…` and
+  // `TYPESAFE_API_KEY=…` redact while prose that merely NAMES the
+  // variable ("TYPESAFE_API_KEY is not set") stays readable.
+  result = result.replace(/(?<![A-Za-z0-9_])OPENROUTER_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
+  result = result.replace(/(?<![A-Za-z0-9_])TYPESAFE_API_KEY\s*[=:]\s*[^\s"]+/gi, REDACTED);
   // #180 gap 2: the lookaheads are scoped to the value token (`[^\s"]*`)
   // rather than to a bare non-space run. `\S` includes the JSON quote, so
   // `{"h":"YDC_API_KEY abcdefgh","n":1}` saw the sibling `1` across the
@@ -277,6 +288,12 @@ export function redactCredentialString(input: string, extraSecrets?: string | st
     "PARALLEL_API_KEY",
     "PERPLEXITY_API_KEY",
     "JINA_API_KEY",
+    // Judge route credentials — same guarded shape as every other row:
+    // a space-separated value only redacts when it is long enough and
+    // carries both a letter and a digit, so naming the variable in prose
+    // ("TYPESAFE_API_KEY and SCOUTLINE_JUDGE_TRANSMIT=1") stays intact.
+    "OPENROUTER_API_KEY",
+    "TYPESAFE_API_KEY",
   ]) {
     result = result.replace(
       new RegExp(`(?<![A-Za-z0-9_])${key}\\s+(?=[^\\s"]*\\d)(?=[^\\s"]*[A-Za-z])[^\\s"]{8,}`, "gi"),
@@ -360,6 +377,12 @@ export function configuredSecrets(env: NodeJS.ProcessEnv = process.env): string[
     // literal-value pass as the Provider credentials.
     env.NCBI_API_KEY,
     env.OPENALEX_API_KEY,
+    // Judge route credentials (dual-route Jev): BOTH routes are
+    // recognized even when their route is inactive or their value is
+    // overridden by a stored key — an inactive credential is still a
+    // credential and must never reach an outward boundary in clear.
+    env.OPENROUTER_API_KEY,
+    env.TYPESAFE_API_KEY,
   ];
   return normalizeSecrets(candidates.filter((c): c is string => typeof c === "string"));
 }

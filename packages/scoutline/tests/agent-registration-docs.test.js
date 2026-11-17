@@ -120,7 +120,26 @@ const changelog = fs.readFile(new URL("../../../CHANGELOG.md", import.meta.url),
 // section header now cites ADR-0012 (0004 superseded) and its merge
 // description states fusion ranking + near-dup clustering + occurrence
 // escape hatch (was: occurrence ranking). No other body copy changed.
-const SKILL_BODY_SHA256 = "09a20b4d0597c42b92100681838de764ec89e2969f72325cd0bd20ee5901fe13";
+// Rebaselined at the unified-investigation requirements mode: the
+// Investigation section gained an "Requirements mode" subsection
+// (--requirements/--requirements-json, judge consent pairing, result
+// envelope) — the sanctioned per-ticket docs edit. Rebaselined again
+// at the correction round: the subsection's supplier list narrowed to
+// the executable subset (tavily/exa/firecrawl/linkup/spider) and the
+// selection sentence now states the full established resolver chain.
+// Rebaselined at the seven-CLI-correction round for that selection
+// sentence only, and again at the consolidated follow-up for the
+// snapshot-sensitive selection + shared-ceiling sentences. No other
+// body copy changed.
+// Rebaselined at the caller-assisted compiled interface: the Investigation
+// section gained the sanctioned "Caller-assisted Investigation"
+// subsection (five closed operations, judge/runtime and retained-evidence
+// boundaries, bounded paging/redaction). No other body copy changed.
+// Rebaselined at the package-route-boundary correction: the requirements
+// subsection gained the official-route verification-scope sentence
+// (fake-HTTP fixtures only, not live-attested). No other body copy changed.
+// Current-prefix merge preserves provider/docs additions and settled caller response/paging rules.
+const SKILL_BODY_SHA256 = "d974c1c9c7db9ba88c5f081a0f2febd95e8c7515d6dde4c46fe3d876c7b0aa4e";
 
 // AC-10 budget: codex/qwen load name+description before any body
 // byte; the old enumeration (~1500 chars) blows the disclosure
@@ -183,9 +202,8 @@ describe("SKILL.md frontmatter (PRD AC-10)", () => {
     assert.match(fence[1], /^name:[ \t]*scoutline[ \t]*$/m, "name stays `scoutline`");
   });
 
-  it("content otherwise untouched — body after the fence is byte-identical (diff pin)", async () => {
-    // Green before the frontmatter change BY DESIGN: this pin exists
-    // to go red if the AC-10 tightening ever edits body bytes.
+  it("pins the approved skill body after the frontmatter fence", async () => {
+    // Reviewed dual-route documentation intentionally updates the canonical body.
     const text = await skill;
     const fence = text.match(/^---\n([\s\S]*?)\n---\n/);
     const body = text.slice(fence[0].length);
@@ -193,7 +211,7 @@ describe("SKILL.md frontmatter (PRD AC-10)", () => {
     assert.equal(
       digest,
       SKILL_BODY_SHA256,
-      "SKILL.md body must be byte-identical — only the frontmatter description changes",
+      "SKILL.md body must match the approved canonical content",
     );
   });
 });

@@ -1034,3 +1034,26 @@ DeepSeek supports Search and Markdown Reader through standalone bearer-authentic
 JSON endpoints. Domain/topic/date operators are compiled before the 128-character
 query limit is checked. The effective query and capped count partition its cache.
 See the [DeepSeek provider guide](deepseek.md) for controls and lifecycle details.
+
+## Investigation judge routes
+
+Requirements/caller acquisition's operation-owned transport refuses supplier
+API redirects. This prevents hidden redirect hops in a counted native fetch;
+it does not certify the remote Reader's content-URL DNS/redirect controls.
+The existing local-name/IP-literal screen remains defense in depth, with that
+content fetch delegated to the configured supplier. Other Reader commands do
+not gain a new redirect policy through this boundary.
+
+OpenRouter SystemOne and direct TypeSafe are thin route policies over one
+shared bounded lifecycle. OpenRouter model choices are an explicit map in
+`judge-config.ts`: existing Jev plus selected Liquid, Baseten, Nace and
+Perplexity decision profiles. Init/config and native response identity use
+that same map; no runtime discovery or separate model-specific engine is added. They are distinct from acquisition Providers and
+their routing/fallback. Selected judge failures never switch routes or models;
+each logical judgment has one attempt, while multiple judgments share the
+existing physical admission ceiling. See [judge configuration](configuration.md#investigation-judge).
+
+Trusted descriptors bind route, model and policy before eligible native proof
+reuse. Opaque collaborators without one cannot receive native reuse authority;
+caller JSON cannot supply it. Fake-HTTP fixtures do not establish live account,
+billing, privacy or semantic-quality claims.

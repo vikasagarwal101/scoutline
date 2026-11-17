@@ -1761,7 +1761,7 @@ describe("init re-config: change-fallback persists the new preference", () => {
 describe("init judge setup: fresh flow, re-config and cancel", () => {
 
   it("judge setup lists scoped SystemOne profiles and preserves inactive TypeSafe settings", async () => {
-    const models = ["liquid/d1.1","baseten/elephant-1","nace-ai/drex-max","perplexity/pplx-decider-v1.2"];
+    const models = ["liquid/d1.1","liquid/d1.2","baseten/elephant-1","nace-ai/drex-max","perplexity/pplx-decider-v1.2"];
     for (const model of models) {
       const inactive = { model: "jev-1.13.0", apiKey: "inactive-synthetic-key", transmitConsent: false };
       const store = createFakeConfigStore({ initial: {
@@ -1781,7 +1781,7 @@ describe("init judge setup: fresh flow, re-config and cancel", () => {
         descriptors: [], prompts: script.prompts, configStore: store,
       });
       assert.equal(await handleInitWithHelp([], deps), 0);
-      assert.equal(choices.length, 16);
+      assert.equal(choices.length, 17);
       for (const expected of models) assert.ok(choices.includes(expected));
       assert.equal(choices[0], "typesafe/jev-1.14", "shipped default stays first");
       const saved = store.getConfig().judge;

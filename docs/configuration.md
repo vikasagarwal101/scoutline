@@ -30,7 +30,7 @@ acquisition Provider):
 | Model family | Request IDs |
 | --- | --- |
 | TypeSafe | `typesafe/jev-1.14`, `typesafe/jev-1.13` |
-| Liquid | `liquid/d1`, `liquid/d1.1`, `liquid/d1-ultra` |
+| Liquid | `liquid/d1`, `liquid/d1.1`, `liquid/d1.2`, `liquid/d1-ultra` |
 | Baseten | `baseten/joey-1`, `baseten/elephant-1`, `baseten/mammoth-1` |
 | Nace | `nace-ai/drex-v1.5`, `nace-ai/drex-v2.0`, `nace-ai/drex-max`, `nace-ai/drex-max-finance` |
 | Perplexity | `perplexity/pplx-decider-v1.2`, `perplexity/pplx-decider-flash-v1.2`, `perplexity/pplx-decider-v1.3:free`, `perplexity/pplx-decider-flash-v1.3:free` |

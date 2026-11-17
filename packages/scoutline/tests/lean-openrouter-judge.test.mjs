@@ -324,6 +324,10 @@ const SCOPED_SYSTEMONE_MODELS = [
     "liquid/d1.1-20261027"
   ],
   [
+    "liquid/d1.2",
+    "liquid/d1.2-20261116"
+  ],
+  [
     "liquid/d1-ultra",
     "liquid/d1-ultra-20261015"
   ],

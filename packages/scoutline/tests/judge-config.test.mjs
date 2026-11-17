@@ -101,6 +101,7 @@ test("route model lists and helpers match the immutable descriptor table", () =>
       ["typesafe/jev-1.13", "typesafe/jev-1.13-20260917"],
       ["liquid/d1", "liquid/d1-20260930"],
       ["liquid/d1.1", "liquid/d1.1-20261027"],
+      ["liquid/d1.2", "liquid/d1.2-20261116"],
       ["liquid/d1-ultra", "liquid/d1-ultra-20261015"],
       ["baseten/joey-1", "baseten/joey-1-20261029"],
       ["baseten/elephant-1", "baseten/elephant-1-20261021"],

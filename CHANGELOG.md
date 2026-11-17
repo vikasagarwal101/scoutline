@@ -4,6 +4,8 @@
 
 ### Added
 
+- **Liquid d1.2 judge selection:** adds `liquid/d1.2` through the existing OpenRouter judge registry, pinned to the explicit response snapshot. Existing defaults, Liquid 1.1, thresholds and one-attempt/no-fallback controls are unchanged.
+
 - **OpenRouter SystemOne model choices:** selected Liquid d1, Baseten, Nace Drex and Perplexity Decider profiles join existing TypeSafe/Jev models through the same investigation judge lifecycle. Model choices and exact response snapshots are explicit; Jev 1.14 stays the default, direct TypeSafe stays independent, and one-attempt/no-fallback behavior is unchanged. The new profiles are metadata-pinned and offline-tested, with live compatibility and model-specific calibration unverified. See [judge configuration](docs/configuration.md#investigation-judge).
 
 - **Investigation judge migration:** OpenRouter is the default route. Existing direct TypeSafe users must select `SCOUTLINE_JUDGE=typesafe`; incompatible model overrides must be cleared. See [judge configuration](docs/configuration.md#investigation-judge).

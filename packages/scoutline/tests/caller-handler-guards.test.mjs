@@ -118,7 +118,7 @@ async function pureFixture(config={}) {
   const fixed={
     'node:crypto':synthetic(crypto,'real:crypto'),'node:fs':synthetic(fs,'real:fs-unused-IO'),'node:fs/promises':synthetic(fsPromises,'real:fs-promises-unused-IO'),'node:util':synthetic(util,'real:util'),
     'lib/errors.js':synthetic(pureErrors,'real:errors'),'lib/caller-url.js':synthetic(pureCallerUrl,'real:caller-url'),'lib/redact.js':synthetic(pureRedactor,'real:redactor'),'lib/output.js':synthetic({...pureOutput,formatErrorOutput:(...args)=>{calls.formatSecrets.push([...args[2]]);return Reflect.apply(pureOutput.formatErrorOutput,pureOutput,args);}},'real:output-observed-delegation'),'lib/lean-investigation.js':synthetic(pureEngine,'real:engine'),
-    'lib/retained-record-store.js':synthetic({ExpectedRevisionError,CorruptRecordError,openStore:()=>store},'successful-memory-store'),
+    'lib/retained-record-store.js':synthetic(config.storeModule??{ExpectedRevisionError,CorruptRecordError,openStore:()=>store},'fixture-store'),
     'lib/lean-acquisition-bridge.js':synthetic({createLeanAcquisitionDeps:()=>({search:async q=>{calls.search.push(q);config.onSearch?.();return [];},read:async()=>''})},'successful-memory-acquisition'),
     'lib/quota-store.js':synthetic({[horizonName]:constantCompiled.value},'source-verified-single-constant-only'),
     'providers/registry.js':inert('registry',['getProviderDescriptor','getConfiguredProviderDescriptors']),
@@ -126,13 +126,26 @@ async function pureFixture(config={}) {
     'lib/lean-openrouter-judge.js':inert('openrouter-judge',['createOpenRouterJudge']),
   };
   for(const [provider,name]of [['tavily','Tavily'],['exa','Exa'],['firecrawl','Firecrawl'],['linkup','Linkup'],['spider','Spider']])fixed[`providers/${provider}/adapter.js`]=inert(provider,[`create${name}Descriptor`]);
-  fixed['test:runtime-input-observer']=synthetic({observe:input=>calls.runtimeInputs.push(pureCopy(input))},'test-only-input-observer');
+  fixed['test:runtime-input-observer']=synthetic({
+    observe:input=>calls.runtimeInputs.push(pureCopy(input)),
+    observeProjection:(input,output)=>config.onRuntimeProjection?.(input,output.projected.data),
+  },'test-only-runtime-observer');
   fixed['test:caller-options-observer']=synthetic({observe:options=>calls.callerOptions.push(observeCallerOptions(options))},'test-only-caller-options-observer');
   const bodies=new Set(['commands/investigate-caller.js','commands/investigate-requirements.js','lib/caller-investigation.js','lib/lean-caller-rounds.js','lib/caller-physical.js','providers/selection.js','providers/types.js','lib/quota-mapping.js','lib/judge-config.js']);
   for(const name of ['lib/lean-investigation','lib/lean-candidates','lib/lean-composed-stop','lib/caller-url','lib/errors','lib/redact','lib/output'])for(const ext of ['src','dist']){const url=new URL(`../${ext}/${name}.${ext==='src'?'ts':'js'}`,import.meta.url);hashes[url.href]=pureHash(readFileSync(url));}
   const load=name=>{if(modules.has(name))return modules.get(name);
-    if(config.observeRuntimeInput&&name==='commands/investigate-requirements.js'){
-      const facade=new SourceTextModule(`export * from './actual-investigate-requirements.js'; import {withRequirementsRuntime as actual} from './actual-investigate-requirements.js'; import {observe} from 'test:runtime-input-observer'; export function withRequirementsRuntime(...args){observe(args[0]);return Reflect.apply(actual,this,args);}`,{identifier:new URL('../dist/commands/runtime-input-observer.js',import.meta.url).href});modules.set(name,facade);return facade;
+    if((config.observeRuntimeInput||config.onRuntimeProjection)&&name==='commands/investigate-requirements.js'){
+      const facade=new SourceTextModule(`
+        export * from './actual-investigate-requirements.js';
+        import {withRequirementsRuntime as actual} from './actual-investigate-requirements.js';
+        import {observe,observeProjection} from 'test:runtime-input-observer';
+        export async function withRequirementsRuntime(...args){
+          observe(args[0]);
+          const output=await Reflect.apply(actual,this,args);
+          observeProjection(args[0],output);
+          return output;
+        }
+      `,{identifier:new URL('../dist/commands/runtime-input-observer.js',import.meta.url).href});modules.set(name,facade);return facade;
     }
     if(name==='commands/actual-investigate-requirements.js'){
       const bytes=readFileSync(new URL('../dist/commands/investigate-requirements.js',import.meta.url));const actual=new SourceTextModule(bytes.toString(),{identifier:new URL('../dist/commands/actual-investigate-requirements.js',import.meta.url).href});hashes['actual-delegated-runtime']=pureHash(bytes);modules.set(name,actual);return actual;
@@ -501,6 +514,57 @@ test('promotion compiled admission refuses dangerous profile contributions and i
   for(const x of rows){assert.equal(x.stdout,'');assert.equal(x.code,1);assert.equal(JSON.parse(x.stderr).code,'VALIDATION_ERROR');assert.equal(x.http.length,0);assert.deepEqual(x.refs,[]);assert.equal(x.inputsUnchanged,true);if(x.id!=='version'){assert.equal(x.configs,0);assert.equal(x.factories,0);assert.equal(JSON.parse(x.stderr).error,'Caller start requirement IDs must match [A-Za-z0-9_-]{1,64}.');}else{assert.equal(x.factories,1);assert.equal(JSON.parse(x.stderr).error,'Caller view unavailable under the active redaction profile.');}}
 });
 
+
+test('caller continuation returns its own round even when a successor commits before projection', {timeout: 10000}, async t=>{
+  const storeModule=await import('../dist/lib/retained-record-store.js');
+  const root=await mkdtemp(join(tmpdir(),'caller-revision-race-'));
+  t.after(()=>rm(root,{recursive:true,force:true}));
+  const projections=new Map();
+  const f=await pureFixture({
+    producer:false,
+    storeModule,
+    onRuntimeProjection:(input,result)=>projections.set(input.question,result),
+  });
+  const requirements=(question,required)=>({
+    ...pureContract(),
+    question,
+    requirements:{observation:{question,schema:{enum:['supported','refuted','disputed']},required}},
+  });
+  const request={schemaVersion:1,dataScope:'synthetic'};
+  const invoke=input=>f.handler(input,root,f.deps,f.host);
+  const initial=await invoke({...request,operation:'start',requirements:requirements('Initial observation?',false)});
+  const firstQuestion='Optional first observation?';
+  const nextQuestion='Required second observation?';
+  const continuation={...request,operation:'continue',investigationRef:initial.data.investigationRef};
+  const firstRevision=initial.data.revision+1;
+  const originalRelease=storeModule.OwnershipHandle.prototype.release;
+  let successor;
+  let armed=true;
+  t.mock.method(storeModule.OwnershipHandle.prototype,'release',async function(){
+    // Let the real lock go, then publish a successor before the first
+    // continuation can return from the release and start its response read.
+    await originalRelease.call(this);
+    if(!armed)return;
+    armed=false;
+    successor=await invoke({...continuation,expectedRevision:firstRevision,requirements:requirements(nextQuestion,true)});
+  });
+  const first=await invoke({...continuation,expectedRevision:initial.data.revision,requirements:requirements(firstQuestion,false)});
+  assert.equal(successor?.data.revision,firstRevision+1,'the successor really committed');
+  assert.equal(successor.data.status,'partial');
+  assert.equal(successor.exitCode,1);
+  const latest=await invoke({schemaVersion:1,operation:'inspect',investigationRef:continuation.investigationRef});
+  const historical=await invoke({schemaVersion:1,operation:'inspect',investigationRef:continuation.investigationRef,revision:firstRevision});
+  assert.equal(latest.data.revision,successor.data.revision,'ordinary inspect still sees the latest commit');
+  assert.equal(first.data.revision,firstRevision,'response must select the round committed by this invocation');
+  assert.equal(first.data.round.id,historical.data.round.id);
+  assert.notEqual(first.data.round.id,successor.data.round.id);
+  assert.equal(first.data.status,'complete');
+  assert.equal(first.exitCode,0);
+  assert.deepEqual(first.data.usage,historical.data.usage);
+  assert.equal(projections.get(firstQuestion)?.question,firstQuestion,'runtime projection must use the same committed revision as the caller response');
+  assert.equal(projections.get(nextQuestion)?.question,nextQuestion);
+  f.check();
+});
 
 for (const phase of ['payload','settlement','commit']) {
   test(`L7 late cancellation during ${phase} keeps committed data and exits 130`,async()=>{

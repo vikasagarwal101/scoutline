@@ -346,7 +346,7 @@ export async function executeCallerInvestigation(request: unknown, options: Call
     committed={investigationRef:round.investigationRef,revision:round.handoff.revision};
     ref=round.investigationRef;
   }
-  const v=await view(options,ref,req.revision);
+  const v=await view(options,ref,committed?.revision??req.revision);
   if(req.operation==="readEvidence"){
     const c=req.cursor?decode(req.cursor):undefined;
     if(c?.e!==undefined&&(typeof c.e!=="string"||req.evidenceId!==undefined&&req.evidenceId!==c.e))throw new ValidationError("Evidence cursor and request event selectors conflict.");

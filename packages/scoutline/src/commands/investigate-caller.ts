@@ -132,7 +132,7 @@ export async function handleInvestigateCaller(request:unknown, storeRoot:string,
       }
       throw error;
     }
-    const retained=await readCallerRecord(storeRoot,data.investigationRef);
+    const retained=await readCallerRecord(storeRoot,data.investigationRef,data.revision);
     return {result:retained.payload.result,value:data};
   });
   const data=runtime.interrupted ? projectCallerInterruption(runtime.value,req.maxChars??16384,secrets) : runtime.value;

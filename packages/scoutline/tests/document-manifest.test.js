@@ -1,0 +1,674 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+
+// v3 structured document extraction first slice — offline RED/GREEN
+// checks against the COMPILED lane modules and the shared lean engine.
+// All fixtures are synthetic public manifest texts; no network. Named
+// .test.js so scripts/run-tests.mjs offline mode discovers it.
+const root = new URL("..", import.meta.url).pathname;
+const dm = await import(`${root}/dist/lib/document-manifest.js`);
+const mi = await import(`${root}/dist/lib/manifest-investigate.js`);
+const pure = await import(`${root}/dist/lib/lean-candidates.js`);
+
+const sha256 = (x) => createHash("sha256").update(x, "utf8").digest("hex");
+const EXACT = "Version: 2.4.0\nLicense: MIT\n";
+const CRLF = "Version: 2.4.0\r\nLicense: MIT\r\n";
+const MIXED = "Version: 2.4.0\nLicense: MIT\r\n";
+const AMBIGUOUS = "Version: 2.4.0\nVersion: 2.5.0\n";
+const DUPLICATE = "Version: 2.4.0\nVersion: 2.4.0\n";
+const ASTRAL = "Notes: 🚀\nVersion: 2.4.0\nLicense: MIT\n";
+const PROSE = "No structured labels here at all.\n";
+const ADMITTED_URL = "https://fixture.invalid/RELEASE-manifest.txt";
+const CEILING = 16384;
+const SOURCE = (content) => ({
+  evidenceId: `manifest-${sha256(content).slice(0, 12)}`,
+  url: ADMITTED_URL,
+  title: "Release manifest",
+  content,
+  byteLength: Buffer.byteLength(content, "utf8"),
+  origins: [],
+});
+
+// Offline judge fixture: supports every proposed candidate with a clean
+// conflict answer unless the fixture opts into conflict/unknown.
+function offlineJudge({ conflictNoul = 0.01, supportNoul = 0.97 } = {}) {
+  const calls = [];
+  return {
+    calls,
+    judge: async (input) => {
+      calls.push(structuredClone(input));
+      const answers = {};
+      input.candidates.forEach((c, i) => {
+        answers[`q${i}s`] = { type: "noul", noul: supportNoul };
+        answers[`q${i}c`] = { type: "noul", noul: conflictNoul };
+      });
+      return {
+        model: "offline-fixture-judge",
+        answers,
+        usage: { inputTokens: 10, outputTokens: 5 },
+        requestSha256: sha256(JSON.stringify(input)),
+        elapsedMs: 1,
+      };
+    },
+  };
+}
+
+const request = (text, fields) => ({
+  sourceId: SOURCE(text).evidenceId,
+  sourceText: text,
+  fields: fields.map((id) => ({ id, description: id })),
+});
+
+// ---------------------------------------------------------------------------
+// Grammar + producer unit behavior
+// ---------------------------------------------------------------------------
+
+test("exact manifest lines propose exact original UTF-16 spans", () => {
+  const report = dm.parseReleaseManifest(EXACT, ["version", "license"]);
+  const version = report.fields.find((f) => f.fieldId === "version");
+  const license = report.fields.find((f) => f.fieldId === "license");
+  assert.equal(version.status, "proposed");
+  assert.equal(version.value, "2.4.0");
+  assert.equal(version.quote, "Version: 2.4.0");
+  assert.deepEqual(version.charRange, [0, 14]);
+  assert.deepEqual(version.valueRange, [9, 14]);
+  assert.equal(license.status, "proposed");
+  assert.equal(license.value, "MIT");
+  assert.deepEqual(license.charRange, [15, 27]);
+  assert.deepEqual(license.valueRange, [24, 27]);
+  // Spans are exact slices of the ORIGINAL text, not re-serializations.
+  assert.equal(EXACT.slice(...version.charRange), version.quote);
+  assert.equal(EXACT.slice(...version.valueRange), version.value);
+  assert.equal(EXACT.slice(...license.valueRange), license.value);
+  // The report binds to one retained representation by digest.
+  assert.equal(report.sourceDigest, sha256(EXACT));
+});
+
+test("CRLF and mixed line endings keep original offsets (span excludes CR)", () => {
+  for (const [text, licRange, mitRange] of [
+    [CRLF, [16, 28], [25, 28]],
+    [MIXED, [15, 27], [24, 27]],
+  ]) {
+    const report = dm.parseReleaseManifest(text, ["version", "license"]);
+    const version = report.fields.find((f) => f.fieldId === "version");
+    const license = report.fields.find((f) => f.fieldId === "license");
+    assert.equal(version.status, "proposed");
+    assert.deepEqual(version.charRange, [0, 14]);
+    assert.equal(license.status, "proposed");
+    assert.deepEqual(license.charRange, licRange);
+    assert.deepEqual(license.valueRange, mitRange);
+    // Round-trips on the ORIGINAL mixed-ending text, byte for byte.
+    assert.equal(text.slice(...version.charRange), version.quote);
+    assert.equal(text.slice(...license.charRange), license.quote);
+    assert.equal(text.slice(...license.valueRange), license.value);
+  }
+});
+
+test("astral characters count as their two UTF-16 units in offsets", () => {
+  // "Notes: 🚀\n" is 10 UTF-16 units (emoji = 2), so Version starts at 10.
+  const report = dm.parseReleaseManifest(ASTRAL, ["version", "license"]);
+  const version = report.fields.find((f) => f.fieldId === "version");
+  const license = report.fields.find((f) => f.fieldId === "license");
+  assert.equal(version.status, "proposed");
+  assert.deepEqual(version.charRange, [10, 24]);
+  assert.deepEqual(version.valueRange, [19, 24]);
+  assert.deepEqual(license.charRange, [25, 37]);
+  assert.deepEqual(license.valueRange, [34, 37]);
+  assert.equal(ASTRAL.slice(...version.charRange), version.quote);
+  assert.equal(ASTRAL.slice(...license.valueRange), license.value);
+});
+
+test("conflicting AND identical duplicate labels abstain; first label never picked", () => {
+  for (const text of [AMBIGUOUS, DUPLICATE]) {
+    const report = dm.parseReleaseManifest(text, ["version", "license"]);
+    assert.equal(report.fields.find((f) => f.fieldId === "version").status, "ambiguous");
+    assert.equal(report.fields.find((f) => f.fieldId === "license").status, "missing");
+  }
+});
+
+test("bare carriage return outside a CRLF pair is refused, not silently parsed", () => {
+  // A mid-line CR could otherwise hide what would be a duplicate line.
+  assert.throws(
+    () => dm.parseReleaseManifest("Version: 2.4.0\rVersion: 2.4.0\n", ["version"]),
+    /bare carriage return/,
+  );
+  assert.throws(() => dm.admitManifestText("Version: 2.4.0\r"), /bare carriage return/);
+  assert.throws(() => dm.admitManifestText("a\r\r\n"), /bare carriage return/);
+  // CR immediately before LF stays legal (CRLF), including mixed runs.
+  assert.doesNotThrow(() => dm.admitManifestText(MIXED));
+});
+
+test("producer attempt encodes abstention as the validator's null spelling", async () => {
+  const extractor = dm.resolveDocumentProducer("release-manifest@1").create(["version", "license"]);
+  const attempt = await extractor.extract(request(AMBIGUOUS, ["version", "license"]));
+  assert.equal(attempt.finishReason, "stop");
+  assert.equal(attempt.usage, null);
+  const parsed = JSON.parse(attempt.rawOutput);
+  assert.deepEqual(parsed.version, { value: null, quote: null });
+  assert.deepEqual(parsed.license, { value: null, quote: null });
+});
+
+test("producer is deterministic: identical request, identical attempt", async () => {
+  const extractor = dm.resolveDocumentProducer("release-manifest@1").create(["version", "license"]);
+  const a = await extractor.extract(request(EXACT, ["version", "license"]));
+  const b = await extractor.extract(request(EXACT, ["version", "license"]));
+  assert.equal(a.rawOutput, b.rawOutput);
+  assert.equal(a.requestSha256, b.requestSha256);
+});
+
+test("admission fails closed on unknown producer, unbound field, duplicate binding", () => {
+  assert.throws(() => dm.resolveDocumentProducer("ocr-invoices@9"), /Unknown document producer/);
+  assert.throws(() => dm.parseReleaseManifest(EXACT, ["invoice_total"]), /not bound/);
+  assert.throws(
+    () => dm.resolveDocumentProducer("release-manifest@1").create(["version", "version"]),
+    /twice/,
+  );
+  assert.throws(
+    () => dm.resolveDocumentProducer("release-manifest@1").create("version"),
+    /must be an array/,
+  );
+});
+
+test("inherited binding names (constructor, __proto__, toString) are never grammar fields", async () => {
+  // Membership is Object.hasOwn, not truthiness: these names exist on
+  // every plain object's prototype chain and must fail closed at
+  // create, parse AND invoke.
+  for (const name of ["constructor", "__proto__", "toString"]) {
+    assert.throws(() => dm.parseReleaseManifest(EXACT, [name]), /not bound/);
+    assert.throws(() => dm.admitManifestFields([name]), /not bound/);
+    const extractor = dm.resolveDocumentProducer("release-manifest@1").create(["version", "license"]);
+    await assert.rejects(
+      () => extractor.extract(request(EXACT, [name])),
+      /not bound/,
+    );
+  }
+});
+
+test("producer refuses any request outside its admitted field subset", async () => {
+  const extractor = dm.resolveDocumentProducer("release-manifest@1").create(["version"]);
+  await assert.rejects(
+    () => extractor.extract(request(EXACT, ["version", "license"])),
+    /was not admitted/,
+  );
+  // A subset of the admitted set stays servable.
+  const attempt = await extractor.extract(request(EXACT, ["version"]));
+  const parsed = JSON.parse(attempt.rawOutput);
+  assert.equal(parsed.version.value, "2.4.0");
+  assert.equal("license" in parsed, false);
+});
+
+test("invoke-time validation: duplicate ids and inherited ids are refused", async () => {
+  const extractor = dm.resolveDocumentProducer("release-manifest@1").create(["version", "license"]);
+  await assert.rejects(
+    () => extractor.extract(request(EXACT, ["version", "version"])),
+    /twice/,
+  );
+  // A field OBJECT whose id lives on its prototype (not an own property)
+  // is a real inherited request id — refused.
+  const inherited = Object.create({ id: "version" });
+  inherited.description = "d";
+  await assert.rejects(
+    () => extractor.extract({ sourceId: "s", sourceText: EXACT, fields: [inherited] }),
+    /own string id/,
+  );
+  await assert.rejects(
+    () => extractor.extract({ sourceId: "s", sourceText: EXACT, fields: "version" }),
+    /fields must be an array/,
+  );
+});
+
+test("callable boundary: full in-flight mutation and cooperative abort at investigateReleaseManifest", async () => {
+  const judge = offlineJudge();
+  const input = FLOW_INPUT(EXACT, judge);
+  const controller = new AbortController();
+  input.externalSignal = controller.signal;
+  const inFlight = mi.investigateReleaseManifest(input);
+  // Mutate everything mutable MID-FLIGHT (the engine is running on the
+  // admitted snapshot); the outcome must bind to admission time.
+  input.manifestText = "Version: 9.9.9\n";
+  input.admission.claimedUrl = "https://mutated.invalid/other";
+  input.admission.title = "mutated";
+  const outcome = await inFlight;
+  assert.equal(outcome.parse.sourceDigest, sha256(EXACT));
+  assert.equal(outcome.record.content, EXACT);
+  assert.equal(outcome.claimedUrl, ADMITTED_URL, "echo is the admitted claim, not the mutation");
+  assert.equal(outcome.record.title, "Release manifest");
+  assert.ok(judge.calls.length > 0, "the admitted judge dispatch ran");
+  assert.equal(outcome.result.requirements.version.reason, "counterevidence_not_acquired");
+
+  // Cooperative abort at the callable: already-aborted signal → the
+  // entry throws before reading ANY input, malformed included.
+  const c2 = new AbortController();
+  c2.abort();
+  const judge2 = offlineJudge();
+  await assert.rejects(
+    () => mi.investigateReleaseManifest(FLOW_INPUT("\uD800 malformed", judge2, { externalSignal: c2.signal })),
+    /aborted before admission/,
+  );
+  assert.equal(judge2.calls.length, 0);
+});
+
+test("callable boundary: exact multibyte 16,384/16,385 bytes; overflow dispatches nothing", async () => {
+  // 28 ASCII label bytes + 8,178 two-byte ü = exactly 16,384.
+  const atCeiling = `Version: 2.4.0\nLicense: MIT\n${"ü".repeat(8178)}`;
+  assert.equal(Buffer.byteLength(atCeiling, "utf8"), CEILING);
+  const okJudge = offlineJudge();
+  const ok = await mi.investigateReleaseManifest(FLOW_INPUT(atCeiling, okJudge));
+  assert.equal(ok.parse.sourceDigest, sha256(atCeiling));
+  assert.equal(ok.parse.fields.find((f) => f.fieldId === "version").value, "2.4.0");
+  assert.ok(okJudge.calls.length > 0, "exactly-at-ceiling input dispatches judgment");
+  // One byte over: refused at admission, ZERO judge dispatches.
+  const over = `${atCeiling}a`;
+  assert.equal(Buffer.byteLength(over, "utf8"), CEILING + 1);
+  const overJudge = offlineJudge();
+  await assert.rejects(
+    () => mi.investigateReleaseManifest(FLOW_INPUT(over, overJudge)),
+    new RegExp(`${CEILING}-byte`),
+  );
+  assert.equal(overJudge.calls.length, 0, "overflow must abort before any dispatch");
+});
+
+// ---------------------------------------------------------------------------
+// Bounds BEFORE hashing/parsing (pre-abort): the 16,384-byte engine
+// acquisition ceiling, fast length rejection before any string scan
+// ---------------------------------------------------------------------------
+
+test("admission enforces the engine's 16,384-byte acquisition ceiling exactly (callable)", () => {
+  // Exactly at the ceiling passes on either encoding width...
+  assert.equal(Buffer.byteLength("a".repeat(CEILING), "utf8"), CEILING);
+  assert.doesNotThrow(() => dm.admitManifestText("a".repeat(CEILING)));
+  assert.equal(Buffer.byteLength("🚀".repeat(4096), "utf8"), CEILING);
+  assert.doesNotThrow(() => dm.admitManifestText("🚀".repeat(4096)));
+  // ...one unit over fails: fast length rejection (length > ceiling).
+  assert.equal(Buffer.byteLength("a".repeat(CEILING + 1), "utf8"), CEILING + 1);
+  assert.throws(() => dm.admitManifestText("a".repeat(CEILING + 1)), new RegExp(`${CEILING}-byte`));
+  // Multibyte that slips the length gate fails the exact byte count.
+  assert.equal(Buffer.byteLength("ü".repeat(8193), "utf8"), 16386);
+  assert.throws(() => dm.admitManifestText("ü".repeat(8193)), new RegExp(`${CEILING}-byte`));
+  assert.equal(Buffer.byteLength("🚀".repeat(4097), "utf8"), 16388);
+  assert.throws(() => dm.admitManifestText("🚀".repeat(4097)), new RegExp(`${CEILING}-byte`));
+});
+
+test("bounds abort before parsing: over-ceiling AND ambiguous input yields the bounds error", () => {
+  const oversized = `Version: 1.0.0\nVersion: 2.0.0\n${"a".repeat(CEILING + 1)}`;
+  assert.throws(() => dm.parseReleaseManifest(oversized, ["version"]), new RegExp(`${CEILING}-byte`));
+});
+
+test("scan defects beat the multibyte byte count: utf16/bare-CR precede the byte check", () => {
+  // Length under the ceiling, bytes over it, AND a scan defect — the
+  // scan error wins, proving the scan runs before the byte count.
+  assert.throws(() => dm.admitManifestText(`\uD800${"ü".repeat(9000)}`), /not well-formed UTF-16/);
+  assert.throws(() => dm.admitManifestText(`\r${"ü".repeat(9000)}`), /bare carriage return/);
+  // A lone surrogate inside otherwise-valid manifest content aborts too.
+  assert.throws(
+    () => dm.parseReleaseManifest(`Version: 2.4.0\nLicense: MIT\n\uD800`, ["version"]),
+    /not well-formed UTF-16/,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Existing validation/acceptance path over producer output
+// (caller-declared opposing context — the legitimate direct proof)
+// ---------------------------------------------------------------------------
+
+test("exact values pass validateCandidates and acceptCandidate with exact binding", async () => {
+  const source = SOURCE(EXACT);
+  const attempt = dm.manifestExtractorAttempt(request(EXACT, ["version", "license"]));
+  const validation = pure.validateCandidates(
+    source,
+    { finishReason: attempt.finishReason, rawOutput: attempt.rawOutput },
+    { version: {}, license: {} },
+  );
+  assert.equal(validation.parsed, true);
+  const version = validation.fields.find((f) => f.fieldId === "version");
+  assert.equal(version.status, "candidate");
+  assert.equal(version.value, "2.4.0");
+  assert.deepEqual(version.charRange, [0, 14]);
+  assert.equal(validation.sourceDigest, sha256(EXACT));
+
+  const judged = await pure.assessCandidates(
+    {
+      source,
+      fieldMeanings: { version: "Release version stated in the manifest." },
+      scope: { entity: "ExampleApp", documentType: "release-manifest" },
+      candidates: [
+        { fieldId: "version", value: version.value, quote: version.quote, charRange: version.charRange },
+      ],
+      opposingContext: [],
+    },
+    { judge: offlineJudge().judge },
+  );
+  assert.equal(judged.error, undefined);
+  const accepted = pure.acceptCandidate(
+    version,
+    judged.judgements[0],
+    source,
+    validation.sourceDigest,
+    {
+      fieldMeanings: { version: "Release version stated in the manifest." },
+      scope: { entity: "ExampleApp", documentType: "release-manifest" },
+      opposingContext: [],
+    },
+  );
+  assert.equal(accepted.status, "accepted");
+  assert.equal(accepted.provenance.value, "2.4.0");
+  assert.deepEqual(accepted.provenance.charRange, [0, 14]);
+  assert.equal(accepted.provenance.sourceDigest, sha256(EXACT));
+});
+
+test("ambiguous and missing values stay unresolved through the same path", () => {
+  const source = SOURCE(AMBIGUOUS);
+  const attempt = dm.manifestExtractorAttempt(request(AMBIGUOUS, ["version", "license"]));
+  const validation = pure.validateCandidates(
+    source,
+    { finishReason: attempt.finishReason, rawOutput: attempt.rawOutput },
+    { version: {}, license: {} },
+  );
+  const version = validation.fields.find((f) => f.fieldId === "version");
+  const license = validation.fields.find((f) => f.fieldId === "license");
+  assert.equal(version.status, "abstained");
+  assert.equal(version.reason, "extractor_abstained");
+  assert.equal(license.status, "abstained");
+  const outcome = pure.acceptCandidate(
+    version,
+    null,
+    source,
+    validation.sourceDigest,
+    { fieldMeanings: { version: "x" }, scope: {}, opposingContext: [] },
+  );
+  assert.equal(outcome.status, "unresolved");
+  assert.equal(outcome.reason, "abstained");
+});
+
+test("stale source binding is rejected by the acceptance gates", () => {
+  const sourceA = SOURCE(EXACT);
+  const attempt = dm.manifestExtractorAttempt(request(EXACT, ["version"]));
+  const validation = pure.validateCandidates(
+    sourceA,
+    { finishReason: attempt.finishReason, rawOutput: attempt.rawOutput },
+    { version: {} },
+  );
+  const version = validation.fields.find((f) => f.fieldId === "version");
+  assert.equal(version.status, "candidate");
+
+  // Retained source changed AFTER candidate creation: same evidenceId,
+  // different content. Live revalidation must reject every stale shape.
+  const tamperedContent = { ...sourceA, content: "Version: 9.9.9\nLicense: MIT\n" };
+  const staleDigest = pure.acceptCandidate(
+    version,
+    null,
+    tamperedContent,
+    validation.sourceDigest,
+    { fieldMeanings: { version: "x" }, scope: {}, opposingContext: [] },
+  );
+  assert.equal(staleDigest.status, "unresolved");
+  assert.equal(staleDigest.reason, "source_digest_mismatch");
+
+  // Wrong quote range: tampering the locator breaks the payload identity.
+  const tamperedRange = { ...version, charRange: [0, 13] };
+  const staleRange = pure.acceptCandidate(
+    tamperedRange,
+    null,
+    sourceA,
+    validation.sourceDigest,
+    { fieldMeanings: { version: "x" }, scope: {}, opposingContext: [] },
+  );
+  assert.equal(staleRange.status, "unresolved");
+  assert.equal(staleRange.reason, "candidate_identity_mismatch");
+
+  // A fabricated range fails validation itself before acceptance exists.
+  const fabricated = pure.validateCandidates(
+    sourceA,
+    {
+      finishReason: "stop",
+      rawOutput: JSON.stringify({ version: { value: "2.4.0", quote: "Version: 2.4.0", charRange: [3, 99] } }),
+    },
+    { version: {} },
+  );
+  assert.equal(fabricated.fields[0].status, "invalid");
+  assert.equal(fabricated.fields[0].reason, "locator_invalid");
+});
+
+test("judge support unknown blocks acceptance (conservative gates hold)", async () => {
+  const source = SOURCE(EXACT);
+  const attempt = dm.manifestExtractorAttempt(request(EXACT, ["version"]));
+  const validation = pure.validateCandidates(
+    source,
+    { finishReason: attempt.finishReason, rawOutput: attempt.rawOutput },
+    { version: {} },
+  );
+  const version = validation.fields.find((f) => f.fieldId === "version");
+  const judged = await pure.assessCandidates(
+    {
+      source,
+      fieldMeanings: { version: "Release version stated in the manifest." },
+      scope: { entity: "ExampleApp" },
+      candidates: [
+        { fieldId: "version", value: version.value, quote: version.quote, charRange: version.charRange },
+      ],
+      opposingContext: [],
+    },
+    { judge: offlineJudge({ supportNoul: 0.5 }).judge },
+  );
+  const accepted = pure.acceptCandidate(
+    version,
+    judged.judgements[0],
+    source,
+    validation.sourceDigest,
+    { fieldMeanings: { version: "Release version stated in the manifest." }, scope: { entity: "ExampleApp" }, opposingContext: [] },
+  );
+  assert.equal(accepted.status, "unresolved");
+  assert.equal(accepted.reason, "support_unknown");
+});
+
+// ---------------------------------------------------------------------------
+// Entry-point admission, consent, cancellation, immutable-source controls
+// ---------------------------------------------------------------------------
+
+const FLOW_INPUT = (text, judge, extra = {}) => ({
+  manifestText: text,
+  admission: { materialClass: "synthetic", claimedUrl: ADMITTED_URL, title: "Release manifest" },
+  ...(judge !== null ? { judgeTransmission: { capability: "offline-test-seam", dispatch: judge.judge } } : {}),
+  now: () => 0,
+  ...extra,
+});
+
+test("missing admission consent aborts before any engine work", async () => {
+  const judge = offlineJudge();
+  await assert.rejects(
+    () => mi.investigateReleaseManifest({ manifestText: EXACT, judgeTransmission: { capability: "offline-test-seam", dispatch: judge.judge } }),
+    /admission is required/,
+  );
+  assert.equal(judge.calls.length, 0, "no judgment may dispatch without consent");
+  assert.throws(
+    () =>
+      mi.buildManifestDeps({
+        manifestText: EXACT,
+        admission: { materialClass: "private", claimedUrl: ADMITTED_URL, title: "t" },
+      }),
+    /materialClass must be/,
+  );
+});
+
+test("judge transmission consent: no route without an admitted capability; zero calls when denied", async () => {
+  // Unadmitted capability spelling fails closed — no production smuggle.
+  assert.throws(
+    () =>
+      mi.buildManifestDeps({
+        manifestText: EXACT,
+        admission: { materialClass: "synthetic", claimedUrl: ADMITTED_URL, title: "t" },
+        judgeTransmission: { capability: "production", dispatch: async () => {} },
+      }),
+    /no other transmission route is admitted/,
+  );
+  // Omitted consent (denied): run completes, nothing dispatches, nothing
+  // is accepted — candidates stay unjudged.
+  const { result } = await mi.investigateReleaseManifest(FLOW_INPUT(EXACT, null));
+  assert.deepEqual(result.data, {});
+  assert.equal(result.requirements.version.status, "unresolved");
+  const extraction = result.requirements.version.attemptedRecords.find(
+    (r) => r.metadata?.kind === "extraction",
+  );
+  assert.ok(extraction, "extraction still ran and left its audit trail");
+  assert.equal(
+    result.requirements.version.attemptedRecords.some((r) => r.metadata?.kind === "candidate-judgment"),
+    false,
+    "no candidate judgment may exist without judge consent",
+  );
+});
+
+test("pre-abort: an already-aborted signal throws before any input is read", async () => {
+  const judge = offlineJudge();
+  const controller = new AbortController();
+  controller.abort();
+  // Malformed material + abort: the abort wins — input was never read.
+  await assert.rejects(
+    () => mi.investigateReleaseManifest(FLOW_INPUT(`\uD800 bad`, judge, { externalSignal: controller.signal })),
+    /aborted before admission/,
+  );
+  assert.equal(judge.calls.length, 0);
+});
+
+test("entry bounds abort before hashing or engine work (consent alone is not enough)", async () => {
+  const judge = offlineJudge();
+  await assert.rejects(
+    () => mi.investigateReleaseManifest(FLOW_INPUT(`${"ü".repeat(9000)}\uD800`, judge)),
+    /not well-formed UTF-16/,
+  );
+  await assert.rejects(
+    () => mi.investigateReleaseManifest(FLOW_INPUT(`Version: 1.0.0\nVersion: 2.0.0\n${"a".repeat(CEILING + 1)}`, judge)),
+    new RegExp(`${CEILING}-byte`),
+  );
+  assert.equal(judge.calls.length, 0);
+});
+
+test("admitted snapshot is immutable: full in-flight mutation of the input changes nothing", async () => {
+  const judge = offlineJudge();
+  const input = FLOW_INPUT(EXACT, judge);
+  const built = mi.buildManifestDeps(input);
+  // Mutate EVERYTHING mutable on the caller's object after admission.
+  input.admission.claimedUrl = "https://mutated.invalid/other";
+  input.admission.title = "mutated";
+  input.admission.materialClass = "public";
+  input.manifestText = "Version: 9.9.9\n";
+  input.now = () => 42;
+  const replacement = offlineJudge();
+  input.judgeTransmission.dispatch = replacement.judge;
+  assert.equal(built.record.title, "Release manifest");
+  assert.equal(built.record.content, EXACT);
+  assert.match(built.record.url, /^urn:x-scoutline:manifest:sha256-[0-9a-f]{64}$/);
+  assert.notEqual(built.record.url, "https://mutated.invalid/other");
+  // Read seam serves the snapshot via the opaque locator only.
+  assert.equal(await built.deps.read(built.record.url), EXACT);
+  await assert.rejects(() => built.deps.read(ADMITTED_URL), /manifest_only_source/);
+  // The clock and the judge dispatch were captured at build time.
+  assert.equal(built.deps.now(), 0);
+  const engine = await import(`${root}/dist/lib/lean-investigation.js`);
+  const result = await engine.runLeanInvestigation(mi.manifestContract(), built.deps);
+  assert.equal(judge.calls.length > 0, true, "the admitted dispatch was called");
+  assert.equal(replacement.calls.length, 0, "the post-build swap was never wired");
+  const extractAudit = result.requirements.version.attemptedRecords.find(
+    (r) => r.metadata?.kind === "extraction",
+  );
+  assert.equal(extractAudit.metadata.sourceId, built.record.evidenceId);
+  assert.equal(extractAudit.metadata.sourceDigest, sha256(EXACT));
+  // The record itself is frozen (ESM strict mode: assignment throws).
+  assert.throws(() => {
+    built.record.url = "x";
+  }, TypeError);
+});
+
+test("judge input is pinned to the digest-derived opaque locator, never the claimed URL", async () => {
+  const judge = offlineJudge();
+  const { record } = await mi.investigateReleaseManifest(FLOW_INPUT(EXACT, judge));
+  assert.ok(judge.calls.length > 0);
+  for (const call of judge.calls) {
+    assert.equal(call.source.url, record.url);
+    assert.match(call.source.url, /^urn:x-scoutline:manifest:sha256-[0-9a-f]{64}$/);
+    assert.notEqual(call.source.url, ADMITTED_URL);
+    assert.equal(call.source.evidenceId, record.evidenceId);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Complete first-slice flow through the shared engine
+// (closed document set: NO fake acquisition, acceptance stays unresolved)
+// ---------------------------------------------------------------------------
+
+const run = (text, judge) => mi.investigateReleaseManifest(FLOW_INPUT(text, judge));
+
+test("flow: closed document set refuses search and never claims contrary coverage", async () => {
+  const judge = offlineJudge();
+  const { result } = await run(EXACT, judge);
+  const failedSearches = result.acquisitionLog.filter((e) => e.kind === "search-failed");
+  assert.ok(failedSearches.length > 0, "search refusal must be recorded, not swallowed");
+  // No successful search events exist at all — nothing was faked.
+  assert.equal(result.acquisitionLog.filter((e) => e.kind === "search").length, 0);
+});
+
+test("flow: judged-clean manifest stays UNPUBLISHED without a closed-source contract", async () => {
+  const judge = offlineJudge();
+  const { result, parse } = await run(EXACT, judge);
+  // Candidates WERE validated and judged clean — the trail exists...
+  assert.ok(judge.calls.length > 0, "candidate judge dispatched on the retained manifest");
+  const trusted = result.requirements.version.attemptedRecords.filter((r) => r.trusted === true);
+  assert.ok(trusted.length > 0, "the earned acceptance trail is retained in the audit");
+  // ...but a closed set has no counterevidence coverage, so nothing may
+  // publish. Honest outcome: unresolved with the explicit reason.
+  assert.deepEqual(result.data, {});
+  assert.equal(result.requirements.version.status, "unresolved");
+  assert.equal(result.requirements.version.reason, "counterevidence_not_acquired");
+  assert.equal(result.requirements.license.status, "unresolved");
+  assert.equal(result.requirements.license.reason, "counterevidence_not_acquired");
+  assert.equal(result.status, "partial");
+  // Lane report binds to the same admitted snapshot the engine judged.
+  assert.equal(parse.sourceDigest, sha256(EXACT));
+});
+
+test("flow: ambiguous version and missing license judge nothing and invent nothing", async () => {
+  const judge = offlineJudge();
+  const { result, parse } = await run(AMBIGUOUS, judge);
+  assert.equal(judge.calls.length, 0, "abstained fields never dispatch a judge");
+  assert.equal("version" in result.data, false, "first conflicting label must not win");
+  assert.equal("license" in result.data, false);
+  assert.equal(result.requirements.version.status, "unresolved");
+  assert.equal(result.requirements.license.status, "unresolved");
+  assert.equal(parse.fields.find((f) => f.fieldId === "version").status, "ambiguous");
+  assert.equal(parse.fields.find((f) => f.fieldId === "license").status, "missing");
+});
+
+test("flow: non-manifest prose proposes nothing and accepts nothing", async () => {
+  const judge = offlineJudge();
+  const { result } = await run(PROSE, judge);
+  assert.equal(judge.calls.length, 0);
+  assert.deepEqual(result.data, {});
+  assert.equal(result.requirements.version.status, "unresolved");
+  assert.equal(result.requirements.license.status, "unresolved");
+});
+
+test("flow: producer disabled reports no_extractor without inventing values", async () => {
+  const judge = offlineJudge();
+  const { deps } = mi.buildManifestDeps(FLOW_INPUT(EXACT, judge));
+  delete deps.extract;
+  const engine = await import(`${root}/dist/lib/lean-investigation.js`);
+  const result = await engine.runLeanInvestigation(mi.manifestContract(), deps);
+  assert.deepEqual(result.data, {});
+  assert.equal(result.requirements.version.status, "unresolved");
+  assert.equal(result.requirements.version.reason, "no_extractor");
+  assert.equal(result.requirements.license.reason, "no_extractor");
+});
+
+test("offline runner enumeration discovers this suite (.test.js)", async () => {
+  const { readdirSync } = await import("node:fs");
+  const all = readdirSync(new URL("./", import.meta.url).pathname)
+    .filter((name) => name.endsWith(".test.js"))
+    .sort();
+  const offline = all.filter(
+    (name) => name !== "cli-smoke.test.js" && !["mcp-live.test.js", "provider-live.test.js"].includes(name),
+  );
+  assert.ok(
+    offline.includes("document-manifest.test.js"),
+    "document-manifest.test.js must be in the offline selection",
+  );
+});

@@ -38,8 +38,7 @@
  *   - monitor/ticks directory CREATION is made durable by this module
  *     fsyncing the parent directory after mkdir (the helper alone only
  *     syncs the leaf directory).
- *   - Process crash: a tick whose current.json replace did not happen
- *     is definitely uncommitted (orphan record, ignored + replaced).
+ *   - A surviving record with no pointer after a crash requires inspection.
  *     A visible current.json at seq N with its intact referenced record
  *     is committed. Power loss follows the fsync contract of the host
  *     filesystem — on a filesystem that honors fsync, the above holds
@@ -54,6 +53,13 @@
  * optimistic base-sequence check inside the lock rejects late older
  * results (no loser writes), so an older tick can never overwrite a
  * newer accepted baseline.
+ *
+ * Publication holds one SQLite write transaction from the locked read
+ * through both atomic writes and failure reconciliation. A paused writer
+ * retains the lock. Stop older monitor writers before upgrading; the
+ * permanent lock directory blocks legacy lockfile acquisition after cutover.
+ * A caught first-publication failure can clean up only this attempt's exact
+ * record while the pointer is absent. Ambiguous history requires inspection.
  *
  * Definition identity: prepare compiles the definition FIRST
  * (compileLeanContract — a malformed definition, revised or not, fails
@@ -93,12 +99,8 @@ import * as path from "node:path";
 import * as fs from "node:fs/promises";
 
 import { atomicReplaceFile } from "./config-store.js";
-import {
-  DEFAULT_LOCK_STALE_MS,
-  DEFAULT_LOCK_TIMEOUT_MS,
-  LockTimeoutError,
-  withAsyncFileLock,
-} from "./async-file-lock.js";
+import { LockTimeoutError } from "./async-file-lock.js";
+import { withSqliteTickLock } from "./sqlite-tick-lock.js";
 import { ValidationError } from "./errors.js";
 import { newRequestId } from "./artifacts.js";
 import {
@@ -308,20 +310,6 @@ export class FactMonitorPublicationUncertainError extends Error {
   }
 }
 
-/**
- * Raised when the commit detects the per-monitor lock was lost (expired
- * and reclaimed by another publisher) BEFORE any payload write: nothing
- * of this tick reached disk, so re-preparing and retrying is safe.
- */
-export class FactMonitorLockLostError extends Error {
-  constructor(monitorId: string) {
-    super(
-      `fact monitor ${monitorId}: the tick lock was lost to another publisher before any write; nothing was published — safe to reprepare and retry.`,
-    );
-    this.name = "FactMonitorLockLostError";
-  }
-}
-
 /** Load-side and pre-publication shared check: a cited evidence entry
  *  must be a USABLE LeanEvidenceRecord, not an ID-only stub. */
 function requireUsableEvidenceEntry(
@@ -346,6 +334,7 @@ export interface FactMonitorOptions {
   readonly signal?: AbortSignal;
   readonly lock?: {
     readonly timeoutMs?: number;
+    /** Retained for callers of the old lock. The publication lock has no expiry. */
     readonly staleMs?: number;
     readonly setTimeout?: typeof setTimeout;
   };
@@ -465,6 +454,15 @@ export async function readOwnedFileBoundedIfExists(
   maxBytes: number,
   signal?: AbortSignal,
 ): Promise<string | undefined> {
+  return (await readOwnedBytesBoundedIfExists(filePath, label, maxBytes, signal))?.toString("utf8");
+}
+
+async function readOwnedBytesBoundedIfExists(
+  filePath: string,
+  label: string,
+  maxBytes: number,
+  signal?: AbortSignal,
+): Promise<Buffer | undefined> {
   if (signal?.aborted) {
     throw new FactMonitorReadAbortedError(`${label}: read cancelled before open.`);
   }
@@ -503,7 +501,7 @@ export async function readOwnedFileBoundedIfExists(
       }
       parts.push(Buffer.from(chunk.subarray(0, bytesRead)));
     }
-    return Buffer.concat(parts).toString("utf8");
+    return Buffer.concat(parts);
   } finally {
     await handle.close().catch(() => {});
   }
@@ -783,7 +781,7 @@ export async function loadFactMonitorState(
 /**
  * `alreadyLocked`: the caller (commit) already holds the per-monitor tick
  * lock, so reads are consistent and the ambiguity RE-CHECK must not
- * re-acquire it (withAsyncFileLock is not reentrant). Outside callers get
+ * re-acquire it. Outside callers get
  * the lock-aware path: an absent current.json with surviving records is
  * first re-read UNDER the lock, because a healthy first publication
  * legitimately exposes exactly that window (record written, pointer not
@@ -836,9 +834,9 @@ async function loadFactMonitorStateInternal(
         }
         const lock = options?.lock ?? {};
         try {
-          return await withAsyncFileLock(
+          return await withSqliteTickLock(
             dir,
-            "fact-monitor-" + monitorId,
+            monitorId,
             () => {
               if (options?.signal?.aborted) {
                 throw new FactMonitorCancelledError(monitorId);
@@ -846,11 +844,10 @@ async function loadFactMonitorStateInternal(
               return loadFactMonitorStateInternal(root, monitorId, true, options);
             },
             {
-              timeoutMs: lock.timeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS,
-              staleMs: lock.staleMs ?? DEFAULT_LOCK_STALE_MS,
+              ...(lock.timeoutMs !== undefined ? { timeoutMs: lock.timeoutMs } : {}),
               ...(lock.setTimeout !== undefined ? { setTimeout: lock.setTimeout } : {}),
               ...(options?.signal !== undefined ? { signal: options.signal } : {}),
-              timeoutLabel: "Fact monitor ambiguity recheck",
+              label: "Fact monitor ambiguity recheck",
             },
           );
         } catch (error) {
@@ -1214,47 +1211,6 @@ function requireBoundedPayload(payload: string, label: string): string {
 }
 
 /**
- * Pointer-agreement probe — a NARROWING HEURISTIC, NOT fencing and NOT
- * proof of lock ownership: comparing current.json's seq+commit.tickId
- * with the base state this commit loaded detects most takeover cases,
- * but a stale writer that pauses between the probe and its next write
- * can still interleave (true prevention needs a fencing token in the
- * SHARED lock API — open limitation, deliberately not worked around
- * here). It is deliberately NOT a full load: it must never re-enter the
- * ambiguity check while OUR publication is mid-flight, where the pointer
- * is legitimately absent between the record write and the commit point.
- * "ours": the pointer is exactly the base state this commit loaded
- * (absent counts as ours only for a first commit). "lost": the pointer
- * names a different commit. "uncertain": unreadable.
- */
-async function pointerOwnership(
-  root: string,
-  monitorId: string,
-  base: FactMonitorState,
-): Promise<"ours" | "lost" | "uncertain"> {
-  let text: string | undefined;
-  try {
-    text = await readOwnedFileBoundedIfExists(
-      currentPath(root, monitorId),
-      `fact monitor ${monitorId} current.json probe`,
-      MAX_FACT_MONITOR_RECORD_BYTES,
-    );
-  } catch {
-    // REFUSED by the owned reader — symlinked/redirected, non-regular,
-    // oversized: never conflated with absence, always uncertain.
-    return "uncertain";
-  }
-  if (text === undefined) return base.seq === 0 ? "ours" : "lost";
-  try {
-    const raw = JSON.parse(text) as { seq?: unknown; commit?: { tickId?: unknown } };
-    if (raw.seq === base.seq && raw.commit?.tickId === base.commit?.tickId) return "ours";
-    return "lost";
-  } catch {
-    return "uncertain";
-  }
-}
-
-/**
  * Commit one tick under the per-monitor lock. Rejections: a tick whose
  * basedOnSeq no longer matches state.seq is a LATE overlapping commit —
  * reported, nothing written, never able to regress a newer baseline. A
@@ -1265,9 +1221,9 @@ async function pointerOwnership(
  * Publication: tick record (lossless: engine outcome + events + complete
  * state after), then the current.json atomic replace — the commit point.
  * Directory creation is fsynced to its parent so first-commit durability
- * matches the helper's per-file guarantee. An orphaned tick record from
- * a crash before the pointer swap is never referenced and is atomically
- * replaced by the next commit at that seq.
+ * matches the helper's per-file guarantee. An interrupted write beyond
+ * an intact pointer can be replaced on retry. An ambiguous first record
+ * without a pointer requires manual inspection.
  */
 export async function commitFactMonitorTick(
   root: string,
@@ -1309,9 +1265,9 @@ async function commitUnderTickLock(
   dir: string,
   lock: NonNullable<FactMonitorOptions["lock"]>,
 ): Promise<FactMonitorTickReport> {
-  return withAsyncFileLock(
+  return withSqliteTickLock(
     dir,
-    "fact-monitor-" + prepared.monitorId,
+    prepared.monitorId,
     async () => {
       // alreadyLocked=true: this critical section holds the tick lock, so
       // the ambiguity re-check must not re-acquire it.
@@ -1462,55 +1418,28 @@ async function commitUnderTickLock(
       const statePayload = requireBoundedPayload(`${JSON.stringify(nextState)}\n`, "monitor state");
       let durability: "confirmed" | "fsync-limited" | "visible-unconfirmed" =
         process.platform === "win32" ? "fsync-limited" : "confirmed";
+      let recordWriteStarted = false;
       try {
         await fs.mkdir(paths.ticksDir, { recursive: true, mode: 0o700 });
         // Owned ticks directory as a WRITE guard too: a symlink planted
         // between load and publication must not redirect the record.
         await requireOwnedDirectory(paths.ticksDir, `fact monitor ${prepared.monitorId} ticks directory`);
-        // Takeover-narrowing probe (NOT fencing — see pointerOwnership):
-        // a publisher that paused past lock expiry and lost the lock to a
-        // successor usually finds the pointer changed; refusing here,
-        // BEFORE any payload write, keeps the abort retry-safe.
-        const preOwnership = await pointerOwnership(root, prepared.monitorId, state);
-        if (preOwnership === "lost") {
-          throw new FactMonitorLockLostError(prepared.monitorId);
-        }
-        if (preOwnership === "uncertain") {
-          throw new FactMonitorPublicationUncertainError(prepared.monitorId, "pointer unreadable before publication");
-        }
         // Directory-entry durability BEFORE any payload write: a newly
         // created monitor dir / ticks dir must survive power loss for the
         // writes inside it to be meaningful.
         await syncDir(path.dirname(dir));
         await syncDir(dir);
+        recordWriteStarted = true;
         await atomicReplaceFile(paths.tickRecord, recordPayload);
-        // Takeover-narrowing probe (NOT fencing): if a successor published
-        // between our record write and the commit point, our record may
-        // have clobbered theirs — do NOT touch the pointer; classify as
-        // uncertain. (The residual probe-to-rename gap is the open shared
-        // lock-API limitation; no local mechanism can close it.)
-        const postOwnership = await pointerOwnership(root, prepared.monitorId, state);
-        if (postOwnership !== "ours") {
-          throw new FactMonitorPublicationUncertainError(
-            prepared.monitorId,
-            "another publisher advanced the state between record publication and the commit point",
-          );
-        }
-        // 2) THE commit point: the authoritative current.json replace.
         await atomicReplaceFile(paths.current, statePayload);
       } catch (error) {
-        if (error instanceof FactMonitorLockLostError) {
-          throw error; // nothing written — retry-safe by construction
+        // Only this attempt was allowed to write after the locked fresh-state read.
+        if (recordWriteStarted && state.seq === 0 && seq === 1 && prepared.basedOnSeq === 0) {
+          const cleanup = await reconcileOwnFirstPublicationRecord(prepared.monitorId, paths, recordPayload);
+          if (cleanup === "cleaned") throw error;
+          if (cleanup === "uncertain") throw new FactMonitorPublicationUncertainError(prepared.monitorId, error);
         }
-        // Publication failed somewhere in the write sequence. Recheck the
-        // state UNDER THIS LOCK before reporting damage, and distinguish:
-        //   visible      — current.json already names this tick (a later
-        //                  step failed): the commit stands, NEVER blind-retry;
-        //   not visible  — current.json still at the prior sequence: the
-        //                  tick is definitely uncommitted, retry-safe;
-        //   anything else (including our own orphan from a failed first
-        //                  publication) — uncertain: manual inspection, no
-        //                  speculative deletion.
+        // Post-write reconciliation stays unsignaled so it can determine visibility.
         let observed: FactMonitorState | undefined;
         try {
           observed = await loadFactMonitorStateInternal(root, prepared.monitorId, true);
@@ -1522,14 +1451,6 @@ async function commitUnderTickLock(
         } else if (observed !== undefined && observed.seq === state.seq) {
           throw error; // definitely uncommitted — safe to reprepare and retry
         } else {
-          // Fail closed, INCLUDING our own possible orphan from a failed
-          // first publication: deleting the record at this sequence is NOT
-          // safe — a successor may have published a record at the same
-          // path between our failed write and this inspection, and
-          // unlinking it would destroy committed evidence. Removing our
-          // own orphan provably requires fencing (open shared lock-API
-          // limitation); until then a failed first publication is resolved
-          // by manual inspection, never by speculative deletion.
           throw new FactMonitorPublicationUncertainError(prepared.monitorId, error);
         }
       }
@@ -1554,13 +1475,58 @@ async function commitUnderTickLock(
       };
     },
     {
-      timeoutMs: lock.timeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS,
-      staleMs: lock.staleMs ?? DEFAULT_LOCK_STALE_MS,
+      ...(lock.timeoutMs !== undefined ? { timeoutMs: lock.timeoutMs } : {}),
       ...(lock.setTimeout !== undefined ? { setTimeout: lock.setTimeout } : {}),
       ...(options.signal !== undefined ? { signal: options.signal } : {}),
-      timeoutLabel: "Fact monitor tick",
+      label: "Fact monitor tick",
     },
   );
+}
+
+/**
+ * First-publication caught-failure reconciliation (runs INSIDE the held
+ * tick lock). Provable-own cleanup of THIS attempt's tick-1 record:
+ *  - the pointer must be provably ENOENT (a fresh lstat under the lock —
+ *    any other pointer state returns "keep" and the ordinary triage
+ *    decides, preserving visible/durability semantics);
+ *  - tick-1.json, when present, must byte-match THIS attempt's exact
+ *    record payload (the strongest identity: exact bytes — a
+ *    pre-existing or foreign record NEVER matches and is NEVER deleted);
+ *  - the record is removed and the ticks directory synced; a cleanup or
+ *    sync failure is "uncertain" (typed uncertainty to the caller).
+ * Absent record ⇒ "keep" (nothing of ours to clean; the triage decides).
+ */
+async function reconcileOwnFirstPublicationRecord(
+  monitorId: string,
+  paths: { readonly current: string; readonly ticksDir: string },
+  exactRecordPayload: string,
+): Promise<"cleaned" | "keep" | "uncertain"> {
+  try {
+    await fs.lstat(paths.current);
+    return "keep"; // pointer EXISTS (visible): ordinary triage owns this case
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") {
+      return "keep"; // unknown pointer state: not provable — triage decides
+    }
+  }
+  const recordPath = path.join(paths.ticksDir, "tick-1.json");
+  let observedBytes: Buffer | undefined;
+  try {
+    if (!(await requireOwnedDirectory(paths.ticksDir, `fact monitor ${monitorId} ticks directory`))) return "keep";
+    observedBytes = await readOwnedBytesBoundedIfExists(recordPath, `fact monitor ${monitorId} own tick record 1`, MAX_FACT_MONITOR_RECORD_BYTES);
+  } catch {
+    return "keep"; // absent/unreadable: nothing provably ours to clean
+  }
+  if (observedBytes === undefined || !observedBytes.equals(Buffer.from(exactRecordPayload, "utf8"))) {
+    return "keep"; // pre-existing or foreign bytes: NEVER deleted
+  }
+  try {
+    await fs.unlink(recordPath);
+    await syncDir(paths.ticksDir);
+    return "cleaned";
+  } catch {
+    return "uncertain";
+  }
 }
 
 /**

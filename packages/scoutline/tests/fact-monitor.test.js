@@ -630,17 +630,17 @@ test("aborting during the lock wait rejects promptly as cancellation", async (t)
 
   // Hold the per-monitor tick lock until released, and WAIT for the
   // holder to have entered its callback.
-  const { withAsyncFileLock } = await import(`${root}/dist/lib/async-file-lock.js`);
+  const { withSqliteTickLock } = await import(`${root}/dist/lib/sqlite-tick-lock.js`);
   const release = Promise.withResolvers();
   const entered = Promise.withResolvers();
-  const held = withAsyncFileLock(
+  const held = withSqliteTickLock(
     path.join(dir, MONITOR),
-    "fact-monitor-" + MONITOR,
+    MONITOR,
     async () => {
       entered.resolve();
       await release.promise;
     },
-    { timeoutMs: 5000, staleMs: 600000, timeoutLabel: "test holder" },
+    { timeoutMs: 5000, label: "test holder" },
   );
   held.catch(() => {});
   await awaitBarrier(entered.promise, [], "holder entered");
@@ -849,7 +849,7 @@ test("the stdin adapter witnesses streaming-offset truncation at the propagated 
       ),
     /ceiling/,
   );
-  assert.ok(streamed.cap > 0, "the ceiling was propagated to the adapter");
+  assert.equal(streamed.cap, 1024 * 1024, "the 1 MiB ceiling was propagated to the adapter");
   assert.ok(
     streamed.offset <= streamed.cap + 4096,
     `stopped at the cap (offset ${streamed.offset} ≈ cap ${streamed.cap}), not payload length ${payload.length}`,
@@ -1175,17 +1175,17 @@ test("a live first publication is not misreported: ambiguity rechecks under the 
 
   // Simulate the mid-publication window: record visible, pointer not yet.
   await fs.rm(current);
-  const { withAsyncFileLock } = await import(`${root}/dist/lib/async-file-lock.js`);
+  const { withSqliteTickLock } = await import(`${root}/dist/lib/sqlite-tick-lock.js`);
   const release = Promise.withResolvers();
   const entered = Promise.withResolvers();
-  const held = withAsyncFileLock(
+  const held = withSqliteTickLock(
     path.join(dir, MONITOR),
-    "fact-monitor-" + MONITOR,
+    MONITOR,
     async () => {
       entered.resolve();
       await release.promise;
     },
-    { timeoutMs: 5000, staleMs: 600000, timeoutLabel: "first-publication holder" },
+    { timeoutMs: 5000, label: "first-publication holder" },
   );
   held.catch(() => {});
   await awaitBarrier(entered.promise, [], "first-publication holder entered");
@@ -1310,17 +1310,17 @@ test("an aborted tick exits 130 promptly while the recheck lock is held (real co
   await commit(dir, definition(), satisfied("supported"), 1);
   await fs.rm(path.join(dir, MONITOR, "current.json")); // ambiguous first-publication window
 
-  const { withAsyncFileLock } = await import(`${root}/dist/lib/async-file-lock.js`);
+  const { withSqliteTickLock } = await import(`${root}/dist/lib/sqlite-tick-lock.js`);
   const release = Promise.withResolvers();
   const entered = Promise.withResolvers();
-  const held = withAsyncFileLock(
+  const held = withSqliteTickLock(
     path.join(dir, MONITOR),
-    "fact-monitor-" + MONITOR,
+    MONITOR,
     async () => {
       entered.resolve();
       await release.promise;
     },
-    { timeoutMs: 30000, staleMs: 600000, timeoutLabel: "recheck holder" },
+    { timeoutMs: 30000, label: "recheck holder" },
   );
   held.catch(() => {});
   await awaitBarrier(entered.promise, [], "recheck holder entered"); // holder truly holds
@@ -1454,9 +1454,8 @@ test("fully frozen plain deps work under signal override (proxy invariants hold)
 
 // --- PR #302 triage controls -------------------------------------------------
 
-test("a streaming stdin adapter stops at the byte ceiling instead of buffering", async (t) => {
+test("the command rejects a full oversized stdin payload returned by the adapter", async (t) => {
   const dir = await mkTmp(t);
-  let maxBytesSeen = 0;
   const { deps } = engineFixture("supported");
   await assert.rejects(
     () =>
@@ -1464,19 +1463,15 @@ test("a streaming stdin adapter stops at the byte ceiling instead of buffering",
         ["tick", "--definition", "-", "--monitor-id", MONITOR, "--state-root", dir],
         {
           ...deps,
-          readStdin: async (_signal, maxBytes) => {
-            maxBytesSeen = maxBytes ?? 0;
-            // Streaming adapter: reject as soon as the cap is exceeded
-            // instead of returning an oversized string.
-            if (maxBytes !== undefined && maxBytes < 64) throw new Error("stdin exceeds ceiling");
-            return JSON.stringify(definition()) + "x".repeat(1024 * 1024 + 4096);
-          },
+          readStdin: async () => JSON.stringify(definition()) + "x".repeat(1024 * 1024 + 4096),
         },
         { now: T(1), stateRoot: dir },
       ),
-    /ceiling/,
+    {
+      code: "VALIDATION_ERROR",
+      message: "monitor-fact: definition exceeds the 1048576-byte input ceiling.",
+    },
   );
-  assert.ok(maxBytesSeen > 0, "the adapter received the byte ceiling");
 });
 
 test("a definition file read is cancellable (pre-aborted signal, 130 outcome)", async (t) => {

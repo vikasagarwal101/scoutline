@@ -88,23 +88,63 @@ export interface ManifestInvestigationInput {
   readonly producerId?: string;
   /**
    * EXPLICIT judge-transmission consent, separate from material
-   * admission. Optional: omitted (or denied) means no candidate
-   * judgment dispatches at all — the engine retains validated candidates
-   * but accepts nothing. `capability` pins the only admitted
-   * transmission route today: the offline test seam. There is NO direct
-   * production route from this module; a production judge must come
-   * through an explicitly admitted capability review, not this field.
+   * admission. Not a claimable string or shape: the only accepted value
+   * is the OfflineJudgeSeam token INSTANCE minted by this module's
+   * createOfflineJudgeSeam factory, bound to its dispatcher through a
+   * module-private WeakMap — IDENTITY, not resemblance, decides. A
+   * copied lookalike (Object.assign spread of a real token with a
+   * swapped dispatch) or an inherited object is rejected because it is
+   * not the minted instance. Minting is a TRUSTED IN-PROCESS TEST SEAM:
+   * it is not proof of offline execution and not production consent.
+   * Optional: omitted (or denied) means no candidate judgment dispatches
+   * at all — the engine retains validated candidates but accepts
+   * nothing. There is NO production route from this module: externally
+   * authorized production judging stays in the shared integration,
+   * behind its own consent review.
    */
-  readonly judgeTransmission?: {
-    readonly capability: "offline-test-seam";
-    readonly dispatch: (
-      input: LeanCandidateJudgeInput,
-      options?: { timeoutMs: number; signal: AbortSignal },
-    ) => Promise<LeanCandidateJudgeResponse>;
-  };
+  readonly judgeTransmission?: OfflineJudgeSeam;
   /** Deterministic by default; supply a real clock for deadline runs. */
   readonly now?: () => number;
   readonly externalSignal?: AbortSignal;
+}
+
+/**
+ * Module-private identity registry: minted token -> the dispatcher it
+ * captured at mint time. WeakMap keys make the binding one of OBJECT
+ * IDENTITY — copies, spreads and prototypes are never keys.
+ */
+const offlineSeamDispatchers = new WeakMap<
+  OfflineJudgeSeam,
+  OfflineJudgeSeam["dispatch"]
+>();
+
+/** Opaque test-collaborator token for judge transmission. */
+export interface OfflineJudgeSeam {
+  readonly dispatch: (
+    input: LeanCandidateJudgeInput,
+    options?: { timeoutMs: number; signal: AbortSignal },
+  ) => Promise<LeanCandidateJudgeResponse>;
+}
+
+/**
+ * Mint the one admitted judge-transmission token: a frozen wrapper whose
+ * dispatcher is registered in this module's private WeakMap. This is a
+ * TRUSTED IN-PROCESS TEST SEAM, never offline proof and never
+ * production consent — production judge authorization lives in the
+ * shared integration.
+ */
+export function createOfflineJudgeSeam(
+  dispatch: (
+    input: LeanCandidateJudgeInput,
+    options?: { timeoutMs: number; signal: AbortSignal },
+  ) => Promise<LeanCandidateJudgeResponse>,
+): OfflineJudgeSeam {
+  if (typeof dispatch !== "function") {
+    throw new ValidationError("Offline judge seam dispatch must be a function.");
+  }
+  const token: OfflineJudgeSeam = Object.freeze({ dispatch });
+  offlineSeamDispatchers.set(token, dispatch);
+  return token;
 }
 
 export interface ManifestInvestigationOutcome {
@@ -229,8 +269,9 @@ export function buildManifestDeps(input: ManifestInvestigationInput) {
     judge: async () => {
       throw new ValidationError("enum_fields_not_declared_in_manifest_slice");
     },
-    // Judge transmission is consent-gated: without an admitted capability
-    // there is NO dispatch (null), and the engine keeps acceptance off.
+    // Judge transmission is consent-gated: without the module-minted
+    // seam token there is NO dispatch (null), and the engine keeps
+    // acceptance off.
     candidateJudge: manifestJudgeConsent(input),
     extract: producer.create(Object.keys(RELEASE_MANIFEST_FIELD_BINDINGS)).extract,
     extractorRevision: RELEASE_MANIFEST_PRODUCER_REVISION,
@@ -242,8 +283,10 @@ export function buildManifestDeps(input: ManifestInvestigationInput) {
 
 /**
  * Consent gate for judge transmission: undefined → null (no dispatch
- * ever); the ONLY admitted capability is the offline test seam; any
- * other capability spelling (a smuggled production route) fails closed.
+ * ever); the ONLY admitted value is the exact token INSTANCE whose
+ * dispatcher lives in this module's private WeakMap. Identity decides —
+ * copied lookalikes (Object.assign spreads carrying a swapped dispatch),
+ * inherited objects, strings and plain shapes all fail closed.
  */
 function manifestJudgeConsent(
   input: ManifestInvestigationInput,
@@ -258,14 +301,44 @@ function manifestJudgeConsent(
   if (
     consent === null ||
     typeof consent !== "object" ||
-    consent.capability !== "offline-test-seam" ||
     typeof consent.dispatch !== "function"
   ) {
     throw new ValidationError(
-      'Judge transmission consent must be { capability: "offline-test-seam", dispatch } or omitted; no other transmission route is admitted.',
+      "Judge transmission consent must be an OfflineJudgeSeam minted by createOfflineJudgeSeam, or omitted; no other transmission route is admitted.",
     );
   }
-  return consent.dispatch;
+  const bound = offlineSeamDispatchers.get(consent);
+  if (bound === undefined || bound !== consent.dispatch) {
+    throw new ValidationError(
+      "Judge transmission consent must be an OfflineJudgeSeam minted by createOfflineJudgeSeam, or omitted; no other transmission route is admitted.",
+    );
+  }
+  return bound;
+}
+
+/**
+ * Locally distinguishable user-cancellation settlement (lane-local
+ * subclass; the shared error taxonomy has no cancellation code yet —
+ * production taxonomy is explicitly deferred to shared integration).
+ * The inherited `code` stays "VALIDATION_ERROR" (the ScoutlineErrorCode
+ * union is closed in the shared module); `name` and `stopReason`
+ * distinguish cancellation locally, and exit stays 130 (user
+ * cancellation per the repo's existing interruption convention — the
+ * caller lane settles interrupted committed rounds the same way). The
+ * lean engine itself reports aborts as the reason string "cancelled" on
+ * unresolved fields.
+ */
+class ManifestRunCancelledError extends ValidationError {
+  readonly stopReason: "cancelled" = "cancelled";
+  constructor(message: string) {
+    super(message);
+    this.name = "ManifestRunCancelledError";
+    Object.assign(this, { exitCode: 130 });
+  }
+}
+
+function manifestRunCancelled(message: string): ManifestRunCancelledError {
+  return new ManifestRunCancelledError(message);
 }
 
 /**
@@ -288,7 +361,7 @@ export async function investigateReleaseManifest(
   // Pre-abort BEFORE reading input: nothing of the caller's material is
   // touched once cancellation is already signalled.
   if (input.externalSignal?.aborted) {
-    throw new ValidationError("Manifest run aborted before admission.");
+    throw manifestRunCancelled("Manifest run aborted before admission.");
   }
   const { deps, record, admission } = buildManifestDeps(input);
   // Prepare the parse ONCE from the OWNED admitted body — the report and
@@ -296,7 +369,7 @@ export async function investigateReleaseManifest(
   // cancellation re-scans anything.
   const parse = parseReleaseManifest(record.content, Object.keys(RELEASE_MANIFEST_FIELD_BINDINGS));
   if (input.externalSignal?.aborted) {
-    throw new ValidationError("Manifest run aborted after admission.");
+    throw manifestRunCancelled("Manifest run aborted after admission.");
   }
   const result = (await runLeanInvestigation(manifestContract(), deps)) as LeanResult;
   return {

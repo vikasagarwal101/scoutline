@@ -127,6 +127,43 @@ test("conflicting AND identical duplicate labels abstain; first label never pick
   }
 });
 
+test("a malformed-value duplicate still claims the label: ambiguity, not first-valid-wins", () => {
+  // `Version: 2.0.0 (rc)` is not a grammar token, but the line CLAIMS the
+  // Version label — two claims means abstain, never propose 2.4.0.
+  const report = dm.parseReleaseManifest("Version: 2.4.0\nVersion: 2.0.0 (rc)\n", ["version"]);
+  assert.equal(report.fields[0].status, "ambiguous");
+  // A single claim with a non-token value is still missing, not guessed.
+  const single = dm.parseReleaseManifest("Version: 2.0.0 (rc)\n", ["version"]);
+  assert.equal(single.fields[0].status, "missing");
+});
+
+test("non-string manifest text fails as ValidationError, never a native TypeError", () => {
+  for (const bad of [42, undefined, null, { length: 5 }]) {
+    assert.throws(
+      () => dm.admitManifestText(bad),
+      (error) =>
+        /Manifest text must be a string/.test(error.message) && error.code === "VALIDATION_ERROR",
+    );
+    assert.throws(() => dm.parseReleaseManifest(bad, ["version"]), /must be a string/);
+  }
+});
+
+test("registered producer descriptor is a frozen singleton", () => {
+  const producer = dm.resolveDocumentProducer("release-manifest@1");
+  assert.throws(() => {
+    producer.id = "mutated@9";
+  }, TypeError);
+  assert.throws(() => {
+    producer.revision = "mutated";
+  }, TypeError);
+  assert.throws(() => {
+    producer.supportedFields.push("smuggled");
+  }, TypeError);
+  // The registry still resolves the same immutable descriptor.
+  assert.equal(dm.resolveDocumentProducer("release-manifest@1"), producer);
+  assert.equal(producer.id, "release-manifest@1");
+});
+
 test("bare carriage return outside a CRLF pair is refused, not silently parsed", () => {
   // A mid-line CR could otherwise hide what would be a duplicate line.
   assert.throws(
@@ -469,7 +506,7 @@ test("judge support unknown blocks acceptance (conservative gates hold)", async 
 const FLOW_INPUT = (text, judge, extra = {}) => ({
   manifestText: text,
   admission: { materialClass: "synthetic", claimedUrl: ADMITTED_URL, title: "Release manifest" },
-  ...(judge !== null ? { judgeTransmission: { capability: "offline-test-seam", dispatch: judge.judge } } : {}),
+  ...(judge !== null ? { judgeTransmission: mi.createOfflineJudgeSeam(judge.judge) } : {}),
   now: () => 0,
   ...extra,
 });
@@ -477,7 +514,7 @@ const FLOW_INPUT = (text, judge, extra = {}) => ({
 test("missing admission consent aborts before any engine work", async () => {
   const judge = offlineJudge();
   await assert.rejects(
-    () => mi.investigateReleaseManifest({ manifestText: EXACT, judgeTransmission: { capability: "offline-test-seam", dispatch: judge.judge } }),
+    () => mi.investigateReleaseManifest({ manifestText: EXACT, judgeTransmission: mi.createOfflineJudgeSeam(judge.judge) }),
     /admission is required/,
   );
   assert.equal(judge.calls.length, 0, "no judgment may dispatch without consent");
@@ -491,17 +528,45 @@ test("missing admission consent aborts before any engine work", async () => {
   );
 });
 
-test("judge transmission consent: no route without an admitted capability; zero calls when denied", async () => {
-  // Unadmitted capability spelling fails closed — no production smuggle.
-  assert.throws(
-    () =>
-      mi.buildManifestDeps({
-        manifestText: EXACT,
-        admission: { materialClass: "synthetic", claimedUrl: ADMITTED_URL, title: "t" },
-        judgeTransmission: { capability: "production", dispatch: async () => {} },
-      }),
-    /no other transmission route is admitted/,
-  );
+test("judge seam binds by minted identity: copies, inherits and claims all fail", async () => {
+  const admission = { materialClass: "synthetic", claimedUrl: ADMITTED_URL, title: "t" };
+  // Minted token — a TRUSTED IN-PROCESS TEST SEAM (minting is not proof
+  // of offline execution and not production consent; that authorization
+  // stays in shared integration).
+  const real = mi.createOfflineJudgeSeam(async () => {});
+  // A COPIED lookalike carrying a swapped dispatch: same shape, wrong
+  // identity — Object.assign spreads the fields but cannot become the
+  // WeakMap key the minted instance is.
+  const copied = Object.assign({}, real, { dispatch: async () => "swapped" });
+  const inherited = Object.create(real);
+  for (const masquerade of [
+    "offline-test-seam",
+    { capability: "offline-test-seam", dispatch: async () => {} },
+    { capability: "production", dispatch: async () => {} },
+    { dispatch: async () => {} },
+    { ...real },
+    copied,
+    inherited,
+    null,
+  ]) {
+    assert.throws(
+      () => mi.buildManifestDeps({ manifestText: EXACT, admission, judgeTransmission: masquerade }),
+      (error) =>
+        /no other transmission route is admitted/.test(error.message) && error.code === "VALIDATION_ERROR",
+    );
+  }
+  // The factory itself refuses non-functions; the minted token is frozen.
+  assert.throws(() => mi.createOfflineJudgeSeam("not-a-function"), /must be a function/);
+  assert.throws(() => {
+    real.dispatch = async () => {};
+  }, TypeError);
+  // The REAL token still admits.
+  const { deps } = mi.buildManifestDeps({
+    manifestText: EXACT,
+    admission,
+    judgeTransmission: real,
+  });
+  assert.equal(typeof deps.candidateJudge, "function");
   // Omitted consent (denied): run completes, nothing dispatches, nothing
   // is accepted — candidates stay unjudged.
   const { result } = await mi.investigateReleaseManifest(FLOW_INPUT(EXACT, null));
@@ -525,9 +590,55 @@ test("pre-abort: an already-aborted signal throws before any input is read", asy
   // Malformed material + abort: the abort wins — input was never read.
   await assert.rejects(
     () => mi.investigateReleaseManifest(FLOW_INPUT(`\uD800 bad`, judge, { externalSignal: controller.signal })),
-    /aborted before admission/,
+    (error) =>
+      /aborted before admission/.test(error.message) &&
+      error.exitCode === 130 &&
+      error.name === "ManifestRunCancelledError" &&
+      error.stopReason === "cancelled" &&
+      error.code === "VALIDATION_ERROR" && // shared taxonomy is closed; distinguished locally, production deferred
+      error instanceof Error,
   );
   assert.equal(judge.calls.length, 0);
+});
+
+test("in-flight abort witness: a mid-run abort reaches the live dispatch and stops further work", async () => {
+  const controller = new AbortController();
+  const seen = [];
+  // The dispatch itself performs the abort WHILE IN FLIGHT — the run is
+  // executing, this dispatch is live, and the signal it received is
+  // aborted at that moment (the engine bridges the external signal into
+  // every dependency dispatch).
+  const judge = async (input, options) => {
+    seen.push({ signal: options?.signal, field: input.candidates[0]?.fieldId });
+    const alreadyAborted = options?.signal?.aborted === true;
+    controller.abort();
+    seen[seen.length - 1].abortedInside = options?.signal?.aborted === true;
+    const answers = {};
+    input.candidates.forEach((c, i) => {
+      answers[`q${i}s`] = { type: "noul", noul: 0.97 };
+      answers[`q${i}c`] = { type: "noul", noul: 0.01 };
+    });
+    void alreadyAborted;
+    return {
+      model: "offline-fixture-judge",
+      answers,
+      usage: { inputTokens: 10, outputTokens: 5 },
+      requestSha256: sha256(JSON.stringify(input)),
+      elapsedMs: 1,
+    };
+  };
+  const { result } = await mi.investigateReleaseManifest(
+    FLOW_INPUT(EXACT, { judge }, { externalSignal: controller.signal }),
+  );
+  // Exactly ONE dispatch happened — the abort occurred mid-run, inside
+  // that dispatch, and the engine performed no further judge work.
+  assert.equal(seen.length, 1, "one live dispatch witnessed the abort");
+  assert.equal(seen[0].abortedInside, true, "the dispatch's own signal is aborted in flight");
+  assert.equal(controller.signal.aborted, true);
+  // The run SETTLES (no hang, no throw) with nothing accepted.
+  assert.deepEqual(result.data, {});
+  assert.equal(result.requirements.version.status, "unresolved");
+  assert.equal(result.requirements.license.status, "unresolved");
 });
 
 test("entry bounds abort before hashing or engine work (consent alone is not enough)", async () => {
@@ -554,7 +665,7 @@ test("admitted snapshot is immutable: full in-flight mutation of the input chang
   input.manifestText = "Version: 9.9.9\n";
   input.now = () => 42;
   const replacement = offlineJudge();
-  input.judgeTransmission.dispatch = replacement.judge;
+  input.judgeTransmission = mi.createOfflineJudgeSeam(replacement.judge);
   assert.equal(built.record.title, "Release manifest");
   assert.equal(built.record.content, EXACT);
   assert.match(built.record.url, /^urn:x-scoutline:manifest:sha256-[0-9a-f]{64}$/);
@@ -659,16 +770,8 @@ test("flow: producer disabled reports no_extractor without inventing values", as
   assert.equal(result.requirements.license.reason, "no_extractor");
 });
 
-test("offline runner enumeration discovers this suite (.test.js)", async () => {
-  const { readdirSync } = await import("node:fs");
-  const all = readdirSync(new URL("./", import.meta.url).pathname)
-    .filter((name) => name.endsWith(".test.js"))
-    .sort();
-  const offline = all.filter(
-    (name) => name !== "cli-smoke.test.js" && !["mcp-live.test.js", "provider-live.test.js"].includes(name),
-  );
-  assert.ok(
-    offline.includes("document-manifest.test.js"),
-    "document-manifest.test.js must be in the offline selection",
-  );
-});
+// Runner discovery is NOT re-asserted here: the proof that this suite is
+// selected by the real offline runner is the runner's own log line
+// (`[run-tests] mode=offline files=...,tests/document-manifest.test.js,...`
+// in the gate logs) and this suite's tests being counted in the offline
+// gate totals — not a duplicated selection rule inside the suite.

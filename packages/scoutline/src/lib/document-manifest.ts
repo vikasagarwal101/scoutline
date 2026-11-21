@@ -17,10 +17,12 @@
  *
  * The producer PROPOSES candidates only. It binds each proposal to the
  * exact retained source text with half-open UTF-16 charRanges and
- * abstains (value:null, quote:null) when a label is missing or appears
- * on more than one grammar-matching line — including two IDENTICAL
- * lines, whose spans are equally ambiguous. It never picks the first of
- * conflicting labels and never invents values. Acceptance stays with the
+ * abstains (value:null, quote:null) when a label is missing or is
+ * CLAIMED on more than one line — every line starting `${label}:`
+ * counts as a claim, whether or not its value is a grammar token
+ * (including two IDENTICAL lines and malformed-value duplicates). It
+ * never picks the first of conflicting labels and never invents values.
+ * Acceptance stays with the
  * shared engine: validateCandidates / assessCandidates / acceptCandidate
  * (lean-candidates). Manifest parsing is separate from evidence
  * acceptance by construction — this module knows nothing about judges.
@@ -43,7 +45,7 @@ import type { ExtractorAttempt, ExtractorDeps, ExtractorRequest } from "./lean-c
 // ---------------------------------------------------------------------------
 
 export const RELEASE_MANIFEST_GRAMMAR_ID = "release-manifest@1" as const;
-export const RELEASE_MANIFEST_PRODUCER_REVISION = "release-manifest-parse-4" as const;
+export const RELEASE_MANIFEST_PRODUCER_REVISION = "release-manifest-parse-5" as const;
 
 /** Field id -> exact label spelling. The complete declared vocabulary. */
 export const RELEASE_MANIFEST_FIELD_BINDINGS: Readonly<
@@ -110,6 +112,12 @@ function scanAdmissionDefect(text: string): string | null {
  * text unchanged; throws ValidationError otherwise.
  */
 export function admitManifestText(text: string): string {
+  // Runtime type guard FIRST: a JS caller's non-string (42, undefined,
+  // null) must fail as the promised typed ValidationError, never as a
+  // native TypeError deep inside the length read or the scan.
+  if (typeof text !== "string") {
+    throw new ValidationError("Manifest text must be a string.");
+  }
   if (text.length > MANIFEST_MAX_BYTES) {
     throw new ValidationError(
       `Manifest text exceeds the ${MANIFEST_MAX_BYTES}-byte retained-document ceiling.`,
@@ -221,10 +229,19 @@ export function parseReleaseManifest(
   const rows: ManifestParseRow[] = [];
   for (const fieldId of fieldIds) {
     const label = RELEASE_MANIFEST_FIELD_BINDINGS[fieldId]!;
+    const labelClaim = `${label}:`;
     const prefix = `${label}: `;
+    // Label-claim ambiguity: EVERY line that starts with `${label}:`
+    // counts toward the ambiguity set — including lines whose value is
+    // not a grammar token (e.g. `Version: 2.0.0 (rc)`). A malformed
+    // duplicate must not silently shrink the claim set so the first
+    // VALID line wins; the label is claimed twice, so abstain.
+    let claims = 0;
     const matches: { quote: string; start: number; value: string; lineIndex: number }[] = [];
     for (let i = 0; i < lines.length; i += 1) {
       const { content, start } = lines[i]!;
+      if (!content.startsWith(labelClaim)) continue;
+      claims += 1;
       if (content.startsWith(prefix)) {
         const value = content.slice(prefix.length);
         if (MANIFEST_VALUE_TOKEN.test(value)) {
@@ -232,16 +249,14 @@ export function parseReleaseManifest(
         }
       }
     }
-    if (matches.length === 0) {
-      rows.push({ fieldId, label, status: "missing" });
+    if (claims > 1) {
+      rows.push({ fieldId, label, status: "ambiguous" });
       continue;
     }
-    // More than one grammar-matching line — conflicting OR identical:
-    // either way the value-to-span binding is ambiguous, and this
-    // grammar declares no structural context to disambiguate. Abstain;
-    // never pick the first.
-    if (matches.length > 1) {
-      rows.push({ fieldId, label, status: "ambiguous" });
+    // Exactly one claim: proposed when its value is a grammar token;
+    // otherwise the label has no declared value (missing, never guessed).
+    if (matches.length === 0) {
+      rows.push({ fieldId, label, status: "missing" });
       continue;
     }
     const m = matches[0]!;
@@ -347,10 +362,13 @@ export interface RegisteredDocumentProducer {
   readonly create: (fields: readonly string[]) => ExtractorDeps;
 }
 
-const RELEASE_MANIFEST_PRODUCER: RegisteredDocumentProducer = {
+/** The registered descriptor is a frozen singleton: id/revision/
+ *  supportedFields cannot be mutated by a JavaScript caller, so later
+ *  resolveDocumentProducer lookups stay stable. */
+const RELEASE_MANIFEST_PRODUCER: RegisteredDocumentProducer = Object.freeze({
   id: RELEASE_MANIFEST_GRAMMAR_ID,
   revision: RELEASE_MANIFEST_PRODUCER_REVISION,
-  supportedFields: Object.keys(RELEASE_MANIFEST_FIELD_BINDINGS),
+  supportedFields: Object.freeze([...Object.keys(RELEASE_MANIFEST_FIELD_BINDINGS)]),
   create: (fields) => {
     admitManifestFields(fields);
     const admitted = [...fields];
@@ -358,7 +376,7 @@ const RELEASE_MANIFEST_PRODUCER: RegisteredDocumentProducer = {
       extract: async (request) => manifestExtractorAttempt(request, admitted),
     };
   },
-};
+} as RegisteredDocumentProducer);
 
 /** Admit a per-run field selection against the declared grammar —
  *  the shared duplicate-free own-key admission (create-side; parse and

@@ -184,9 +184,28 @@ describe("implementation audit: registered-and-reachable", () => {
     assert.ok(report.coverageNotes.some((n) => n.includes("closed-scope")));
     assert.ok(report.coverageNotes.some((n) => n.includes("not commit membership")));
 
-    // Report immutability: consumer-facing rows are frozen.
+    // Report immutability (PR #304 thread 2): the ENTIRE owned report is
+    // frozen — claim rows, nested basis rows, matched locators with their
+    // charRanges, engine projections and usage — so accepted findings and
+    // provenance cannot be rewritten after the audit.
     assert.ok(Object.isFrozen(report.claims[0]));
     assert.ok(Object.isFrozen(report.evidence[0]));
+    assert.ok(Object.isFrozen(report.claims));
+    assert.ok(Object.isFrozen(st.basis));
+    const basisRow = st.basis.find((b) => b.path === "src/dispatcher.ts");
+    assert.ok(Object.isFrozen(basisRow));
+    assert.ok(Object.isFrozen(basisRow.matched));
+    assert.ok(Object.isFrozen(basisRow.matched[0]));
+    assert.ok(Object.isFrozen(basisRow.matched[0].charRange));
+    assert.ok(Object.isFrozen(basisRow.missing));
+    assert.ok(Object.isFrozen(st.engine));
+    assert.ok(Object.isFrozen(report.usage));
+    assert.ok(Object.isFrozen(report.refusals));
+    assert.ok(Object.isFrozen(report.abstentions));
+    // Strict-mode mutation attempts throw (test files are ESM modules).
+    assert.throws(() => { st.basis[0].missing.push("injected"); }, TypeError);
+    assert.throws(() => { basisRow.matched[0].literal = "forged"; }, TypeError);
+    assert.throws(() => { st.engine.value = "refuted"; }, TypeError);
   });
 });
 
@@ -251,6 +270,17 @@ describe("implementation audit: mismatched-or-runtime-proof", () => {
     );
     assert.ok(!report.evidence.some((e) => e.path === "src/dispatcher.ts"));
     for (const ev of report.evidence) assert.equal(ev.revision, PIN);
+
+    // Frozen nested data on the unresolved path too: the observation row
+    // (seam materialization of the refused other-commit file) and the
+    // refusal records are owned frozen copies.
+    const observedRow = st.basis.find((b) => b.path === "src/dispatcher.ts");
+    assert.ok(Object.isFrozen(observedRow));
+    assert.ok(Object.isFrozen(observedRow.observed));
+    assert.ok(Object.isFrozen(observedRow.observed.matched));
+    assert.ok(Object.isFrozen(observedRow.observed.matched[0].charRange));
+    const refusal = report.refusals.find((r) => r.kind === "revision_mismatch");
+    assert.ok(Object.isFrozen(refusal));
 
     assert.equal(runtimeClaim(report).unresolvedReason, "no_authorized_runtime_probe");
   });
@@ -930,16 +960,35 @@ describe("implementation audit: fix4 hardening", () => {
       ValidationErrorLike,
     );
     assert.throws(() => snapshotFileUrl(REPO, PIN, hugePath), ValidationErrorLike);
-    // Legal-length boundary: maxPathChars boundary itself is admissible
-    // shape-wise (grammar still applies), a normal path still validates.
+    // EXACT accepted-path ceiling (PR #304 thread 1): the grammar-legal
+    // maximum is 12 segments of ≤100 chars joined by 11 slashes = 1211
+    // code units, which must be admitted by BOTH the cheap maxPathChars
+    // gate (ceiling 1212) and the segment grammar.
+    const legalMaxPath = Array.from({ length: 12 }, () => "a".repeat(100)).join("/");
+    assert.equal(legalMaxPath.length, 1211);
     assert.doesNotThrow(() =>
       compileAuditClaimSet({
         ...standardClaims(),
         claims: [
-          { ...standardClaims().claims[0], checks: [{ path: "src/a.ts", allOf: ["x"] }] },
+          { ...standardClaims().claims[0], checks: [{ path: legalMaxPath, allOf: ["x"] }] },
         ],
       }),
     );
+    assert.doesNotThrow(() => snapshotFileUrl(REPO, PIN, legalMaxPath));
+    // One code unit past the cheap ceiling (maxPathChars + 1 = 1213) is
+    // rejected by the length gate before any split/regex/scan.
+    const justOverCeiling = "a".repeat(1213);
+    assert.throws(
+      () =>
+        compileAuditClaimSet({
+          ...standardClaims(),
+          claims: [
+            { ...standardClaims().claims[0], checks: [{ path: justOverCeiling, allOf: ["x"] }] },
+          ],
+        }),
+      ValidationErrorLike,
+    );
+    assert.throws(() => snapshotFileUrl(REPO, PIN, justOverCeiling), ValidationErrorLike);
   });
 
   it("non-echo diagnostics: circular and huge malformed values yield bounded ValidationErrors", () => {

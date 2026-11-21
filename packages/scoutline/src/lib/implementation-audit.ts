@@ -984,6 +984,20 @@ export interface AuditReport {
   readonly coverageNotes: readonly string[];
 }
 
+/** Frozen literal-match locator (report-internal owned data; PR #304
+ * thread 2: nested report data must be as immutable as the rows holding
+ * it, without freezing caller- or engine-owned objects). */
+function frozenMatches(
+  pairs: readonly { literal: string; charRange: readonly [number, number] }[],
+): readonly AuditLiteralMatch[] {
+  return Object.freeze(
+    pairs.map((m): AuditLiteralMatch => {
+      const range: readonly [number, number] = [m.charRange[0], m.charRange[1]];
+      return Object.freeze({ literal: m.literal, charRange: Object.freeze(range) });
+    }),
+  );
+}
+
 function basisFor(
   claim: AuditClaim,
   result: LeanResult,
@@ -999,37 +1013,45 @@ function basisFor(
       const observed =
         own === null
           ? undefined
-          : {
+          : Object.freeze({
               revision: own.revision,
               sha256: own.sha256,
-              matched: check.allOf.flatMap((literal): AuditLiteralMatch[] => {
-                const at = own.content.indexOf(literal);
-                return at === -1 ? [] : [{ literal, charRange: [at, at + literal.length] }];
-              }),
-              missing: check.allOf.filter((literal) => !own.content.includes(literal)),
-            };
-      return {
+              matched: frozenMatches(
+                check.allOf.flatMap((literal): AuditLiteralMatch[] => {
+                  const at = own.content.indexOf(literal);
+                  return at === -1 ? [] : [{ literal, charRange: [at, at + literal.length] }];
+                }),
+              ),
+              missing: Object.freeze(
+                check.allOf.filter((literal) => !own.content.includes(literal)),
+              ),
+            });
+      return Object.freeze({
         path: check.path,
         retained: false,
         revision: null,
         sha256: null,
-        matched: [],
-        missing: [...check.allOf],
+        matched: Object.freeze([]),
+        missing: Object.freeze([...check.allOf]),
         ...(observed === undefined ? {} : { observed }),
-      };
+      });
     }
     const digest = createHash("sha256").update(record.content, "utf8").digest("hex");
-    return {
+    return Object.freeze({
       path: check.path,
       retained: true,
       revision: /@([0-9a-f]+)\//.exec(record.url)?.[1] ?? null,
       sha256: digest,
-      matched: check.allOf.flatMap((literal): AuditLiteralMatch[] => {
-        const at = record.content.indexOf(literal);
-        return at === -1 ? [] : [{ literal, charRange: [at, at + literal.length] }];
-      }),
-      missing: check.allOf.filter((literal) => !record.content.includes(literal)),
-    };
+      matched: frozenMatches(
+        check.allOf.flatMap((literal): AuditLiteralMatch[] => {
+          const at = record.content.indexOf(literal);
+          return at === -1 ? [] : [{ literal, charRange: [at, at + literal.length] }];
+        }),
+      ),
+      missing: Object.freeze(
+        check.allOf.filter((literal) => !record.content.includes(literal)),
+      ),
+    });
   });
 }
 
@@ -1074,7 +1096,12 @@ export async function runImplementationAudit(
 
   const claimResults = claims.claims.map((claim): AuditClaimResult => {
     const row = result.requirements[claim.id];
-    const engine =
+    // PR #304 thread 2: the ENTIRE report is owned frozen data — engine
+    // projections, basis rows and their locators included — so callers can
+    // never rewrite accepted findings or provenance after the audit. Only
+    // report-internal copies are frozen; caller/engine-owned objects are
+    // copied first, never frozen in place.
+    const engine = Object.freeze(
       row === undefined
         ? { status: "unresolved", reason: "absent_from_engine_result", judgmentCount: 0, inconsistentJudgments: 0 }
         : row.status === "satisfied"
@@ -1089,8 +1116,9 @@ export async function runImplementationAudit(
               reason: row.reason,
               judgmentCount: row.judgmentCount,
               inconsistentJudgments: row.inconsistentJudgments,
-            };
-    const basis = basisFor(claim, result, observe);
+            },
+    );
+    const basis = Object.freeze(basisFor(claim, result, observe));
     if (row?.status === "satisfied") {
       return Object.freeze({
         id: claim.id,
@@ -1136,10 +1164,12 @@ export async function runImplementationAudit(
     assessment: result.assessment,
     claims: Object.freeze(claimResults),
     evidence: Object.freeze(evidence),
-    refusals: Object.freeze([...journal.refusals]),
-    abstentions: Object.freeze([...journal.abstentions]),
+    // Journal elements are seam-shared: COPY then freeze, never freeze in place.
+    refusals: Object.freeze(journal.refusals.map((r) => Object.freeze({ ...r }))),
+    abstentions: Object.freeze(journal.abstentions.map((a) => Object.freeze({ ...a }))),
     acquisitionLog: Object.freeze(result.acquisitionLog.map((e) => Object.freeze({ ...e }))),
-    usage: result.usage,
+    // Engine-owned object graph: copy into an owned frozen record.
+    usage: Object.freeze({ ...result.usage }),
     coverageNotes: Object.freeze([
       ...result.coverageNotes,
       "Accepted findings are literal-presence predicates at the pinned revision; they do not establish active code, public reachability or runtime behavior (comments and string data can match literals).",

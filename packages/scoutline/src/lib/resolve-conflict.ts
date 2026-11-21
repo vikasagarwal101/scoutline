@@ -492,21 +492,25 @@ export async function resolveConflict(
   for (const [key, owners] of identityOwners) {
     if (owners.size > 1) notes.push(`unverified-mirror-overlap: canonical identity ${key} is claimed by ${[...owners].join(", ")}; all retained as distinct evidence documents, no publisher-origin claim`);
   }
-  // Admission at the dispatch boundary — no result DROPPING. The shared
-  // engine owns repeat handling (exact-URL queue dedupe, byte caps, read
-  // failures); dropping search results on resolved reads would let a body
-  // the engine later rejected (oversize, refused) disappear from contrary
-  // coverage. The one rewrite below never drops anything: a canonical
-  // No result rewriting or dropping. A canonical-identity match is NOT
-  // proof that the reader returns the same content (a different exact URL
-  // is a distinct raw-reader fetch that may serve different bytes —
-  // fixtures demonstrate exactly that), so alias-based forwarding would
-  // hide distinct counterevidence and consume trust it cannot earn. The
-  // read-budget optimization this would enable is DEFERRED until a
-  // trusted content-equivalence seam exists in the engine. Everything
-  // admitted reaches the engine; projection-side accounting (not
-  // acquisition-side suppression) distinguishes one canonical ORIGIN from
-  // its distinct REPRESENTATIONS by digest.
+  // Dispatch-boundary admission gate. What it does: every search result
+  // that passes the public-URL screen is admitted and forwarded to the
+  // engine AS ITS RAW URL — no rewriting, no dropping — so valid material
+  // counterevidence remains eligible for acquisition and assessment
+  // within engine limits. The shared engine owns repeat handling
+  // (exact-URL queue dedupe, byte caps, read failures); this gate never
+  // suppresses on its own initiative, because a canonical-identity match
+  // is NOT proof the reader returns the same content (a different exact
+  // URL is a distinct raw-reader fetch that may serve different bytes —
+  // fixtures demonstrate exactly that). The alias-read-budget optimization
+  // is DEFERRED until the engine offers a trusted content-equivalence
+  // seam (see the reported interface contract); note that a digest first
+  // learned AFTER dispatch cannot save maxUniqueReads — that cap is
+  // checked before dispatch — so a post-read digest is retained-
+  // representation accounting only, and shared alias reuse must rely on
+  // trusted PRE-dispatch proof for the particular representation/scope or
+  // perform a normally charged read. Until then, origin-versus-
+  // representation distinctions are made in the projection (canonical
+  // identity vs content digest), never by suppressing acquisition.
   const readAdmitted = async (url: string, options?: Parameters<LeanDeps["read"]>[1]): Promise<string> => {
     assertCallerUrl(url);
     return deps.read(url, options);

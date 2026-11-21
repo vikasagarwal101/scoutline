@@ -237,9 +237,16 @@ function isNonEmptyString(value: unknown): value is string {
  * shape, duplicate/colliding label, missing `{entity}` template hole,
  * silently-strippable schema control, unknown limit key, or over-cap
  * expansion — always BEFORE any runtime composition or acquisition,
- * and always through the redacted-diagnostic boundary.
+ * and always through the redacted-diagnostic boundary (the caller's
+ * captured secret basis is REQUIRED — an omitted or non-array basis is
+ * itself a typed refusal, never a silent empty-basis echo).
  */
-export function expandComparison(input: unknown, basis: readonly string[] = []): ExpandedComparison {
+export function expandComparison(input: unknown, basis: readonly string[]): ExpandedComparison {
+  if (!Array.isArray(basis)) {
+    throw new ValidationError(
+      "expandComparison requires the caller's captured secret-basis array; diagnostics are sanitized against it (pass [] for an explicitly empty basis).",
+    );
+  }
   if (!isPlainObject(input)) {
     throw new ValidationError("comparison must be a JSON object.");
   }
@@ -257,16 +264,6 @@ export function expandComparison(input: unknown, basis: readonly string[] = []):
   if (!Array.isArray(input.entities) || input.entities.length === 0) {
     throw new ValidationError("comparison entities must be a non-empty array of release/entity identifiers.");
   }
-  const entities: string[] = [];
-  for (const raw of input.entities) {
-    if (!isNonEmptyString(raw)) {
-      throw new ValidationError("comparison entities must contain only non-empty strings.");
-    }
-    if (entities.includes(raw)) {
-      fail(basis, `comparison declares duplicate entity "${raw}".`);
-    }
-    entities.push(raw);
-  }
 
   if (!isPlainObject(input.dimensions)) {
     throw new ValidationError("comparison dimensions must be an object keyed by dimension id.");
@@ -274,6 +271,34 @@ export function expandComparison(input: unknown, basis: readonly string[] = []):
   const dimensionIds = Object.keys(input.dimensions);
   if (dimensionIds.length === 0) {
     throw new ValidationError("comparison must declare at least one dimension.");
+  }
+  // Deterministic matrix cardinality gate BEFORE any element is read:
+  // with both counts known from the containers themselves, an
+  // over-ceiling declaration refuses immediately — no entity or
+  // dimension element is inspected, so an oversized hostile list costs
+  // two property reads, never a scan. The cap itself is the engine's
+  // frozen ceiling — kept as-is; widening it is a shared convergence
+  // decision, never a consumer constant.
+  {
+    const total = input.entities.length * dimensionIds.length;
+    if (total > LEAN_LIMIT_CEILINGS.maxFields) {
+      throw new ValidationError(
+        `comparison expands to ${total} cells (${input.entities.length} entities × ${dimensionIds.length} dimensions) over the engine's frozen ceiling of ${LEAN_LIMIT_CEILINGS.maxFields} fields; refused before any acquisition. Widening the matrix needs the shared field-expansion decision first.`,
+      );
+    }
+  }
+
+  const entities: string[] = [];
+  const seenEntities = new Set<string>();
+  for (const raw of input.entities) {
+    if (!isNonEmptyString(raw)) {
+      throw new ValidationError("comparison entities must contain only non-empty strings.");
+    }
+    if (seenEntities.has(raw)) {
+      fail(basis, `comparison declares duplicate entity "${raw}".`);
+    }
+    seenEntities.add(raw);
+    entities.push(raw);
   }
   const dimensions: { id: string; dim: ComparisonDimension }[] = [];
   for (const id of dimensionIds) {
@@ -320,8 +345,22 @@ export function expandComparison(input: unknown, basis: readonly string[] = []):
 
   let frame: Record<string, string> = {};
   if (input.frame !== undefined) {
-    if (!isPlainObject(input.frame)) {
-      throw new ValidationError("comparison frame must be an object of string tokens.");
+    // Plain-record requirement at the boundary: a Map or class instance
+    // has no enumerable own string keys, so accepting it would let the
+    // declared scope silently DISAPPEAR (an empty frame). Ordinary JSON
+    // objects (Object.prototype or null prototype) pass. The null guard
+    // runs BEFORE getPrototypeOf so `frame: null` is a typed rejection,
+    // never a raw TypeError.
+    if (typeof input.frame !== "object" || input.frame === null || Array.isArray(input.frame)) {
+      throw new ValidationError(
+        "comparison frame must be a plain record of string tokens — null, Maps, class instances and arrays are rejected so the declared scope cannot silently disappear.",
+      );
+    }
+    const frameProto = Object.getPrototypeOf(input.frame);
+    if (frameProto !== Object.prototype && frameProto !== null) {
+      throw new ValidationError(
+        "comparison frame must be a plain record of string tokens — Maps, class instances and arrays are rejected so the declared scope cannot silently disappear.",
+      );
     }
     frame = {};
     for (const [key, value] of Object.entries(input.frame)) {
@@ -348,17 +387,6 @@ export function expandComparison(input: unknown, basis: readonly string[] = []):
       fail(basis, `comparison limits declare unsupported keys (${limitExtras.join(", ")}) — supported: ${[...COMPARISON_LIMIT_KEYS].join(", ")}.`);
     }
     limits = { ...(input.limits as Record<string, number>) };
-  }
-
-  // Expansion cap BEFORE the engine compiler: names entities × dimensions
-  // and the frozen ceiling. The current cap is kept as-is; widening it is
-  // a shared convergence decision (field expansion + total-work limits),
-  // never a consumer-side constant.
-  const total = entities.length * dimensions.length;
-  if (total > LEAN_LIMIT_CEILINGS.maxFields) {
-    throw new ValidationError(
-      `comparison expands to ${total} cells (${entities.length} entities × ${dimensions.length} dimensions) over the engine's frozen ceiling of ${LEAN_LIMIT_CEILINGS.maxFields} fields; refused before any acquisition. Widening the matrix needs the shared field-expansion decision first.`,
-    );
   }
 
   // Deterministic expansion: dimensions in declaration order, entities in
@@ -418,6 +446,31 @@ export function expandComparison(input: unknown, basis: readonly string[] = []):
     }
     throw error;
   }
+  // Classification enum screen — AFTER the compiler's typed validation:
+  // the compiler has already rejected non-string/malformed/duplicate
+  // enum entries with its own typed diagnostics, so this screen sees
+  // only validated string values. The screen reads field.schema.enum
+  // DIRECTLY off each compiled field — compiled field ids are cell keys
+  // (entity × dimension), so any lookup keyed by dimension id would
+  // resolve the WRONG enum (or none, falling back to the default and
+  // both missing declared values and falsely refusing excluded ones).
+  // A basis secret the redactor would touch is a static no-echo
+  // refusal; enums are never rewritten. Delivered values are screened
+  // again once runtime secrets are known.
+  {
+    const secrets = [...basis];
+    for (const field of contract.fields) {
+      const values = field.schema.enum ?? [];
+      for (const value of values) {
+        if (redactSecrets(value, secrets) !== value) {
+          throw new ValidationError(
+            `comparison field "${redactSecrets(field.id, secrets)}" declares a classification value that is not publishable under the run's secret basis — rename the value or remove the credential material from the basis.`,
+            "Classification values are bounded enums and are never partially redacted; a value that carries credential material cannot be delivered.",
+          );
+        }
+      }
+    }
+  }
   return { contractInput, contract, cells, frame, question: input.question };
 }
 
@@ -459,6 +512,31 @@ export interface ComparisonMatrix {
    *  usage with physical accounting, admission disclosure, Reader
    *  provenance — and its own resultSha256 binding that exact form. */
   readonly engine: Record<string, unknown>;
+}
+
+/**
+ * Cell FREE TEXT (the engine judgment `reason`) is display-only prose
+ * and rides the same captured basis as all other comparison metadata —
+ * redacted at delivery, never assumed clean because today's engine
+ * reason vocabulary happens to be fixed identifiers. Bounded enums
+ * (`value`/`outcome`) and every structural id are NOT rewritten here:
+ * enums are screened (static rejection on a redactor match) and ids are
+ * identity surfaces covered by the identifier screens.
+ */
+export function redactComparisonCells(
+  rows: Record<string, ComparisonCellResult>,
+  basis: readonly string[],
+): Record<string, ComparisonCellResult> {
+  const secrets = [...basis];
+  return Object.fromEntries(
+    Object.entries(rows).map(([key, row]) => [
+      key,
+      {
+        ...row,
+        ...(row.reason !== undefined ? { reason: redactSecrets(row.reason, secrets) as string } : {}),
+      },
+    ]),
+  );
 }
 
 function projectCells(
@@ -599,9 +677,20 @@ function assertPublishableIdentifiers(
       { kind: "dimension id", value: cell.dimension },
     ]),
     ...Object.keys(expanded.frame).map((key) => ({ kind: "frame key", value: key })),
-    ...Object.values(rows).flatMap((row) =>
-      row.evidenceIds.map((id) => ({ kind: "evidence id reference", value: id })),
-    ),
+    ...Object.values(rows).flatMap((row) => {
+      const own: { kind: string; value: string }[] = row.evidenceIds.map((id) => ({
+        kind: "evidence id reference",
+        value: id,
+      }));
+      // Bounded enums and control tokens delivered as text: screened
+      // (never rewritten) — runtime secrets can add a match the
+      // preflight screens could not see, so delivered values are
+      // checked again here.
+      if (row.value !== undefined) own.push({ kind: "classification value", value: row.value });
+      own.push({ kind: "classification outcome", value: row.outcome });
+      own.push({ kind: "cell status token", value: row.status });
+      return own;
+    }),
     ...provenanceKeys.map((id) => ({ kind: "evidence provenance key", value: id })),
   ];
   const secrets = [...basis];
@@ -709,6 +798,38 @@ export async function runEvidenceComparison(
   assertPublishableIdentifiers(expanded, run.value.rows, Object.keys(run.value.provenance), merged, "delivery");
 
   const engineEnvelope = (run.projected as { data: Record<string, unknown> }).data;
+
+  // Run control tokens come from the RAW typed engine state, never the
+  // redacted envelope: a basis secret matching "complete"/"partial"/
+  // "semantic"/"deterministic-only" could otherwise rewrite the
+  // delivered copy and silently flip the exit code. The raw values are
+  // literal-checked (fail closed on anything unexpected) and SCREENED
+  // against the full basis — a match is a static no-echo rejection, so
+  // a secret-shaped control token is never delivered and never decides
+  // the exit.
+  const rawStatus = run.value.rawStatus;
+  const rawAssessment = run.value.rawAssessment;
+  if (rawStatus !== "complete" && rawStatus !== "partial") {
+    throw new ValidationError(
+      "engine run state carries an unrecognized status token — refusing to derive the comparison outcome from it.",
+    );
+  }
+  if (rawAssessment !== "semantic" && rawAssessment !== "deterministic-only") {
+    throw new ValidationError(
+      "engine run state carries an unrecognized assessment token — refusing to derive the comparison outcome from it.",
+    );
+  }
+  {
+    const secrets = [...merged];
+    for (const token of [rawStatus, rawAssessment]) {
+      if (redactSecrets(token, secrets) !== token) {
+        throw new ValidationError(
+          "run control token is not publishable under the run's secret basis (a declared secret matches a status/assessment token) — rejected before delivery.",
+          "Control tokens decide the exit code and are never rewritten; remove the credential material from the basis or rename nothing — choose a different secret value.",
+        );
+      }
+    }
+  }
   verifyEngineDisplayIntegrity(engineEnvelope);
 
   const redactedFrame = Object.fromEntries(
@@ -723,20 +844,21 @@ export async function runEvidenceComparison(
   const matrix: ComparisonMatrix = {
     kind: "evidence-comparison",
     schemaVersion: 1,
-    status: engineEnvelope.status as "complete" | "partial",
-    assessment: engineEnvelope.assessment as LeanResult["assessment"],
+    status: rawStatus,
+    assessment: rawAssessment,
     question: redactSecrets(expanded.question, merged) as string,
     frame: redactedFrame,
-    cells: run.value.rows,
+    cells: redactComparisonCells(run.value.rows, merged),
     evidenceProvenance: redactedProvenance,
     engine: engineEnvelope,
   };
   // Hash the FINAL delivered form — after metadata redaction, never before.
   const resultSha256 = sha256Hex(JSON.stringify(matrix));
+  // Exit derives from the RAW typed status — never the redacted copy.
   return {
     kind: "data",
     data: { ...matrix, resultSha256 },
-    exitCode: run.interrupted ? 130 : matrix.status === "complete" ? 0 : 1,
+    exitCode: run.interrupted ? 130 : rawStatus === "complete" ? 0 : 1,
   };
 }
 
@@ -747,7 +869,8 @@ function isAbortError(error: unknown): boolean {
 
 /** The engine run through the shared seam; `value` carries this lane's
  *  projections built INSIDE the run (pre-redaction provenance join,
- *  cells). */
+ *  cells) plus the RAW typed run state (status/assessment, read from the
+ *  engine result BEFORE any projection redacts anything). */
 async function executeComparisonRun(
   expanded: ExpandedComparison,
   deps: InvestigateRequirementsDeps,
@@ -757,7 +880,12 @@ async function executeComparisonRun(
   projected: CommandResult;
   secrets: readonly string[];
   interrupted: boolean;
-  value: { rows: Record<string, ComparisonCellResult>; provenance: Record<string, EvidenceServeProvenance> };
+  value: {
+    rows: Record<string, ComparisonCellResult>;
+    provenance: Record<string, EvidenceServeProvenance>;
+    rawStatus: LeanResult["status"];
+    rawAssessment: LeanResult["assessment"];
+  };
 }> {
   return withRequirementsRuntime(
     expanded.contractInput,
@@ -770,6 +898,8 @@ async function executeComparisonRun(
         value: {
           rows: projectCells(expanded, result),
           provenance: joinServeProvenance(result, readProvenance?.()),
+          rawStatus: result.status,
+          rawAssessment: result.assessment,
         },
       };
     },

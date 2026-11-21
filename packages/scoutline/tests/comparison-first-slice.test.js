@@ -33,6 +33,7 @@ import {
   runEvidenceComparison,
   joinServeProvenance,
   verifyEngineDisplayIntegrity,
+  redactComparisonCells,
 } from "../dist/commands/investigate-comparison.js";
 import { createTavilyDescriptor } from "../dist/providers/tavily/adapter.js";
 
@@ -176,7 +177,7 @@ async function run(input, { docs, limits, secrets, signal, stallQuota, onHttp, e
 // --- stable cell mapping + preflight guards ------------------------------
 
 test("deterministic expansion produces the stable cell-to-requirement map", () => {
-  const expanded = expandComparison(COMPARISON);
+  const expanded = expandComparison(COMPARISON, []);
   assert.deepEqual(Object.keys(expanded.cells), ["2_4_0_csv_export", "2_5_0_csv_export"]);
   assert.equal(comparisonCellKey("2.4.0", "csv_export"), "2_4_0_csv_export");
   for (const [key, cell] of Object.entries(expanded.cells)) {
@@ -196,7 +197,7 @@ test("entity labels interpolate LITERALLY: $-sequences never rewrite the obligat
     ...COMPARISON,
     entities: ["2$&4.0"],
     dimensions: { csv_export: { question: "Does release {entity} support CSV export?" } },
-  });
+  }, []);
   const question = expanded.contractInput.requirements["2_4_0_csv_export"].question;
   assert.equal(question, "Does release 2$&4.0 support CSV export?");
   for (const entity of ["2$'4", "2$`4", "2$$4", "2$<4"]) {
@@ -204,7 +205,7 @@ test("entity labels interpolate LITERALLY: $-sequences never rewrite the obligat
       ...COMPARISON,
       entities: [entity],
       dimensions: { csv_export: { question: "Does release {entity} support CSV export?" } },
-    });
+    }, []);
     assert.equal(
       literal.contractInput.requirements[comparisonCellKey(entity, "csv_export")].question,
       `Does release ${entity} support CSV export?`,
@@ -249,14 +250,14 @@ for (const [name, input, pattern] of [
   ["unknown limits key is the comparison's own typed error", { ...COMPARISON, limits: { maxFields: 9 } }, /comparison limits declare unsupported keys \(maxFields\)/],
 ]) {
   test(`preflight rejects ${name} before any work`, () => {
-    assert.throws(() => expandComparison(input), (error) => error.code === "VALIDATION_ERROR" && pattern.test(error.message));
+    assert.throws(() => expandComparison(input, []), (error) => error.code === "VALIDATION_ERROR" && pattern.test(error.message));
   });
 }
 
 test("expanded contract carries a copy: caller-held limits cannot mutate the run", () => {
   const limits = { maxSearchAttempts: 3 };
   const input = { ...COMPARISON, limits };
-  const expanded = expandComparison(input);
+  const expanded = expandComparison(input, []);
   limits.maxSearchAttempts = 1;
   assert.equal(expanded.contractInput.limits.maxSearchAttempts, 3, "preflight decision binds the copy, not the caller's object");
 });
@@ -328,13 +329,226 @@ test("budget exhaustion retains rows and reasons", async () => {
   });
   assert.equal(result.data.status, "partial");
   assert.equal(result.exitCode, 1);
+  assert.ok(result.data.engine.usage.searches <= 1, "the declared search cap holds: at most one search dispatched");
   for (const key of ["2_4_0_csv_export", "2_5_0_csv_export"]) {
     const cell = result.data.cells[key];
     assert.ok(cell, `row ${key} retained under budget exhaustion`);
     assert.ok(cell.reason, `row ${key} retains its reason`);
     assert.ok(["unresolved", "supported", "refuted", "disputed"].includes(cell.outcome));
   }
-  assert.ok(result.data.engine.coverageNotes.length > 0 || result.data.engine.usage.searches <= 1);
+});
+
+// --- PR #301 review triage regressions ------------------------------------
+
+test("expandComparison REQUIRES a captured secret basis (no silent empty-basis echo)", () => {
+  assert.throws(
+    () => expandComparison(COMPARISON),
+    (error) => error.code === "VALIDATION_ERROR" && /requires the caller's captured secret-basis array/.test(error.message),
+  );
+  assert.throws(
+    () => expandComparison(COMPARISON, undefined),
+    (error) => error.code === "VALIDATION_ERROR" && /captured secret-basis array/.test(error.message),
+  );
+  assert.doesNotThrow(() => expandComparison(COMPARISON, []));
+});
+
+test("non-record frame input is rejected before the scope disappears", () => {
+  const rejection = (error) =>
+    error.code === "VALIDATION_ERROR" && /plain record of string tokens/.test(error.message);
+  assert.throws(() => expandComparison({ ...COMPARISON, frame: new Map([["edition", "Community"]]) }, []), rejection);
+  assert.throws(() => expandComparison({ ...COMPARISON, frame: ["edition"] }, []), rejection);
+  assert.throws(() => expandComparison({ ...COMPARISON, frame: new Date(0) }, []), rejection);
+  // `frame: null` is a TYPED rejection — never a raw TypeError from
+  // getPrototypeOf(null).
+  assert.throws(() => expandComparison({ ...COMPARISON, frame: null }, []), rejection);
+  assert.doesNotThrow(() => expandComparison({ ...COMPARISON, frame: JSON.parse('{"edition":"Community"}') }, []));
+});
+
+test("the cardinality gate fires before any entity element is read", () => {
+  // Two NON-STRING entities × two dimensions = 4 cells over the cap: the
+  // cap must reject on the container counts alone — the element type
+  // error (and any element scan) must never run.
+  assert.throws(
+    () => expandComparison({
+      ...COMPARISON,
+      entities: [{ evil: "non-string" }, { evil: "second" }],
+      dimensions: {
+        csv_export: { question: "Q {entity}?" },
+        pdf_export: { question: "P {entity}?" },
+      },
+    }, []),
+    (error) =>
+      error.code === "VALIDATION_ERROR" &&
+      /expands to 4 cells \(2 entities × 2 dimensions\)/.test(error.message),
+  );
+});
+
+test("compiler-first typed enum validation: malformed enum entries get the COMPILER diagnostic, not a redaction pass", () => {
+  // Non-string enum entry: the engine compiler's typed error fires
+  // (sanitized through the lane boundary), before any enum redaction
+  // screen could touch untyped values.
+  assert.throws(
+    () => expandComparison({
+      ...COMPARISON,
+      dimensions: { csv_export: { question: "Q {entity}?", schema: { enum: ["supported", 123] } } },
+    }, []),
+    (error) => error.code === "VALIDATION_ERROR" && /enum values must be non-empty strings/.test(error.message),
+  );
+  // A secret-bearing enum value that is also invalid vocabulary: the
+  // compiler's vocabulary diagnostic surfaces (sanitized, no echo) — the
+  // enum screen never runs on it. The message names the vocabulary rule,
+  // not the screen rule — that ordering IS the fix.
+  assert.throws(
+    () => expandComparison({
+      ...COMPARISON,
+      dimensions: { csv_export: { question: "Q {entity}?", schema: { enum: ["supported", SECRET] } } },
+    }, [SECRET]),
+    (error) =>
+      error.code === "VALIDATION_ERROR" &&
+      /outside the proof vocabulary/.test(error.message) &&
+      !error.message.includes(SECRET) &&
+      (error.help === undefined || !error.help.includes(SECRET)),
+  );
+});
+
+test("run control tokens are screened: a secret matching a DELIVERED status token refuses instead of flipping the exit", async () => {
+  // Both cells resolve, so the raw run status is "complete" — the very
+  // token the basis secret matches. The screen refuses statically; the
+  // exit code can never be derived from a redacted copy.
+  await assert.rejects(
+    run(COMPARISON, {
+      docs: [DOC("Community", "2.4.0", "supports"), DOC("Community", "2.5.0", "supports")],
+      secrets: ["complete"],
+    }),
+    (error) =>
+      error.code === "VALIDATION_ERROR" &&
+      /run control token is not publishable/.test(error.message) &&
+      !error.message.includes("complete"),
+  );
+  // A secret matching "partial" refuses a partial run the same way.
+  await assert.rejects(
+    run(COMPARISON, { docs: [DOC("Community", "2.4.0", "supports")], secrets: ["partial"] }),
+    (error) => error.code === "VALIDATION_ERROR" && /run control token is not publishable/.test(error.message),
+  );
+  // Row-level status tokens are screened through the same delivered-
+  // surface rule.
+  await assert.rejects(
+    run(COMPARISON, { docs: [DOC("Community", "2.4.0", "supports")], secrets: ["satisfied"] }),
+    (error) =>
+      error.code === "VALIDATION_ERROR" &&
+      /cell status token is not publishable/.test(error.message) &&
+      !error.message.includes("satisfied"),
+  );
+  // A secret matching a token that is NOT delivered ("complete" on a
+  // partial run) is inert — the run completes normally.
+  const inert = await run(COMPARISON, { docs: [DOC("Community", "2.4.0", "supports")], secrets: ["complete"] });
+  assert.equal(inert.result.exitCode, 1);
+  assert.equal(inert.result.data.status, "partial");
+});
+
+test("the expansion cap is checked before duplicate scanning can stall on doomed input", () => {
+  // 30k distinct entities × 2 dimensions: an O(n²) includes() scan would
+  // take minutes; the Set-based screen plus the early cap refuse fast.
+  const entities = Array.from({ length: 30000 }, (_v, i) => `e${i}`);
+  const started = Date.now();
+  assert.throws(
+    () => expandComparison({
+      ...COMPARISON,
+      entities,
+      dimensions: {
+        csv_export: { question: "Q {entity}?" },
+        pdf_export: { question: "P {entity}?" },
+      },
+    }, []),
+    (error) => error.code === "VALIDATION_ERROR" && /expands to 60000 cells \(30000 entities × 2 dimensions\)/.test(error.message),
+  );
+  assert.ok(Date.now() - started < 5000, "preflight returns promptly instead of quadratic scanning");
+});
+
+test("classification enum values are screened against the basis after typed validation", () => {
+  const rejection = (error) =>
+    error.code === "VALIDATION_ERROR" && /classification value that is not publishable/.test(error.message);
+  // The DEFAULT enum vs a basis containing a classification word: the
+  // compiler accepts the vocabulary, the screen refuses the match.
+  assert.throws(() => expandComparison(COMPARISON, ["supported"]), rejection);
+  assert.throws(() => expandComparison(COMPARISON, ["disputed"]), rejection);
+  // A DECLARED VALID enum value that matches the basis secret.
+  assert.throws(
+    () => expandComparison({
+      ...COMPARISON,
+      dimensions: { csv_export: { question: "Q {entity}?", schema: { enum: ["supported", "refuted", "disputed"] } } },
+    }, ["refuted"]),
+    rejection,
+  );
+  assert.doesNotThrow(() => expandComparison(COMPARISON, []));
+});
+
+test("a RESTRICTED declared enum screens only its own values (excluded literal accepted, included literal refused)", () => {
+  const rejection = (error) =>
+    error.code === "VALIDATION_ERROR" && /classification value that is not publishable/.test(error.message);
+  const restricted = {
+    ...COMPARISON,
+    dimensions: { csv_export: { question: "Q {entity}?", schema: { enum: ["supported"] } } },
+  };
+  // "disputed" is EXCLUDED by the declaration: a basis secret matching
+  // it must NOT refuse (the old dimension-id-keyed lookup fell back to
+  // the full default enum and falsely refused).
+  assert.doesNotThrow(() => expandComparison(restricted, ["disputed"]));
+  assert.doesNotThrow(() => expandComparison(restricted, ["refuted"]));
+  // "supported" is INCLUDED: a basis secret matching it refuses.
+  assert.throws(() => expandComparison(restricted, ["supported"]), rejection);
+});
+
+test("delivered classification values are re-screened once runtime secrets are known", async () => {
+  const runtime = makeRuntime({ docs: [DOC("Community", "2.5.0", "does not support")] });
+  const factory = (context) => {
+    const composed = runtime.factory(context);
+    // The runtime reports a late secret that matches a delivered enum
+    // value: the host-basis preflight could not see it.
+    return { ...composed, secrets: [...(composed.secrets ?? []), "refuted"] };
+  };
+  await assert.rejects(
+    runEvidenceComparison(
+      COMPARISON,
+      { ...THROWING_READS, now: () => 0, requirementsRuntime: factory, registerUserInterrupt: () => () => {} },
+      { env: { ...ENV }, provider: "tavily", noCache: true, cache: { get: async () => null, set: async () => {} }, sleep: async () => {}, random: () => 0 },
+    ),
+    (error) =>
+      error.code === "VALIDATION_ERROR" &&
+      /classification value is not publishable under the run's secret basis/.test(error.message) &&
+      !error.message.includes("refuted"),
+  );
+});
+
+test("cell reason text is redacted at delivery; enums and structural ids are not rewritten", async () => {
+  // Unit boundary (exported seam): reason is display-only prose and rides
+  // the captured basis; value/outcome/ids pass through untouched.
+  const row = {
+    entity: "2.4.0",
+    dimension: "csv_export",
+    requirementId: "2_4_0_csv_export",
+    outcome: "supported",
+    status: "satisfied",
+    value: "supported",
+    reason: `judgment basis quotes ${SECRET} from fetched content`,
+    evidenceIds: ["e1"],
+    judgmentCount: 1,
+    inconsistentJudgments: 0,
+  };
+  const redacted = redactComparisonCells({ "2_4_0_csv_export": row }, [SECRET]);
+  const cell = redacted["2_4_0_csv_export"];
+  assert.ok(!cell.reason.includes(SECRET), "reason prose redacted");
+  assert.ok(cell.reason.includes("[REDACTED]"));
+  assert.equal(cell.value, "supported", "bounded enum not rewritten");
+  assert.equal(cell.outcome, "supported");
+  assert.equal(cell.requirementId, "2_4_0_csv_export", "structural id untouched");
+  assert.deepEqual(cell.evidenceIds, ["e1"]);
+  // End-to-end: a full delivered matrix keeps the reason boundary (the
+  // engine's reason vocabulary is fixed identifiers today, so the run's
+  // own reasons pass through redaction unchanged in bytes).
+  const { result } = await run(COMPARISON, { docs: [DOC("Community", "2.5.0", "does not support")] });
+  const reason = result.data.cells["2_4_0_csv_export"].reason;
+  assert.ok(typeof reason === "string" && reason.length > 0, "delivered reason present (the silent cell is unresolved with a reason)");
 });
 
 // --- delivery ties: redaction, hash, counts, IDs (fix2) -------------------

@@ -117,10 +117,11 @@ export interface MonitorFactMainResult {
 /**
  * Bounded definition-file read: delegates to the store's owned no-follow
  * reader (lstat screen against symlinks/fifos, O_NOFOLLOW|O_NONBLOCK on
- * Linux, incremental reads failing the moment the ceiling is exceeded).
+ * Linux, incremental reads failing the moment the ceiling is exceeded;
+ * observes the cancellation signal).
  */
-export async function readFileBounded(filePath: string): Promise<string> {
-  return readOwnedFileBounded(filePath, "monitor-fact definition file", MAX_REQUIREMENTS_BYTES);
+export async function readFileBounded(filePath: string, signal?: AbortSignal): Promise<string> {
+  return readOwnedFileBounded(filePath, "monitor-fact definition file", MAX_REQUIREMENTS_BYTES, signal);
 }
 
 /**
@@ -187,7 +188,7 @@ async function readDefinition(
     // to the typed cancellation (ordinary file errors pass through when
     // no abort occurred).
     try {
-      return await readOwnedFileBounded(source.path, "monitor-fact definition file", MAX_REQUIREMENTS_BYTES, signal);
+      return await readFileBounded(source.path, signal);
     } catch (error) {
       if (signal?.aborted && !(error instanceof FactMonitorCancelledError)) {
         throw new FactMonitorCancelledError(monitorId);

@@ -27,6 +27,7 @@ const {
   factMonitorDefinitionDigest,
   FactMonitorCancelledError,
 } = await import(`${root}/dist/lib/fact-monitor.js`);
+const { ValidationError } = await import(`${root}/dist/lib/errors.js`);
 const { monitorFactMain } = await import(`${root}/dist/commands/monitor-fact.js`);
 const { LockTimeoutError } = await import(`${root}/dist/lib/async-file-lock.js`);
 
@@ -749,6 +750,111 @@ test("invalid monitor ids are rejected before any write", async (t) => {
     () => runFactMonitorTick(dir, "../escape", definition(), engineFixture("supported").deps, { now: T(1) }),
     /monitor id/,
   );
+});
+
+// --- follow-up: load signal, owned probe, streaming cap, cancelled label ---
+
+test("the load signal reaches bounded state reads as typed cancellation", async (t) => {
+  const dir = await mkTmp(t);
+  await commit(dir, definition(), satisfied("supported"), 1);
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(
+    () => loadFactMonitorState(dir, MONITOR, { signal: controller.signal }),
+    FactMonitorCancelledError,
+  );
+  // No-signal load of the same healthy state still works (ordinary path).
+  assert.equal((await loadFactMonitorState(dir, MONITOR)).seq, 1);
+});
+
+test("the owned reader distinguishes refused from absent for the ownership probe", async (t) => {
+  const dir = await mkTmp(t);
+  const { readOwnedFileBoundedIfExists } = await import(`${root}/dist/lib/fact-monitor.js`);
+  const target = path.join(dir, "probe-target");
+
+  await fs.symlink(path.join(dir, "elsewhere"), target);
+  await assert.rejects(
+    () => readOwnedFileBoundedIfExists(target, "probe", 2 * 1024 * 1024),
+    /not a regular file/,
+  );
+
+  await fs.rm(target);
+  await fs.writeFile(target, "y".repeat(3 * 1024 * 1024));
+  await assert.rejects(
+    () => readOwnedFileBoundedIfExists(target, "probe", 2 * 1024 * 1024),
+    /record ceiling/,
+  );
+
+  await fs.rm(target);
+  assert.equal(await readOwnedFileBoundedIfExists(target, "probe", 2 * 1024 * 1024), undefined);
+});
+
+test("a 'cancelled' label on an ordinary refusal never classifies as cancellation", async (t) => {
+  const dir = await mkTmp(t);
+  // Legal monitor id containing the word "cancelled" — its label flows
+  // into every reader error message, so message-based mapping would
+  // misclassify; the typed internal read-abort identity must not.
+  const monitorId = "a-cancelled-1";
+  const { deps } = engineFixture("supported");
+  const report = await runFactMonitorTick(dir, monitorId, definition(), deps, { now: T(1) });
+  assert.equal(report.committed, true);
+  const current = path.join(dir, monitorId, "current.json");
+  const good = await fs.readFile(current, "utf8");
+  const padded = { ...JSON.parse(good), filler: "y".repeat(3 * 1024 * 1024) };
+
+  // Ordinary oversized refusal, NO signal: stays the plain ValidationError.
+  await fs.writeFile(current, JSON.stringify(padded));
+  await assert.rejects(
+    () => loadFactMonitorState(dir, monitorId),
+    (error) => error instanceof ValidationError && /record ceiling/.test(error.message) && !(error instanceof FactMonitorCancelledError),
+  );
+
+  // Aborted signal + healthy state: the read itself aborts, typed.
+  await fs.writeFile(current, good);
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(
+    () => loadFactMonitorState(dir, monitorId, { signal: controller.signal }),
+    FactMonitorCancelledError,
+  );
+});
+
+test("the stdin adapter witnesses streaming-offset truncation at the propagated cap", async (t) => {
+  const dir = await mkTmp(t);
+  const payload = JSON.stringify(definition()) + "x".repeat(2 * 1024 * 1024);
+  const streamed = { offset: 0, cap: 0 };
+  const { deps } = engineFixture("supported");
+  await assert.rejects(
+    () =>
+      monitorFactMain(
+        ["tick", "--definition", "-", "--monitor-id", MONITOR, "--state-root", dir],
+        {
+          ...deps,
+          readStdin: async (_signal, maxBytes) => {
+            streamed.cap = maxBytes ?? 0;
+            // Stream in 4 KiB slices, stopping (rejecting) the moment the
+            // running offset passes the propagated cap — the adapter never
+            // buffers the whole oversized payload.
+            const slice = 4096;
+            while (streamed.offset < payload.length) {
+              streamed.offset += slice;
+              if (maxBytes !== undefined && streamed.offset > maxBytes) {
+                throw new Error("stdin exceeds ceiling while streaming");
+              }
+            }
+            return payload;
+          },
+        },
+        { now: T(1), stateRoot: dir },
+      ),
+    /ceiling/,
+  );
+  assert.ok(streamed.cap > 0, "the ceiling was propagated to the adapter");
+  assert.ok(
+    streamed.offset <= streamed.cap + 4096,
+    `stopped at the cap (offset ${streamed.offset} ≈ cap ${streamed.cap}), not payload length ${payload.length}`,
+  );
+  assert.ok(streamed.offset < payload.length, "streaming stopped before the full payload was consumed");
 });
 
 // --- fix3 controls: ownership, seq-0, baseline refs, signals, publication ---

@@ -450,14 +450,29 @@ export async function readOwnedFileBounded(
   maxBytes: number,
   signal?: AbortSignal,
 ): Promise<string> {
+  const text = await readOwnedFileBoundedIfExists(filePath, label, maxBytes, signal);
+  if (text === undefined) throw new ValidationError(`${label} is absent.`);
+  return text;
+}
+
+/** Owned no-follow bounded read that distinguishes ABSENT (returns
+ *  undefined) from REFUSED (symlink/non-regular/oversized/cancelled all
+ *  throw) — callers must never conflate a redirected or inaccessible
+ *  path with ENOENT. */
+export async function readOwnedFileBoundedIfExists(
+  filePath: string,
+  label: string,
+  maxBytes: number,
+  signal?: AbortSignal,
+): Promise<string | undefined> {
   if (signal?.aborted) {
-    throw new ValidationError(`${label}: read cancelled before open.`);
+    throw new FactMonitorReadAbortedError(`${label}: read cancelled before open.`);
   }
   let info;
   try {
     info = await fs.lstat(filePath);
   } catch (error) {
-    if (isEnoent(error)) throw new ValidationError(`${label} is absent.`);
+    if (isEnoent(error)) return undefined;
     throw error;
   }
   if (info.isSymbolicLink() || !info.isFile()) {
@@ -478,7 +493,7 @@ export async function readOwnedFileBounded(
     const chunk = Buffer.alloc(64 * 1024);
     for (;;) {
       if (signal?.aborted) {
-        throw new ValidationError(`${label}: read cancelled mid-stream.`);
+        throw new FactMonitorReadAbortedError(`${label}: read cancelled mid-stream.`);
       }
       const { bytesRead } = await handle.read(chunk, 0, chunk.length, null);
       if (bytesRead === 0) break;
@@ -558,6 +573,14 @@ function mergeSignals(signals: ReadonlyArray<AbortSignal | undefined>): AbortSig
   return AbortSignal.any(present);
 }
 
+/**
+ * Internal read-abort identity: the owned readers' SIGNAL refusals.
+ * Extends ValidationError so public catchers see the historical shape,
+ * while internal classification uses the class, never message text —
+ * a user-controlled label containing "cancelled" cannot impersonate it.
+ */
+class FactMonitorReadAbortedError extends ValidationError {}
+
 /** Make a directory entry durable: fsync the directory itself. On
  *  Windows, directory-handle FlushFileBuffers needs write access (the
  *  shared atomicReplaceFile helper skips dir sync there for the same
@@ -586,6 +609,26 @@ async function requireOwnedDirectory(dirPath: string, label: string): Promise<bo
     throw new ValidationError(`${label} is not a regular directory; refusing redirected state.`);
   }
   return true;
+}
+
+/** Owned bounded state/record read under the load signal: a signal-fired
+ *  refusal maps to the TYPED cancellation; every other error (redirected,
+ *  oversized, IO) passes through unchanged. */
+async function readStateFileBounded(
+  root: string,
+  monitorId: string,
+  filePath: string,
+  label: string,
+  signal: AbortSignal | undefined,
+): Promise<string> {
+  try {
+    return await readOwnedFileBounded(filePath, label, MAX_FACT_MONITOR_RECORD_BYTES, signal);
+  } catch (error) {
+    if (error instanceof FactMonitorReadAbortedError) {
+      throw new FactMonitorCancelledError(monitorId);
+    }
+    throw error;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -827,10 +870,16 @@ async function loadFactMonitorStateInternal(
   }
   let raw: unknown;
   try {
-    const text = await readOwnedFileBounded(filePath, `fact monitor ${monitorId} current.json`, MAX_FACT_MONITOR_RECORD_BYTES);
+    const text = await readStateFileBounded(
+      root,
+      monitorId,
+      filePath,
+      `fact monitor ${monitorId} current.json`,
+      options?.signal,
+    );
     raw = JSON.parse(text);
   } catch (error) {
-    if (error instanceof ValidationError) throw error;
+    if (error instanceof FactMonitorCancelledError || error instanceof ValidationError) throw error;
     throw new ValidationError(`fact monitor ${monitorId}: current.json is corrupt (unparseable).`);
   }
   const state = validateStateShape(raw, monitorId);
@@ -851,8 +900,9 @@ async function loadFactMonitorStateInternal(
     state.commit!.tickId,
     raw,
     state.definitionDigest,
+    options?.signal,
   );
-  await validateBaselineReferences(root, monitorId, state, tipRecord);
+  await validateBaselineReferences(root, monitorId, state, tipRecord, options?.signal);
   return state;
 }
 
@@ -870,6 +920,7 @@ async function validateBaselineReferences(
   monitorId: string,
   state: FactMonitorState,
   tipRecord: Record<string, unknown>,
+  signal?: AbortSignal,
 ): Promise<void> {
   const baselineSeqs = new Set<number>();
   for (const field of Object.values(state.fields)) {
@@ -879,7 +930,7 @@ async function validateBaselineReferences(
     const record: Record<string, unknown> =
       baselineSeq === state.commit!.seq
         ? tipRecord
-        : await readAndValidateCommitRecord(root, monitorId, baselineSeq, null, null);
+        : await readAndValidateCommitRecord(root, monitorId, baselineSeq, null, null, undefined, signal);
     if (record.definitionDigest !== state.definitionDigest) {
       throw new ValidationError(`fact monitor ${monitorId}: baseline record ${baselineSeq} was accepted under a different definition digest.`);
     }
@@ -929,14 +980,21 @@ async function readAndValidateCommitRecord(
   expectedTickId: string | null,
   expectedStateAfter: unknown,
   expectedDigest?: string,
+  signal?: AbortSignal,
 ): Promise<Record<string, unknown>> {
   const recordPath = tickRecordPath(root, monitorId, seq);
   let recordRaw: unknown;
   try {
-    const text = await readOwnedFileBounded(recordPath, `fact monitor ${monitorId} tick record ${seq}`, MAX_FACT_MONITOR_RECORD_BYTES);
+    const text = await readStateFileBounded(
+      root,
+      monitorId,
+      recordPath,
+      `fact monitor ${monitorId} tick record ${seq}`,
+      signal,
+    );
     recordRaw = JSON.parse(text);
   } catch (error) {
-    if (error instanceof ValidationError) throw error;
+    if (error instanceof FactMonitorCancelledError || error instanceof ValidationError) throw error;
     throw new ValidationError(`fact monitor ${monitorId}: referenced tick record ${seq} is corrupt.`);
   }
   const record = requirePlainShape(
@@ -1176,11 +1234,17 @@ async function pointerOwnership(
 ): Promise<"ours" | "lost" | "uncertain"> {
   let text: string | undefined;
   try {
-    text = await fs.readFile(currentPath(root, monitorId), "utf8");
-  } catch (error) {
-    if (isEnoent(error)) return base.seq === 0 ? "ours" : "lost";
+    text = await readOwnedFileBoundedIfExists(
+      currentPath(root, monitorId),
+      `fact monitor ${monitorId} current.json probe`,
+      MAX_FACT_MONITOR_RECORD_BYTES,
+    );
+  } catch {
+    // REFUSED by the owned reader — symlinked/redirected, non-regular,
+    // oversized: never conflated with absence, always uncertain.
     return "uncertain";
   }
+  if (text === undefined) return base.seq === 0 ? "ours" : "lost";
   try {
     const raw = JSON.parse(text) as { seq?: unknown; commit?: { tickId?: unknown } };
     if (raw.seq === base.seq && raw.commit?.tickId === base.commit?.tickId) return "ours";
@@ -1251,7 +1315,14 @@ async function commitUnderTickLock(
     async () => {
       // alreadyLocked=true: this critical section holds the tick lock, so
       // the ambiguity re-check must not re-acquire it.
-      const state = await loadFactMonitorStateInternal(root, prepared.monitorId, true);
+      // Pre-publication locked load observes the tick signal: an abort in
+      // this window is a typed cancellation, never a late-commit or
+      // corruption report. (The post-publication reconciliation load in
+      // the error triage deliberately stays UNSIGNALED — it reconciles
+      // visibility and must not be cancelled mid-flight.)
+      const state = await loadFactMonitorStateInternal(root, prepared.monitorId, true, {
+        ...(options.signal !== undefined ? { signal: options.signal } : {}),
+      });
       const paths = {
         current: currentPath(root, prepared.monitorId),
         ticksDir: ticksDir(root, prepared.monitorId),

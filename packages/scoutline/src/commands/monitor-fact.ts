@@ -14,13 +14,17 @@
  * report rather than changed here. Definition input is bounded by the
  * requirements command's 1 MiB ceiling (MAX_REQUIREMENTS_BYTES).
  */
+import * as nodePath from "node:path";
+
 import { ValidationError } from "../lib/errors.js";
 import { MAX_REQUIREMENTS_BYTES } from "./investigate-requirements.js";
 import type { LeanDeps } from "../lib/lean-investigation.js";
 import {
   FactMonitorCancelledError,
   readOwnedFileBounded,
+  requireMonitorId,
   runFactMonitorTick,
+  type FactMonitorOptions,
   type FactMonitorTickReport,
 } from "../lib/fact-monitor.js";
 
@@ -28,7 +32,7 @@ export const MONITOR_FACT_USAGE = `
 monitor-fact — accepted-value fact monitoring (v3 first slice)
 
 Usage:
-  monitor-fact tick --definition <file|-> --monitor-id <id> [--state-root <dir>]
+  monitor-fact tick --definition <file|-> --monitor-id <id> --state-root <dir>
 
 Runs ONE bounded monitoring tick for the given monitor: one engine pass
 over the definition, compared against the monitor's last accepted
@@ -42,10 +46,9 @@ Options:
                           letters, digits, '.', '_', '-', first char
                           alphanumeric). Baselines live under
                           <state-root>/<monitor-id>/
-  --state-root <dir>      Monitor state root (default resolution lands
-                          with shared CLI wiring; this slice requires it
-                          explicitly so no implicit real-user store is
-                          created)
+  --state-root <dir>      Monitor state root (REQUIRED; the default
+                          resolution lands with shared CLI wiring, so no
+                          implicit real-user store is ever created)
 
 Report: the FactMonitorTickReport JSON document on stdout. Exit codes:
 0 committed tick (including unresolved/error outcomes — the transition
@@ -53,9 +56,12 @@ IS the tick's result); 1 usage/validation; 2 rejected late commit;
 130 cancelled before publication.
 `.trim();
 
-/** Injectable IO for {@link monitorFactMain} (tests inject both). */
+/** Injectable IO for {@link monitorFactMain} (tests inject both).
+ *  `readStdin` receives the input ceiling so a streaming adapter can stop
+ *  reading the moment it is exceeded (the post-read check remains as a
+ *  backstop for adapters that ignore it). */
 export interface MonitorFactDeps extends LeanDeps {
-  readonly readStdin: (signal?: AbortSignal) => Promise<string>;
+  readonly readStdin: (signal?: AbortSignal, maxBytes?: number) => Promise<string>;
 }
 
 export function parseMonitorFactArgs(args: readonly string[]): {
@@ -118,16 +124,20 @@ export async function readFileBounded(filePath: string): Promise<string> {
 }
 
 /**
- * Stdin under cancellation: race the adapter against the abort signal so
- * a BLOCKED adapter cannot leave the command pending, and an adapter
- * that rejects on abort maps to the same exit-130 cancellation outcome.
+ * Stdin under cancellation AND the byte ceiling: race the adapter against
+ * the abort signal so a BLOCKED adapter cannot leave the command pending
+ * (an adapter that rejects on abort maps to the same exit-130 outcome),
+ * and hand the adapter the input ceiling so a streaming adapter stops
+ * reading once it is exceeded. The wrapper owns listener cleanup on every
+ * exit path, including a synchronous adapter throw.
  */
 async function readStdinWithCancellation(
   deps: MonitorFactDeps,
   monitorId: string,
   signal: AbortSignal | undefined,
+  maxBytes: number,
 ): Promise<string> {
-  if (signal === undefined) return deps.readStdin(signal);
+  if (signal === undefined) return deps.readStdin(signal, maxBytes);
   try {
     return await new Promise<string>((resolve, reject) => {
       const onAbort = (): void => reject(new FactMonitorCancelledError(monitorId));
@@ -136,7 +146,14 @@ async function readStdinWithCancellation(
         return;
       }
       signal.addEventListener("abort", onAbort, { once: true });
-      deps.readStdin(signal).then(
+      let adapter: Promise<string>;
+      try {
+        adapter = deps.readStdin(signal, maxBytes);
+      } catch (error) {
+        signal.removeEventListener("abort", onAbort);
+        throw error;
+      }
+      adapter.then(
         (value) => {
           signal.removeEventListener("abort", onAbort);
           resolve(value);
@@ -159,10 +176,26 @@ async function readDefinition(
   source: { readonly path: string } | { readonly stdin: true },
   deps: MonitorFactDeps,
   monitorId: string,
-  signal?: AbortSignal,
+  signal: AbortSignal | undefined,
 ): Promise<object> {
-  const text =
-    "stdin" in source ? await readStdinWithCancellation(deps, monitorId, signal) : await readFileBounded(source.path);
+  const read = async (): Promise<string> => {
+    if ("stdin" in source) {
+      return readStdinWithCancellation(deps, monitorId, signal, MAX_REQUIREMENTS_BYTES);
+    }
+    // File reads observe cancellation too: check before opening, check
+    // per chunk inside the bounded reader, and map an abort-time failure
+    // to the typed cancellation (ordinary file errors pass through when
+    // no abort occurred).
+    try {
+      return await readOwnedFileBounded(source.path, "monitor-fact definition file", MAX_REQUIREMENTS_BYTES, signal);
+    } catch (error) {
+      if (signal?.aborted && !(error instanceof FactMonitorCancelledError)) {
+        throw new FactMonitorCancelledError(monitorId);
+      }
+      throw error;
+    }
+  };
+  const text = await read();
   if (Buffer.byteLength(text, "utf8") > MAX_REQUIREMENTS_BYTES) {
     throw new ValidationError(
       `monitor-fact: definition exceeds the ${MAX_REQUIREMENTS_BYTES}-byte input ceiling.`,
@@ -181,15 +214,22 @@ async function readDefinition(
 }
 
 /**
- * Entry point for one `monitor-fact tick` invocation. The state root is
- * REQUIRED in this slice (the config-root default lands with shared CLI
- * wiring, so no implicit real-user store is created here). The optional
- * signal cancels the engine run and prevents publication (exit 130).
+ * Entry point for one `monitor-fact tick` invocation. The --state-root
+ * flag is required (the config-root default lands with shared CLI
+ * wiring, so no implicit real-user store is ever created). An optional
+ * signal (merged with deps.externalSignal) cancels input reads, the
+ * engine run and publication (exit 130).
  */
 export async function monitorFactMain(
   args: readonly string[],
   deps: MonitorFactDeps,
-  options: { readonly now: Date; readonly stateRoot: string; readonly signal?: AbortSignal },
+  options: {
+    readonly now: Date;
+    readonly stateRoot: string;
+    readonly signal?: AbortSignal;
+    /** Lock-timing passthrough (tests synchronize on lock backoff). */
+    readonly lock?: FactMonitorOptions["lock"];
+  },
 ): Promise<MonitorFactMainResult> {
   const parsed = parseMonitorFactArgs(args);
   if (parsed.showHelp) {
@@ -204,7 +244,16 @@ export async function monitorFactMain(
   if (parsed.monitorId === undefined) {
     throw new ValidationError("monitor-fact: --monitor-id is required.");
   }
-  if (parsed.stateRoot !== undefined && parsed.stateRoot !== options.stateRoot) {
+  // Format validation IMMEDIATELY after parsing, before any input read:
+  // an invalid id must fail fast instead of blocking on stdin (the store
+  // independently re-validates before any path use).
+  requireMonitorId(parsed.monitorId);
+  if (parsed.stateRoot === undefined) {
+    throw new ValidationError("monitor-fact: --state-root is required.");
+  }
+  // Canonical comparison: equivalent spellings of the same root are not a
+  // conflict (raw-string comparison rejected trailing-slash variants).
+  if (nodePath.resolve(parsed.stateRoot) !== nodePath.resolve(options.stateRoot)) {
     throw new ValidationError("monitor-fact: --state-root conflicts with the injected state root.");
   }
   // ONE effective signal from BOTH sources, merged BEFORE any input is
@@ -221,7 +270,11 @@ export async function monitorFactMain(
       parsed.monitorId,
       definition,
       deps,
-      { now: options.now, ...(effectiveSignal !== undefined ? { signal: effectiveSignal } : {}) },
+      {
+        now: options.now,
+        ...(effectiveSignal !== undefined ? { signal: effectiveSignal } : {}),
+        ...(options.lock !== undefined ? { lock: options.lock } : {}),
+      },
     );
     return {
       code: report.rejection === "late_commit" ? 2 : 0,

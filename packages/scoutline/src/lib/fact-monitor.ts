@@ -43,7 +43,10 @@
  *     A visible current.json at seq N with its intact referenced record
  *     is committed. Power loss follows the fsync contract of the host
  *     filesystem — on a filesystem that honors fsync, the above holds
- *     across power loss too.
+ *     across power loss too. On Windows, directory sync is skipped
+ *     (read-only directory handles cannot FlushFileBuffers): successful
+ *     ticks report durability "fsync-limited" there, and power-loss
+ *     durability narrows to rename atomicity.
  *
  * Overlap rule (documented sequence rule, seed 03 "first useful scope"):
  * a tick commits only when the state sequence still equals the one it was
@@ -129,6 +132,16 @@ export type FactMonitorEventKind =
   | "redefined";
 
 const DIGEST_PATTERN = /^[0-9a-f]{64}$/;
+/** Valid transition kinds, used to validate stored event entries. */
+const EVENT_KINDS: ReadonlySet<string> = new Set<string>([
+  "baseline_established",
+  "unchanged",
+  "value_changed",
+  "became_unresolved",
+  "unresolved_attempt",
+  "recovered",
+  "redefined",
+]);
 const TICK_RECORD_PATTERN = /^tick-(\d+)\.json$/;
 const LINUX_O_NOFOLLOW_NONBLOCK = process.platform === "linux" ? 0x20000 | 0x800 : 0;
 
@@ -252,10 +265,12 @@ export interface FactMonitorTickReport {
   readonly definitionDigest: string;
   readonly committed: boolean;
   readonly rejection?: "late_commit";
-  /** Publication outcome: "confirmed" (fully durable) or
-   *  "visible-unconfirmed" (current.json names this tick but a
+  /** Publication outcome: "confirmed" (fully durable: payload+directory
+   *  fsync), "fsync-limited" (succeeded, but directory sync is skipped on
+   *  this platform — power-loss durability narrows to rename atomicity),
+   *  or "visible-unconfirmed" (current.json names this tick but a
    *  post-rename step failed — visible, not re-runnable). */
-  readonly durability?: "confirmed" | "visible-unconfirmed";
+  readonly durability?: "confirmed" | "fsync-limited" | "visible-unconfirmed";
   readonly durabilityWarning?: string;
   readonly fields: Readonly<Record<string, FactMonitorFieldReport>>;
   readonly events: readonly FactMonitorEvent[];
@@ -293,6 +308,37 @@ export class FactMonitorPublicationUncertainError extends Error {
   }
 }
 
+/**
+ * Raised when the commit detects the per-monitor lock was lost (expired
+ * and reclaimed by another publisher) BEFORE any payload write: nothing
+ * of this tick reached disk, so re-preparing and retrying is safe.
+ */
+export class FactMonitorLockLostError extends Error {
+  constructor(monitorId: string) {
+    super(
+      `fact monitor ${monitorId}: the tick lock was lost to another publisher before any write; nothing was published — safe to reprepare and retry.`,
+    );
+    this.name = "FactMonitorLockLostError";
+  }
+}
+
+/** Load-side and pre-publication shared check: a cited evidence entry
+ *  must be a USABLE LeanEvidenceRecord, not an ID-only stub. */
+function requireUsableEvidenceEntry(
+  entry: { evidenceId?: string; url?: unknown; title?: unknown; content?: unknown; byteLength?: unknown; origins?: unknown } | undefined,
+  evidenceId: string,
+  what: string,
+): void {
+  if (entry === undefined) {
+    throw new ValidationError(`${what}: accepted evidence ${JSON.stringify(evidenceId)} does not resolve in the engine artifact.`);
+  }
+  if (typeof entry.url !== "string" || typeof entry.title !== "string" ||
+    typeof entry.content !== "string" || typeof entry.byteLength !== "number" || entry.byteLength < 0 ||
+    !Array.isArray(entry.origins) || entry.origins.some((origin) => typeof origin !== "string")) {
+    throw new ValidationError(`${what}: accepted evidence ${JSON.stringify(evidenceId)} is not a usable evidence record.`);
+  }
+}
+
 /** Injectable knobs (watch's WatchStoreOptions pattern). */
 export interface FactMonitorOptions {
   readonly now: Date;
@@ -327,7 +373,9 @@ function tickRecordPath(root: string, monitorId: string, seq: number): string {
   return path.join(ticksDir(root, monitorId), `tick-${seq}.json`);
 }
 
-function requireMonitorId(monitorId: string): string {
+/** Validate a monitor id (exported for the command layer's pre-input
+ *  check — the store re-validates before any path use regardless). */
+export function requireMonitorId(monitorId: string): string {
   if (!MONITOR_ID_PATTERN.test(monitorId)) {
     throw new ValidationError(
       `monitor id ${JSON.stringify(monitorId)} is invalid: use 1-128 chars of letters, digits, '.', '_' or '-', starting alphanumeric.`,
@@ -396,7 +444,15 @@ function valuesEqual(a: string, b: string): boolean {
  *  fifo/device), O_NOFOLLOW|O_NONBLOCK open on Linux, FSTAT of the opened
  *  handle (path-swap race closed), incremental 64 KiB reads failing the
  *  moment the ceiling is exceeded. */
-export async function readOwnedFileBounded(filePath: string, label: string, maxBytes: number): Promise<string> {
+export async function readOwnedFileBounded(
+  filePath: string,
+  label: string,
+  maxBytes: number,
+  signal?: AbortSignal,
+): Promise<string> {
+  if (signal?.aborted) {
+    throw new ValidationError(`${label}: read cancelled before open.`);
+  }
   let info;
   try {
     info = await fs.lstat(filePath);
@@ -421,6 +477,9 @@ export async function readOwnedFileBounded(filePath: string, label: string, maxB
     let total = 0;
     const chunk = Buffer.alloc(64 * 1024);
     for (;;) {
+      if (signal?.aborted) {
+        throw new ValidationError(`${label}: read cancelled mid-stream.`);
+      }
       const { bytesRead } = await handle.read(chunk, 0, chunk.length, null);
       if (bytesRead === 0) break;
       total += bytesRead;
@@ -499,8 +558,13 @@ function mergeSignals(signals: ReadonlyArray<AbortSignal | undefined>): AbortSig
   return AbortSignal.any(present);
 }
 
-/** Make a directory entry durable: fsync the directory itself. */
+/** Make a directory entry durable: fsync the directory itself. On
+ *  Windows, directory-handle FlushFileBuffers needs write access (the
+ *  shared atomicReplaceFile helper skips dir sync there for the same
+ *  reason) — sync is a no-op and the durability claim narrows to
+ *  rename-atomicity only on that platform. */
 async function syncDir(dirPath: string): Promise<void> {
+  if (process.platform === "win32") return;
   const handle = await fs.open(dirPath, "r");
   try {
     await handle.sync();
@@ -775,10 +839,19 @@ async function loadFactMonitorStateInternal(
   // writes — a symlinked ticks dir would redirect either.
   await requireOwnedDirectory(ticksDir(root, monitorId), `fact monitor ${monitorId} ticks directory`);
 
-  // Reference agreement: validate the exact record the state names, then
-  // resolve every accepted baseline (old records AND the tip) against the
-  // engine artifact that produced it.
-  const tipRecord = await readAndValidateCommitRecord(root, monitorId, state.commit!.seq, state.commit!.tickId, raw);
+  // Reference agreement: validate the exact record the state names (with
+  // the authoritative digest — the tip must have been written under the
+  // state's definition identity even when no baseline cites the tip),
+  // then resolve every accepted baseline (old records AND the tip)
+  // against the engine artifact that produced it.
+  const tipRecord = await readAndValidateCommitRecord(
+    root,
+    monitorId,
+    state.commit!.seq,
+    state.commit!.tickId,
+    raw,
+    state.definitionDigest,
+  );
   await validateBaselineReferences(root, monitorId, state, tipRecord);
   return state;
 }
@@ -839,28 +912,23 @@ async function validateBaselineReferences(
       }
       const byId = new Map((engineOutcome.result?.evidence ?? []).map((item) => [item.evidenceId, item]));
       for (const evidenceId of field.accepted.evidenceIds) {
-        const entry = byId.get(evidenceId);
-        if (entry === undefined) {
-          throw new ValidationError(`fact monitor ${monitorId}: accepted evidence ${JSON.stringify(evidenceId)} for ${fieldId} does not resolve in record ${baselineSeq}'s engine artifact.`);
-        }
-        if (typeof entry.url !== "string" || typeof entry.title !== "string" ||
-          typeof entry.content !== "string" || typeof entry.byteLength !== "number" || entry.byteLength < 0 ||
-          !Array.isArray(entry.origins) || entry.origins.some((origin) => typeof origin !== "string")) {
-          throw new ValidationError(`fact monitor ${monitorId}: accepted evidence ${JSON.stringify(evidenceId)} for ${fieldId} is not a usable evidence record in ${baselineSeq}.`);
-        }
+        requireUsableEvidenceEntry(byId.get(evidenceId), evidenceId, `fact monitor ${monitorId}: ${fieldId} in record ${baselineSeq}`);
       }
     }
   }
 }
 
-/** Read and structurally validate one commit record; strict identity
- *  checks (tickId/stateAfter byte-match) apply when the state demands it. */
+/** Read and structurally validate one commit record — the COMPLETE
+ *  lossless shape (identity, engine outcome, events, stateAfter), not
+ *  just the fields the caller happens to need; strict identity checks
+ *  (tickId/stateAfter byte-match/digest) apply when the state demands it. */
 async function readAndValidateCommitRecord(
   root: string,
   monitorId: string,
   seq: number,
   expectedTickId: string | null,
   expectedStateAfter: unknown,
+  expectedDigest?: string,
 ): Promise<Record<string, unknown>> {
   const recordPath = tickRecordPath(root, monitorId, seq);
   let recordRaw: unknown;
@@ -871,15 +939,91 @@ async function readAndValidateCommitRecord(
     if (error instanceof ValidationError) throw error;
     throw new ValidationError(`fact monitor ${monitorId}: referenced tick record ${seq} is corrupt.`);
   }
-  if (typeof recordRaw !== "object" || recordRaw === null) {
-    throw new ValidationError(`fact monitor ${monitorId}: referenced tick record ${seq} is malformed.`);
-  }
-  const record = recordRaw as Record<string, unknown>;
+  const record = requirePlainShape(
+    recordRaw,
+    `tick record ${seq}`,
+    new Set(["schemaVersion", "monitorId", "tickId", "seq", "at", "definitionDigest", "engine", "events", "stateAfter"]),
+    new Set([]),
+  );
   if (record.schemaVersion !== 1) {
     throw new ValidationError(`fact monitor ${monitorId}: referenced tick record ${seq} has an unsupported schemaVersion.`);
   }
-  if (record.seq !== seq || record.monitorId !== monitorId) {
+  if (record.seq !== seq || record.monitorId !== monitorId || typeof record.tickId !== "string" || record.tickId.length === 0 || typeof record.at !== "string") {
     throw new ValidationError(`fact monitor ${monitorId}: referenced tick record ${seq} disagrees with current.json.`);
+  }
+  if (typeof record.definitionDigest !== "string" || !DIGEST_PATTERN.test(record.definitionDigest)) {
+    throw new ValidationError(`fact monitor ${monitorId}: referenced tick record ${seq} has an invalid definition digest.`);
+  }
+  if (expectedDigest !== undefined && record.definitionDigest !== expectedDigest) {
+    throw new ValidationError(`fact monitor ${monitorId}: referenced tick record ${seq} was written under a different definition digest.`);
+  }
+  const engine = record.engine as Record<string, unknown> | undefined;
+  if (typeof engine !== "object" || engine === null ||
+    (engine.kind !== "result" && engine.kind !== "error") ||
+    (engine.kind === "error" && typeof engine.reason !== "string") ||
+    (engine.kind === "result" && (typeof engine.result !== "object" || engine.result === null))) {
+    throw new ValidationError(`fact monitor ${monitorId}: referenced tick record ${seq} has a malformed engine outcome.`);
+  }
+  if (engine.kind === "result") {
+    const result = engine.result as Record<string, unknown>;
+    if (typeof result.requirements !== "object" || result.requirements === null ||
+      typeof result.data !== "object" || result.data === null || !Array.isArray(result.evidence)) {
+      throw new ValidationError(`fact monitor ${monitorId}: referenced tick record ${seq} has a malformed engine result.`);
+    }
+    // Minimum real LeanResult envelope — identity-level members only, no
+    // deep protocol duplication: version, run status, question, and a
+    // NON-EMPTY requirements map (the compiled contract always declares
+    // at least one field, so an emptied map is truncated history even for
+    // unresolved-only ticks; data/evidence may legitimately be empty).
+    if (result.schemaVersion !== 1 ||
+      (result.status !== "complete" && result.status !== "partial") ||
+      typeof result.question !== "string" ||
+      Object.keys(result.requirements as Record<string, unknown>).length === 0) {
+      throw new ValidationError(`fact monitor ${monitorId}: referenced tick record ${seq} has a truncated engine result.`);
+    }
+    // Essential row envelope, including unresolved-only ticks: every
+    // requirement row carries a valid status, requiredness and evidence
+    // ids (the existing record contract — nothing deeper).
+    for (const [rowId, row] of Object.entries(result.requirements as Record<string, unknown>)) {
+      if (typeof row !== "object" || row === null ||
+        ((row as { status?: unknown }).status !== "satisfied" && (row as { status?: unknown }).status !== "unresolved") ||
+        typeof (row as { required?: unknown }).required !== "boolean" ||
+        !Array.isArray((row as { evidenceIds?: unknown }).evidenceIds) ||
+        (row as { evidenceIds?: unknown[] }).evidenceIds!.some((id) => typeof id !== "string")) {
+        throw new ValidationError(`fact monitor ${monitorId}: referenced tick record ${seq} has a malformed requirements row ${rowId}.`);
+      }
+    }
+  }
+  if (!Array.isArray(record.events)) {
+    throw new ValidationError(`fact monitor ${monitorId}: referenced tick record ${seq} has malformed events.`);
+  }
+  if (typeof record.stateAfter !== "object" || record.stateAfter === null) {
+    throw new ValidationError(`fact monitor ${monitorId}: referenced tick record ${seq} has a malformed stateAfter.`);
+  }
+  const stateAfter = record.stateAfter as Record<string, unknown>;
+  if (typeof stateAfter.fields !== "object" || stateAfter.fields === null || Array.isArray(stateAfter.fields)) {
+    throw new ValidationError(`fact monitor ${monitorId}: referenced tick record ${seq} has a malformed stateAfter fields map.`);
+  }
+  const recordFields = stateAfter.fields as Record<string, unknown>;
+  // Stored event entries must be actual transition records of THIS tick —
+  // [null], kind-less objects, entries carrying another tick's identity
+  // (schema/seq/tickId), wrong scope (a null field only for the
+  // monitor-level `redefined`; per-field events naming a field this
+  // record's state does not track) or a shifted timestamp are corruption.
+  for (const event of record.events) {
+    const entry = event as Record<string, unknown>;
+    if (typeof event !== "object" || event === null ||
+      entry.schemaVersion !== 1 ||
+      entry.seq !== seq ||
+      entry.tickId !== record.tickId ||
+      (entry.fieldId !== null && typeof entry.fieldId !== "string") ||
+      typeof entry.kind !== "string" ||
+      !EVENT_KINDS.has(entry.kind) ||
+      entry.at !== record.at ||
+      (entry.kind === "redefined") !== (entry.fieldId === null) ||
+      (entry.fieldId !== null && !Object.hasOwn(recordFields, entry.fieldId))) {
+      throw new ValidationError(`fact monitor ${monitorId}: referenced tick record ${seq} has a malformed event entry.`);
+    }
   }
   if (expectedTickId !== null && record.tickId !== expectedTickId) {
     throw new ValidationError(`fact monitor ${monitorId}: referenced tick record ${seq} disagrees with current.json.`);
@@ -1009,6 +1153,41 @@ function requireBoundedPayload(payload: string, label: string): string {
     throw new ValidationError(`fact monitor: ${label} exceeds the ${MAX_FACT_MONITOR_RECORD_BYTES}-byte record ceiling.`);
   }
   return payload;
+}
+
+/**
+ * Pointer-agreement probe — a NARROWING HEURISTIC, NOT fencing and NOT
+ * proof of lock ownership: comparing current.json's seq+commit.tickId
+ * with the base state this commit loaded detects most takeover cases,
+ * but a stale writer that pauses between the probe and its next write
+ * can still interleave (true prevention needs a fencing token in the
+ * SHARED lock API — open limitation, deliberately not worked around
+ * here). It is deliberately NOT a full load: it must never re-enter the
+ * ambiguity check while OUR publication is mid-flight, where the pointer
+ * is legitimately absent between the record write and the commit point.
+ * "ours": the pointer is exactly the base state this commit loaded
+ * (absent counts as ours only for a first commit). "lost": the pointer
+ * names a different commit. "uncertain": unreadable.
+ */
+async function pointerOwnership(
+  root: string,
+  monitorId: string,
+  base: FactMonitorState,
+): Promise<"ours" | "lost" | "uncertain"> {
+  let text: string | undefined;
+  try {
+    text = await fs.readFile(currentPath(root, monitorId), "utf8");
+  } catch (error) {
+    if (isEnoent(error)) return base.seq === 0 ? "ours" : "lost";
+    return "uncertain";
+  }
+  try {
+    const raw = JSON.parse(text) as { seq?: unknown; commit?: { tickId?: unknown } };
+    if (raw.seq === base.seq && raw.commit?.tickId === base.commit?.tickId) return "ours";
+    return "lost";
+  } catch {
+    return "uncertain";
+  }
 }
 
 /**
@@ -1163,6 +1342,38 @@ async function commitUnderTickLock(
         throw new FactMonitorCancelledError(prepared.monitorId);
       }
 
+      // Pre-publication candidate validation (write/load parity): apply
+      // the SAME row/value/evidence checks the loader will apply, so a
+      // self-inconsistent engine outcome is rejected HERE — the prior
+      // committed state stays intact — instead of publishing a record
+      // the next load refuses.
+      if (engineOutcome.kind === "result") {
+        const byId = new Map(engineOutcome.result.evidence.map((entry) => [entry.evidenceId, entry]));
+        for (const [fieldId, field] of Object.entries(fields)) {
+          if (field.accepted === undefined || field.accepted.acceptedSeq !== seq) continue;
+          const row = engineOutcome.result.requirements[fieldId];
+          if (row?.status !== "satisfied" ||
+            row.value !== field.accepted.value ||
+            engineOutcome.result.data[fieldId] !== field.accepted.value) {
+            throw new ValidationError(
+              `fact monitor ${prepared.monitorId}: refusing to publish — engine row/data value disagrees with the accepted value for ${fieldId}.`,
+            );
+          }
+          if (JSON.stringify(row.evidenceIds ?? []) !== JSON.stringify(field.accepted.evidenceIds)) {
+            throw new ValidationError(
+              `fact monitor ${prepared.monitorId}: refusing to publish — engine row evidence disagrees with the accepted evidence for ${fieldId}.`,
+            );
+          }
+          for (const evidenceId of field.accepted.evidenceIds) {
+            requireUsableEvidenceEntry(
+              byId.get(evidenceId),
+              evidenceId,
+              `fact monitor ${prepared.monitorId}: refusing to publish — ${fieldId}`,
+            );
+          }
+        }
+      }
+
       // Publication. 1) lossless per-tick record (an orphan left by a
       // crash before step 2 is unreferenced and simply replaced here).
       const record: FactMonitorTickRecord = {
@@ -1178,28 +1389,57 @@ async function commitUnderTickLock(
       };
       const recordPayload = requireBoundedPayload(`${JSON.stringify(record)}\n`, "tick record");
       const statePayload = requireBoundedPayload(`${JSON.stringify(nextState)}\n`, "monitor state");
-      let durability: "confirmed" | "visible-unconfirmed" = "confirmed";
+      let durability: "confirmed" | "fsync-limited" | "visible-unconfirmed" =
+        process.platform === "win32" ? "fsync-limited" : "confirmed";
       try {
         await fs.mkdir(paths.ticksDir, { recursive: true, mode: 0o700 });
         // Owned ticks directory as a WRITE guard too: a symlink planted
         // between load and publication must not redirect the record.
         await requireOwnedDirectory(paths.ticksDir, `fact monitor ${prepared.monitorId} ticks directory`);
+        // Takeover-narrowing probe (NOT fencing — see pointerOwnership):
+        // a publisher that paused past lock expiry and lost the lock to a
+        // successor usually finds the pointer changed; refusing here,
+        // BEFORE any payload write, keeps the abort retry-safe.
+        const preOwnership = await pointerOwnership(root, prepared.monitorId, state);
+        if (preOwnership === "lost") {
+          throw new FactMonitorLockLostError(prepared.monitorId);
+        }
+        if (preOwnership === "uncertain") {
+          throw new FactMonitorPublicationUncertainError(prepared.monitorId, "pointer unreadable before publication");
+        }
         // Directory-entry durability BEFORE any payload write: a newly
         // created monitor dir / ticks dir must survive power loss for the
         // writes inside it to be meaningful.
         await syncDir(path.dirname(dir));
         await syncDir(dir);
         await atomicReplaceFile(paths.tickRecord, recordPayload);
+        // Takeover-narrowing probe (NOT fencing): if a successor published
+        // between our record write and the commit point, our record may
+        // have clobbered theirs — do NOT touch the pointer; classify as
+        // uncertain. (The residual probe-to-rename gap is the open shared
+        // lock-API limitation; no local mechanism can close it.)
+        const postOwnership = await pointerOwnership(root, prepared.monitorId, state);
+        if (postOwnership !== "ours") {
+          throw new FactMonitorPublicationUncertainError(
+            prepared.monitorId,
+            "another publisher advanced the state between record publication and the commit point",
+          );
+        }
         // 2) THE commit point: the authoritative current.json replace.
         await atomicReplaceFile(paths.current, statePayload);
       } catch (error) {
+        if (error instanceof FactMonitorLockLostError) {
+          throw error; // nothing written — retry-safe by construction
+        }
         // Publication failed somewhere in the write sequence. Recheck the
         // state UNDER THIS LOCK before reporting damage, and distinguish:
         //   visible      — current.json already names this tick (a later
         //                  step failed): the commit stands, NEVER blind-retry;
         //   not visible  — current.json still at the prior sequence: the
         //                  tick is definitely uncommitted, retry-safe;
-        //   unverifiable — the recheck itself failed: uncertain.
+        //   anything else (including our own orphan from a failed first
+        //                  publication) — uncertain: manual inspection, no
+        //                  speculative deletion.
         let observed: FactMonitorState | undefined;
         try {
           observed = await loadFactMonitorStateInternal(root, prepared.monitorId, true);
@@ -1211,6 +1451,14 @@ async function commitUnderTickLock(
         } else if (observed !== undefined && observed.seq === state.seq) {
           throw error; // definitely uncommitted — safe to reprepare and retry
         } else {
+          // Fail closed, INCLUDING our own possible orphan from a failed
+          // first publication: deleting the record at this sequence is NOT
+          // safe — a successor may have published a record at the same
+          // path between our failed write and this inspection, and
+          // unlinking it would destroy committed evidence. Removing our
+          // own orphan provably requires fencing (open shared lock-API
+          // limitation); until then a failed first publication is resolved
+          // by manual inspection, never by speculative deletion.
           throw new FactMonitorPublicationUncertainError(prepared.monitorId, error);
         }
       }
@@ -1225,7 +1473,9 @@ async function commitUnderTickLock(
         durability,
         ...(durability === "visible-unconfirmed"
           ? { durabilityWarning: "commit is visible but a post-rename step failed; do not retry this tick" }
-          : {}),
+          : durability === "fsync-limited"
+            ? { durabilityWarning: "directory sync is skipped on this platform; power-loss durability narrows to rename atomicity" }
+            : {}),
         fields: reports,
         events,
         engine: engineOutcome.kind === "error" ? { status: "error", reason: engineOutcome.reason } : { status: engineOutcome.result.status },
@@ -1269,10 +1519,41 @@ export async function runFactMonitorTick(
   const prepared = await prepareFactMonitorTick(root, monitorId, definition, normalized);
   let engineOutcome: FactMonitorEngineOutcome;
   try {
-    const result = await runLeanInvestigation(prepared.definition, {
-      ...deps,
-      ...(normalized.signal !== undefined ? { externalSignal: normalized.signal } : {}),
-    });
+    // Pass deps through UNCHANGED when no override is needed. When the
+    // external signal must be set/merged, wrap the ORIGINAL object in a
+    // receiver-preserving facade: a Proxy over a FRESH target that owns
+    // only the replacement externalSignal. Proxy get-invariants bind to
+    // the TARGET, so a fully FROZEN deps object (non-writable,
+    // non-configurable own methods and externalSignal) works too — the
+    // facade never claims frozen properties it returns differently.
+    // Every method is returned BOUND to the original receiver, so class
+    // methods using #private fields and getters keep working (a clone —
+    // spread or Object.create+assign — breaks private-field access and
+    // the run would fail inside deps.now()).
+    const engineDeps: LeanDeps =
+      normalized.signal === undefined || deps.externalSignal === normalized.signal
+        ? deps
+        : (new Proxy({ externalSignal: normalized.signal } as object, {
+            get(target, property) {
+              if (property === "externalSignal") return Reflect.get(target, property, target);
+              const value = Reflect.get(deps, property, deps);
+              return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(deps) : value;
+            },
+            has(_target, property) {
+              return property === "externalSignal" ? true : property in deps;
+            },
+            ownKeys() {
+              return Reflect.ownKeys(deps);
+            },
+            getOwnPropertyDescriptor(_target, property) {
+              if (property === "externalSignal") return { configurable: true, enumerable: true, writable: true, value: normalized.signal };
+              const descriptor = Reflect.getOwnPropertyDescriptor(deps, property);
+              // Report as configurable so the proxy's bound-method reads
+              // never violate the non-configurable-property invariants.
+              return descriptor === undefined ? undefined : { ...descriptor, configurable: true };
+            },
+          }) as LeanDeps);
+    const result = await runLeanInvestigation(prepared.definition, engineDeps);
     engineOutcome = { kind: "result", result };
   } catch (error) {
     if (normalized.signal?.aborted) {

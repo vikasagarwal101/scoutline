@@ -36,6 +36,49 @@ async function mkTmp(t) {
   return dir;
 }
 
+/** Bounded promise-barrier wait: fails on deadline, or when a tracked
+ *  invocation settles before the barrier fired. */
+async function awaitBarrier(barrier, invocations, what, deadlineMs = 5000) {
+  const flags = invocations.map((invocation) => {
+    const flag = { settled: false };
+    Promise.resolve(invocation).then(
+      () => { flag.settled = true; },
+      () => { flag.settled = true; },
+    );
+    return flag;
+  });
+  const outcome = await Promise.race([
+    Promise.resolve(barrier).then(() => ({ reached: true })),
+    new Promise((resolve) => setTimeout(() => resolve({ reached: false }), deadlineMs)),
+  ]);
+  if (!outcome.reached) throw new Error(`barrier deadline exceeded: ${what}`);
+  if (flags.some((flag) => flag.settled)) {
+    throw new Error(`invocation settled before the barrier fired: ${what}`);
+  }
+}
+
+/** Bounded gate wait: resolves when check() turns true; REJECTS on
+ *  deadline or when a tracked invocation settles before the gate is
+ *  reached, so a regression surfaces as a failure instead of a hang. */
+async function awaitGate(check, invocations, what, deadlineMs = 5000) {
+  const flags = invocations.map((invocation) => {
+    const flag = { settled: false };
+    Promise.resolve(invocation).then(
+      () => { flag.settled = true; },
+      () => { flag.settled = true; },
+    );
+    return flag;
+  });
+  const deadline = Date.now() + deadlineMs;
+  while (!check()) {
+    if (Date.now() > deadline) throw new Error(`awaitGate timeout: ${what}`);
+    if (flags.some((flag) => flag.settled)) {
+      throw new Error(`invocation settled before reaching the gate: ${what}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 // First-slice fixture contract (FIRST-SLICE.json engineContract).
 const definition = () => ({
   schemaVersion: 1,
@@ -280,20 +323,17 @@ test("true command contention: two concurrent invocations, exactly one commits",
   const argv = ["tick", "--definition", defFile, "--monitor-id", MONITOR, "--state-root", dir];
 
   // Both invocations prepare and enter the engine BEFORE either commits
-  // (both searches are gated), so both base themselves on seq 0.
+  // (both searches are gated), so both base themselves on seq 0. The gate
+  // wait is bounded and fails if an invocation settles early.
   const runs = [
     monitorFactMain(argv, { ...gatedDeps, readStdin: async () => "" }, { now: T(1), stateRoot: dir }),
     monitorFactMain(argv, { ...gatedDeps, readStdin: async () => "" }, { now: T(2), stateRoot: dir }),
   ];
-  await new Promise((resolve) => {
-    const poll = setInterval(() => {
-      if (searches >= 2) {
-        clearInterval(poll);
-        resolve();
-      }
-    }, 5);
-  });
-  gate.resolve([{ url: "https://fixture.invalid/supported", title: "supported" }]);
+  try {
+    await awaitGate(() => searches >= 2, runs, "both engine dispatches");
+  } finally {
+    gate.resolve([{ url: "https://fixture.invalid/supported", title: "supported" }]);
+  }
   const [a, b] = await Promise.all(runs);
 
   const codes = [a.code, b.code].sort();
@@ -492,15 +532,18 @@ test("referenced record disagreement is corruption, not usable state", async (t)
   await fs.writeFile(first.paths.tickRecord, goodRecord);
   assert.equal((await loadFactMonitorState(dir, MONITOR)).seq, 1, "restored chain loads");
 
-  // Structurally valid but DISAGREEING record (imposter tickId).
+  // Structurally valid but DISAGREEING record (imposter tickId, events
+  // forged to follow it so the record-level identity check is isolated).
   const second = await commit(dir, definition(), satisfied("supported"), 2);
   const record = JSON.parse(await fs.readFile(second.paths.tickRecord, "utf8"));
   record.tickId = "imposter-tick";
+  record.events = record.events.map((event) => ({ ...event, tickId: "imposter-tick" }));
   await fs.writeFile(second.paths.tickRecord, JSON.stringify(record));
   await assert.rejects(() => loadFactMonitorState(dir, MONITOR), /disagrees/);
 
-  // Matching identity but stateAfter mismatch is also refused.
+  // Matching identity (record AND events) but stateAfter mismatch is refused.
   record.tickId = second.tickId;
+  record.events = record.events.map((event) => ({ ...event, tickId: second.tickId }));
   record.stateAfter.seq = 99;
   await fs.writeFile(second.paths.tickRecord, JSON.stringify(record));
   await assert.rejects(() => loadFactMonitorState(dir, MONITOR), /does not match/);
@@ -529,35 +572,37 @@ test("cancelling during the engine run publishes nothing", async (t) => {
   const dir = await mkTmp(t);
   const controller = new AbortController();
   let started = 0;
+  const dispatch = { abortFired: false, fallbackFired: false };
   const { deps } = engineFixture("supported");
   const gatedDeps = {
     ...deps,
     search: (query, options) =>
       new Promise((_, reject) => {
         started += 1;
-        const onAbort = () => reject(new Error("dispatch aborted"));
+        let fallback = null;
+        const onAbort = (viaSignal) => {
+          if (fallback !== null) clearTimeout(fallback);
+          if (viaSignal) dispatch.abortFired = true;
+          else dispatch.fallbackFired = true;
+          reject(new Error("dispatch aborted"));
+        };
         if (options?.signal?.aborted) {
-          onAbort();
+          onAbort(true);
           return;
         }
-        options?.signal?.addEventListener("abort", onAbort);
-        setTimeout(onAbort, 2000); // test-safety fallback: never hang the suite
+        options?.signal?.addEventListener("abort", () => onAbort(true));
+        fallback = setTimeout(() => onAbort(false), 2000); // safety net — must NOT fire
       }),
   };
   const pending = runFactMonitorTick(dir, MONITOR, definition(), gatedDeps, {
     now: T(1),
     signal: controller.signal,
   });
-  await new Promise((resolve) => {
-    const poll = setInterval(() => {
-      if (started >= 1) {
-        clearInterval(poll);
-        resolve();
-      }
-    }, 5);
-  });
+  await awaitGate(() => started >= 1, [pending], "engine dispatch");
   controller.abort();
   await assert.rejects(() => pending, FactMonitorCancelledError);
+  assert.equal(dispatch.abortFired, true, "the dispatch abort handler fired");
+  assert.equal(dispatch.fallbackFired, false, "not the 2s fallback");
   // Nothing was published: no state, no tick records.
   const state = await loadFactMonitorState(dir, MONITOR);
   assert.equal(state.seq, 0);
@@ -582,34 +627,61 @@ test("aborting during the lock wait rejects promptly as cancellation", async (t)
   const prepared = await prepareFactMonitorTick(dir, MONITOR, definition(), { now: T(1) });
   const controller = new AbortController();
 
-  // Hold the per-monitor tick lock until released...
+  // Hold the per-monitor tick lock until released, and WAIT for the
+  // holder to have entered its callback.
   const { withAsyncFileLock } = await import(`${root}/dist/lib/async-file-lock.js`);
   const release = Promise.withResolvers();
+  const entered = Promise.withResolvers();
   const held = withAsyncFileLock(
     path.join(dir, MONITOR),
     "fact-monitor-" + MONITOR,
-    () => release.promise,
+    async () => {
+      entered.resolve();
+      await release.promise;
+    },
     { timeoutMs: 5000, staleMs: 600000, timeoutLabel: "test holder" },
   );
   held.catch(() => {});
+  await awaitBarrier(entered.promise, [], "holder entered");
 
+  // The contender's FIRST lock backoff proves it is truly inside the
+  // acquire WAIT; the callback is HELD (never scheduled within the
+  // window), so ONLY the abort path can wake the parked sleep — a
+  // timer-based retry cannot rescue a broken abort wakeup, and the
+  // bounded race fails fast instead of hanging.
+  const backoff = Promise.withResolvers();
+  const heldCallbacks = [];
   try {
-    // The commit enters the lock wait (5s deadline), then the signal fires.
     const pending = commitFactMonitorTick(dir, prepared, satisfied("supported"), {
       now: T(1),
       signal: controller.signal,
+      lock: {
+        setTimeout: (fn) => {
+          backoff.resolve();
+          heldCallbacks.push(fn);
+          return 0;
+        },
+      },
     });
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await awaitBarrier(backoff.promise, [pending], "commit-lock backoff");
     controller.abort();
-    const startedAt = Date.now();
-    await assert.rejects(() => pending, FactMonitorCancelledError);
-    assert.ok(Date.now() - startedAt < 2000, "rejected promptly, not at the 5s lock deadline");
+    const outcome = await Promise.race([
+      pending.then(
+        () => ({ settled: true, rejected: false }),
+        (error) => ({ settled: true, rejected: error?.name === "FactMonitorCancelledError" }),
+      ),
+      new Promise((resolve) => setTimeout(() => resolve({ settled: false }), 1500)),
+    ]);
+    assert.ok(outcome.settled, "abort woke the parked lock wait without any timer");
+    assert.ok(outcome.rejected, "wakeup was the typed cancellation");
     const state = await loadFactMonitorState(dir, MONITOR);
     assert.equal(state.seq, 0, "cancelled commit wrote nothing");
   } finally {
-    // Always release the holder: its mtime-refresh timer would otherwise
-    // keep the process alive after an assertion failure.
+    // Always release the holder AND drain held backoff callbacks: a
+    // broken-abort regression leaves the contender parked on the held
+    // sleep, and the drain lets it finish instead of hanging the suite.
     release.resolve();
+    for (const fn of heldCallbacks) fn();
   }
   await held;
 });
@@ -725,9 +797,11 @@ test("accepted-baseline records are validated exactly (old seq cited after uncha
   await fs.rm(baselineRecord);
   await assert.rejects(() => loadFactMonitorState(dir, MONITOR), /absent/);
 
-  // Imposter tickId in an otherwise valid baseline record.
+  // Imposter tickId in an otherwise valid baseline record (events
+  // forged to follow, isolating the baseline-identity check).
   const forged = JSON.parse(good);
   forged.tickId = "imposter";
+  forged.events = forged.events.map((event) => ({ ...event, tickId: "imposter" }));
   await fs.writeFile(baselineRecord, JSON.stringify(forged));
   await assert.rejects(() => loadFactMonitorState(dir, MONITOR), /disagrees/);
 
@@ -741,6 +815,7 @@ test("both cancellation channels are honored (AbortSignal.any merge)", async (t)
   const optionController = new AbortController();
   const depsController = new AbortController();
   let started = 0;
+  const dispatch = { abortFired: false, fallbackFired: false };
   const { deps } = engineFixture("supported");
   const gatedDeps = {
     ...deps,
@@ -748,29 +823,30 @@ test("both cancellation channels are honored (AbortSignal.any merge)", async (t)
     search: (query, options) =>
       new Promise((_, reject) => {
         started += 1;
-        const onAbort = () => reject(new Error("dispatch aborted"));
+        let fallback = null;
+        const onAbort = (viaSignal) => {
+          if (fallback !== null) clearTimeout(fallback);
+          if (viaSignal) dispatch.abortFired = true;
+          else dispatch.fallbackFired = true;
+          reject(new Error("dispatch aborted"));
+        };
         if (options?.signal?.aborted) {
-          onAbort();
+          onAbort(true);
           return;
         }
-        options?.signal?.addEventListener("abort", onAbort);
-        setTimeout(onAbort, 2000);
+        options?.signal?.addEventListener("abort", () => onAbort(true));
+        fallback = setTimeout(() => onAbort(false), 2000); // safety net — must NOT fire
       }),
   };
   const pending = runFactMonitorTick(dir, MONITOR, definition(), gatedDeps, {
     now: T(1),
     signal: optionController.signal, // live, never aborted
   });
-  await new Promise((resolve) => {
-    const poll = setInterval(() => {
-      if (started >= 1) {
-        clearInterval(poll);
-        resolve();
-      }
-    }, 5);
-  });
+  await awaitGate(() => started >= 1, [pending], "engine dispatch");
   depsController.abort(); // ONLY the deps channel fires
   await assert.rejects(() => pending, FactMonitorCancelledError);
+  assert.equal(dispatch.abortFired, true, "the dispatch abort handler fired");
+  assert.equal(dispatch.fallbackFired, false, "not the 2s fallback");
   const state = await loadFactMonitorState(dir, MONITOR);
   assert.equal(state.seq, 0);
 });
@@ -913,6 +989,78 @@ test("accepted evidence must resolve in the TIP record after a change-at-tip", a
   assert.equal((await loadFactMonitorState(dir, MONITOR)).seq, 2);
 });
 
+test("a truncated unresolved-only tick (emptied result) is refused", async (t) => {
+  const dir = await mkTmp(t);
+  const { deps } = engineFixture("unavailable");
+  await runFactMonitorTick(dir, MONITOR, definition(), deps, { now: T(1) }); // unresolved tick
+  const record = path.join(dir, MONITOR, "ticks", "tick-1.json");
+  const good = await fs.readFile(record, "utf8");
+
+  const truncate = async (mutate) => {
+    const parsed = JSON.parse(good);
+    mutate(parsed);
+    await fs.writeFile(record, JSON.stringify(parsed));
+    await assert.rejects(() => loadFactMonitorState(dir, MONITOR), /truncated engine result/);
+  };
+  await truncate((r) => { r.engine.result = { schemaVersion: 1, status: "partial", question: "q", requirements: {}, data: {}, evidence: [], plan: { queries: [] }, usage: {}, coverageNotes: [] }; });
+  await truncate((r) => { delete r.engine.result.schemaVersion; });
+  await truncate((r) => { r.engine.result.status = "bogus"; });
+
+  await fs.writeFile(record, good);
+  assert.equal((await loadFactMonitorState(dir, MONITOR)).seq, 1);
+});
+
+test("event entries must carry this tick's identity (schema/seq/tickId/fieldId)", async (t) => {
+  const dir = await mkTmp(t);
+  await commit(dir, definition(), satisfied("supported"), 1);
+  const record = path.join(dir, MONITOR, "ticks", "tick-1.json");
+  const good = await fs.readFile(record, "utf8");
+
+  const variant = async (mutate) => {
+    const parsed = JSON.parse(good);
+    mutate(parsed);
+    await fs.writeFile(record, JSON.stringify(parsed));
+    await assert.rejects(() => loadFactMonitorState(dir, MONITOR), /malformed event entry/);
+  };
+  await variant((r) => { r.events = [null]; });
+  await variant((r) => { delete r.events[0].schemaVersion; });
+  await variant((r) => { r.events[0].seq = 99; });
+  await variant((r) => { r.events[0].tickId = "imposter"; });
+  await variant((r) => { r.events[0].fieldId = 42; });
+
+  await fs.writeFile(record, good);
+  assert.equal((await loadFactMonitorState(dir, MONITOR)).seq, 1);
+});
+
+test("event field scope and timestamps must match the record (single-field corruption)", async (t) => {
+  const dir = await mkTmp(t);
+  await commit(dir, definition(), satisfied("supported"), 1); // real valid tick
+  const record = path.join(dir, MONITOR, "ticks", "tick-1.json");
+  const good = await fs.readFile(record, "utf8");
+
+  const variant = async (mutate) => {
+    const parsed = JSON.parse(good);
+    mutate(parsed);
+    await fs.writeFile(record, JSON.stringify(parsed));
+    await assert.rejects(() => loadFactMonitorState(dir, MONITOR), /malformed event entry/);
+  };
+  // Null field on a NON-monitor-level event.
+  await variant((r) => { r.events[0].fieldId = null; });
+  // Unknown field this record's state does not track.
+  await variant((r) => { r.events[0].fieldId = "ghost"; });
+  // INHERITED property name — must not pass as a tracked field.
+  await variant((r) => { r.events[0].fieldId = "toString"; });
+  // A monitor-level `redefined` event falsely naming a tracked field.
+  await variant((r) => {
+    r.events[0] = { ...r.events[0], kind: "redefined", fieldId: "csv" };
+  });
+  // Timestamp shifted off the record's tick time.
+  await variant((r) => { r.events[0].at = "2000-01-01T00:00:00.000Z"; });
+
+  await fs.writeFile(record, good);
+  assert.equal((await loadFactMonitorState(dir, MONITOR)).seq, 1);
+});
+
 test("a live first publication is not misreported: ambiguity rechecks under the lock", async (t) => {
   const dir = await mkTmp(t);
   const first = await commit(dir, definition(), satisfied("supported"), 1);
@@ -923,23 +1071,36 @@ test("a live first publication is not misreported: ambiguity rechecks under the 
   await fs.rm(current);
   const { withAsyncFileLock } = await import(`${root}/dist/lib/async-file-lock.js`);
   const release = Promise.withResolvers();
+  const entered = Promise.withResolvers();
   const held = withAsyncFileLock(
     path.join(dir, MONITOR),
     "fact-monitor-" + MONITOR,
-    () => release.promise,
+    async () => {
+      entered.resolve();
+      await release.promise;
+    },
     { timeoutMs: 5000, staleMs: 600000, timeoutLabel: "first-publication holder" },
   );
   held.catch(() => {});
+  await awaitBarrier(entered.promise, [], "first-publication holder entered");
 
   // The unlocked load sees the ambiguous window and rechecks under the
-  // lock; the publication "completes" (pointer restored) before release.
+  // lock; the publication "completes" (pointer restored) and the holder
+  // releases BEFORE the load is awaited (the recheck waits for the lock,
+  // so releasing first is required). The finally's idempotent release
+  // covers a failed pointer restore — the holder never leaks.
   const pendingLoad = loadFactMonitorState(dir, MONITOR);
-  await new Promise((resolve) => setTimeout(resolve, 30));
-  await fs.writeFile(current, committed);
-  release.resolve();
-  const loaded = await pendingLoad;
+  let loaded;
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await fs.writeFile(current, committed);
+    release.resolve();
+    loaded = await pendingLoad;
+  } finally {
+    release.resolve();
+    await held.catch(() => {});
+  }
   assert.equal(loaded.seq, 1, "live first publication resolves, no false history-loss report");
-  await held;
   void first;
 });
 
@@ -1038,40 +1199,69 @@ test("cited baselines must match the engine's accepted VALUE (data and row)", as
   assert.equal((await loadFactMonitorState(dir, MONITOR)).seq, 2);
 });
 
-test("an aborted tick exits 130 promptly while waiting in the ambiguity recheck (real command)", async (t) => {
+test("an aborted tick exits 130 promptly while the recheck lock is held (real command)", async (t) => {
   const dir = await mkTmp(t);
   await commit(dir, definition(), satisfied("supported"), 1);
   await fs.rm(path.join(dir, MONITOR, "current.json")); // ambiguous first-publication window
 
   const { withAsyncFileLock } = await import(`${root}/dist/lib/async-file-lock.js`);
   const release = Promise.withResolvers();
+  const entered = Promise.withResolvers();
   const held = withAsyncFileLock(
     path.join(dir, MONITOR),
     "fact-monitor-" + MONITOR,
-    () => release.promise,
+    async () => {
+      entered.resolve();
+      await release.promise;
+    },
     { timeoutMs: 30000, staleMs: 600000, timeoutLabel: "recheck holder" },
   );
   held.catch(() => {});
+  await awaitBarrier(entered.promise, [], "recheck holder entered"); // holder truly holds
 
+  const controller = new AbortController();
+  const { deps } = engineFixture("supported");
+  // Witness the contender's FIRST recheck-lock backoff, and HOLD the
+  // scheduled callback: only the abort path can wake the parked sleep,
+  // making the wakeup claim timer-independent. The bounded race fails
+  // fast instead of hanging if the abort is broken.
+  const backoff = Promise.withResolvers();
+  const heldCallbacks = [];
   try {
-    const controller = new AbortController();
-    const { deps } = engineFixture("supported");
+    // Post-acquisition file IO stays inside the finally-covered scope.
     const defFile = path.join(dir, "definition.json");
     await fs.writeFile(defFile, `${JSON.stringify(definition())}\n`);
     const pending = monitorFactMain(
       ["tick", "--definition", defFile, "--monitor-id", MONITOR, "--state-root", dir],
       { ...deps, readStdin: async () => "" },
-      { now: T(2), stateRoot: dir, signal: controller.signal },
+      {
+        now: T(2),
+        stateRoot: dir,
+        signal: controller.signal,
+        lock: {
+          setTimeout: (fn) => {
+            backoff.resolve();
+            heldCallbacks.push(fn);
+            return 0;
+          },
+        },
+      },
     );
-    await new Promise((resolve) => setTimeout(resolve, 50)); // inside the recheck's lock wait
+    await awaitBarrier(backoff.promise, [pending], "recheck backoff");
     controller.abort();
-    const startedAt = Date.now();
-    const result = await pending;
-    assert.equal(result.code, 130, "typed cancellation, not a generic failure");
-    assert.ok(Date.now() - startedAt < 2000, "prompt exit, not the 30s lock deadline");
-    assert.equal(JSON.parse(result.stdout).cancelled, true);
+    const outcome = await Promise.race([
+      pending.then(
+        (result) => ({ settled: true, result }),
+        () => ({ settled: true, result: undefined }),
+      ),
+      new Promise((resolve) => setTimeout(() => resolve({ settled: false }), 1500)),
+    ]);
+    assert.ok(outcome.settled, "abort woke the parked recheck wait without any timer");
+    assert.equal(outcome.result?.code, 130, "typed cancellation, not a generic failure");
+    assert.equal(JSON.parse(outcome.result.stdout).cancelled, true);
   } finally {
     release.resolve();
+    for (const fn of heldCallbacks) fn();
   }
   await held;
 });
@@ -1086,4 +1276,213 @@ test("a huge sparse array trips the preflight before any worklist allocation", a
     () => runFactMonitorTick(dir, MONITOR, sparse, deps, { now: T(1) }),
     /byte ceiling/,
   );
+});
+
+test("class deps with #private fields keep their original receiver under signal override", async (t) => {
+  const dir = await mkTmp(t);
+  const depsController = new AbortController();
+  const optionController = new AbortController();
+  class ClassyDeps {
+    #ticks = 0;
+    // Getter: must be read THROUGH the proxy without losing semantics.
+    get externalSignal() {
+      return depsController.signal;
+    }
+    now() {
+      this.#ticks += 1;
+      return this.#ticks;
+    }
+    async search() {
+      this.#ticks += 1;
+      return [{ url: "https://fixture.invalid/supported", title: "supported" }];
+    }
+    async read() {
+      return "ExampleApp Community 2.4.0 for Linux supports CSV export.";
+    }
+    async judge(input) {
+      this.#ticks += 1;
+      return {
+        documents: input.documents.map((d) => ({
+          evidenceId: d.evidenceId,
+          relevant: true,
+          supportsClaim: d.content.includes("supports CSV export"),
+          refutesClaim: false,
+        })),
+      };
+    }
+    ticks() {
+      return this.#ticks;
+    }
+  }
+  const deps = new ClassyDeps();
+  // options.signal differs from deps.externalSignal, forcing the override
+  // path — the engine must still run methods on the ORIGINAL receiver.
+  const report = await runFactMonitorTick(dir, MONITOR, definition(), deps, {
+    now: T(1),
+    signal: optionController.signal,
+  });
+  assert.equal(report.engine.status, "complete", "the investigation actually ran");
+  assert.equal(report.committed, true);
+  assert.ok(deps.ticks() > 0, "#private state was touched on the original receiver (no clone)");
+});
+
+test("fully frozen plain deps work under signal override (proxy invariants hold)", async (t) => {
+  const dir = await mkTmp(t);
+  const depsController = new AbortController();
+  const optionController = new AbortController();
+  const { deps } = engineFixture("supported");
+  const frozen = Object.freeze({
+    ...deps,
+    externalSignal: depsController.signal, // frozen own prop the facade must replace
+  });
+  // options.signal differs from the frozen externalSignal, forcing the
+  // facade; every own method is non-writable/non-configurable, so a
+  // target-bound proxy would throw the get-invariant TypeError here.
+  const report = await runFactMonitorTick(dir, MONITOR, definition(), frozen, {
+    now: T(1),
+    signal: optionController.signal,
+  });
+  assert.equal(report.engine.status, "complete", "frozen methods ran (bound, invariant-safe)");
+  assert.equal(report.committed, true);
+});
+
+// --- PR #302 triage controls -------------------------------------------------
+
+test("a streaming stdin adapter stops at the byte ceiling instead of buffering", async (t) => {
+  const dir = await mkTmp(t);
+  let maxBytesSeen = 0;
+  const { deps } = engineFixture("supported");
+  await assert.rejects(
+    () =>
+      monitorFactMain(
+        ["tick", "--definition", "-", "--monitor-id", MONITOR, "--state-root", dir],
+        {
+          ...deps,
+          readStdin: async (_signal, maxBytes) => {
+            maxBytesSeen = maxBytes ?? 0;
+            // Streaming adapter: reject as soon as the cap is exceeded
+            // instead of returning an oversized string.
+            if (maxBytes !== undefined && maxBytes < 64) throw new Error("stdin exceeds ceiling");
+            return JSON.stringify(definition()) + "x".repeat(1024 * 1024 + 4096);
+          },
+        },
+        { now: T(1), stateRoot: dir },
+      ),
+    /ceiling/,
+  );
+  assert.ok(maxBytesSeen > 0, "the adapter received the byte ceiling");
+});
+
+test("a definition file read is cancellable (pre-aborted signal, 130 outcome)", async (t) => {
+  const dir = await mkTmp(t);
+  const controller = new AbortController();
+  controller.abort();
+  const defFile = path.join(dir, "definition.json");
+  await fs.writeFile(defFile, `${JSON.stringify(definition())}\n`);
+  const { deps } = engineFixture("supported");
+  const result = await monitorFactMain(
+    ["tick", "--definition", defFile, "--monitor-id", MONITOR, "--state-root", dir],
+    { ...deps, readStdin: async () => "" },
+    { now: T(1), stateRoot: dir, signal: controller.signal },
+  );
+  assert.equal(result.code, 130);
+  assert.equal(JSON.parse(result.stdout).cancelled, true);
+});
+
+test("an invalid monitor id fails fast before any stdin read", async (t) => {
+  const dir = await mkTmp(t);
+  let stdinCalled = false;
+  const { deps } = engineFixture("supported");
+  await assert.rejects(
+    () =>
+      monitorFactMain(
+        ["tick", "--definition", "-", "--monitor-id", "../escape", "--state-root", dir],
+        { ...deps, readStdin: async () => { stdinCalled = true; return JSON.stringify(definition()); } },
+        { now: T(1), stateRoot: dir },
+      ),
+    /monitor id/,
+  );
+  assert.equal(stdinCalled, false, "validation precedes input");
+});
+
+test("the state-root flag is required and canonically compared", async (t) => {
+  const dir = await mkTmp(t);
+  const { deps } = engineFixture("supported");
+  const defFile = path.join(dir, "definition.json");
+  await fs.writeFile(defFile, `${JSON.stringify(definition())}\n`);
+
+  await assert.rejects(
+    () =>
+      monitorFactMain(
+        ["tick", "--definition", defFile, "--monitor-id", MONITOR],
+        { ...deps, readStdin: async () => "" },
+        { now: T(1), stateRoot: dir },
+      ),
+    /--state-root is required/,
+  );
+
+  // Equivalent spelling (trailing separator) is not a conflict.
+  const ok = await monitorFactMain(
+    ["tick", "--definition", defFile, "--monitor-id", MONITOR, "--state-root", `${dir}/`],
+    { ...deps, readStdin: async () => "" },
+    { now: T(1), stateRoot: dir },
+  );
+  assert.equal(ok.code, 0, "canonically equivalent state root accepted");
+});
+
+test("a synchronously throwing stdin adapter does not leak the abort listener", async (t) => {
+  const dir = await mkTmp(t);
+  const controller = new AbortController();
+  const { deps } = engineFixture("supported");
+  await assert.rejects(
+    () =>
+      monitorFactMain(
+        ["tick", "--definition", "-", "--monitor-id", MONITOR, "--state-root", dir],
+        { ...deps, readStdin: () => { throw new Error("boom"); } },
+        { now: T(1), stateRoot: dir, signal: controller.signal },
+      ),
+    /boom/,
+  );
+  // The wrapper removed its listener: aborting now reports zero listeners left.
+  controller.abort();
+});
+
+test("a self-inconsistent engine outcome is refused BEFORE publication", async (t) => {
+  const dir = await mkTmp(t);
+  const consistent = satisfied("supported");
+  const inconsistent = {
+    kind: "result",
+    result: { ...consistent.result, data: { csv: "refuted" } }, // row says supported, data says refuted
+  };
+  await assert.rejects(
+    () => commit(dir, definition(), inconsistent, 1),
+    /refusing to publish/,
+  );
+  const state = await loadFactMonitorState(dir, MONITOR);
+  assert.equal(state.seq, 0, "prior state untouched, nothing published");
+  await assert.rejects(() => fs.readdir(path.join(dir, MONITOR, "ticks")));
+});
+
+test("the tip record's definition digest must agree even when no baseline cites the tip", async (t) => {
+  const dir = await mkTmp(t);
+  const { deps, state } = engineFixture("supported");
+  await runFactMonitorTick(dir, MONITOR, definition(), deps, { now: T(1) });
+  state.mode = "formatted";
+  await runFactMonitorTick(dir, MONITOR, definition(), deps, { now: T(2) }); // unchanged: baseline cites seq 1
+  const tipRecord = path.join(dir, MONITOR, "ticks", "tick-2.json");
+  const good = await fs.readFile(tipRecord, "utf8");
+
+  const tampered = JSON.parse(good);
+  tampered.definitionDigest = "a".repeat(64); // valid hex, wrong digest
+  await fs.writeFile(tipRecord, JSON.stringify(tampered));
+  await assert.rejects(() => loadFactMonitorState(dir, MONITOR), /different definition digest/);
+
+  // And a structurally incomplete tip record (engine removed) is refused.
+  const gutted = JSON.parse(good);
+  delete gutted.engine;
+  await fs.writeFile(tipRecord, JSON.stringify(gutted));
+  await assert.rejects(() => loadFactMonitorState(dir, MONITOR), /tick record 2/);
+
+  await fs.writeFile(tipRecord, good);
+  assert.equal((await loadFactMonitorState(dir, MONITOR)).seq, 2);
 });

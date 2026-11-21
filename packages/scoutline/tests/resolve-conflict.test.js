@@ -903,6 +903,42 @@ test('a canonical alias is never suppressed or rewritten at acquisition', async 
   assert.equal(resolution.status, 'disputed');
 });
 
+test('starvation fix: a fresh-identity hit outranks an alias within the same batch under a tight budget', async () => {
+  // Concrete starvation: with ONE read slot left, the batch returns the
+  // alias of the already-read notice FIRST and a distinct opposing hit
+  // second. The consumer reorders the batch — every exact URL still
+  // forwarded — so the unrepresented identity gets the slot. The unread
+  // alias remains an engine-owned truthful gap; nothing implies it was
+  // assessed, and its potentially differing bytes are never claimed.
+  const w = world({ searchResults: idx => (idx === 1 ? [{ url: URL_GPL_ALIAS, title: 'alias first' }, { url: URL_MIT_AGREE, title: 'opposition second' }] : []) });
+  const input = {
+    schemaVersion: 1,
+    scope: { entity: ENTITY, release: RELEASE },
+    limits: { maxUniqueReads: 2 },
+    alternatives: [alt('gpl', 'GPL-3.0', URL_GPL, RELEASE)],
+  };
+  const { resolution, engineResult } = await resolveConflict(input, w.deps);
+  assert.ok(w.calls.read.includes(URL_GPL), 'lead notice read');
+  assert.ok(w.calls.read.includes(URL_MIT_AGREE), 'the fresh opposing identity received the slot');
+  assert.ok(!w.calls.read.includes(URL_GPL_ALIAS), 'the alias (previous successful bounded fetch) was ordered behind and not read');
+  assert.ok(engineResult.evidence.some(e => e.url === URL_MIT_AGREE), 'opposition retained');
+  assert.ok(!engineResult.evidence.some(e => e.url === URL_GPL_ALIAS), 'unread alias is not silently retained');
+  const receipt = resolution.notes.find(n => n.startsWith('search-batch-advisory-order:'));
+  assert.ok(receipt, 'batch reorder recorded as advisory ordering');
+  assert.ok(!receipt.includes('assessed') && !receipt.includes('covered') && !receipt.includes('admitted'), 'note makes no admission, assessment or coverage claim');
+  // The material disagreement IS evidenced: both retained records carry
+  // supporting candidate judgments for opposite values. The dispute row
+  // itself stays unfinalized while the unread alias sits in the engine's
+  // queue — counterevidence_not_acquired — which is the truthful
+  // coverage accounting the engine owns; the consumer claims nothing else.
+  const audit = engineResult.requirements.license.attemptedRecords.filter(r => r.metadata?.kind === 'candidate-judgment' && r.assessments.length > 0);
+  const supportedValues = new Set(audit.filter(r => r.assessments[0]?.support === true).map(r => r.assessments[0]?.value));
+  assert.deepEqual([...supportedValues].sort(), ['GPL-3.0', 'MIT'], 'both opposing values are witnessed on the admitted records');
+  assert.equal(engineResult.requirements.dispute.reason, 'counterevidence_not_acquired', 'unread alias keeps contrary completion honest');
+  assert.equal(resolution.dispute.established, false, 'no finalized dispute while coverage is incomplete');
+  assert.equal(resolution.status, 'unresolved');
+});
+
 test('malformed or inadmissible inventory fails before any acquisition', async () => {
   const w = world();
   const cases = [

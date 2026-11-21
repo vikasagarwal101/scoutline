@@ -45,6 +45,7 @@
  */
 import {
   runLeanInvestigation,
+  LEAN_LIMIT_CEILINGS,
   type LeanContract,
   type LeanDeps,
   type LeanEvidenceRecord,
@@ -501,19 +502,39 @@ export async function resolveConflict(
   // suppresses on its own initiative, because a canonical-identity match
   // is NOT proof the reader returns the same content (a different exact
   // URL is a distinct raw-reader fetch that may serve different bytes —
-  // fixtures demonstrate exactly that). The alias-read-budget optimization
-  // is DEFERRED until the engine offers a trusted content-equivalence
-  // seam (see the reported interface contract); note that a digest first
-  // learned AFTER dispatch cannot save maxUniqueReads — that cap is
-  // checked before dispatch — so a post-read digest is retained-
-  // representation accounting only, and shared alias reuse must rely on
-  // trusted PRE-dispatch proof for the particular representation/scope or
-  // perform a normally charged read. Until then, origin-versus-
-  // representation distinctions are made in the projection (canonical
-  // identity vs content digest), never by suppressing acquisition.
+  // fixtures demonstrate exactly that). No trusted equivalence is claimed
+  // anywhere here: the ONLY improvement is ORDERING within a single
+  // admitted batch — a hit whose canonical fetch identity has a PREVIOUS
+  // SUCCESSFUL FETCH within the per-document byte ceiling this run is
+  // forwarded after hits without one, so a fresh opposing record does not
+  // lose a tight read budget's last slot. That basis is purely ADVISORY
+  // (a previous bounded fetch is not an admission, retention or
+  // equivalence claim). Every exact URL is still forwarded;
+  // an unread hit simply remains an engine-owned truthful coverage gap
+  // (never an assessment claim). The deeper alias-read-budget optimization
+  // stays DEFERRED: a digest first learned AFTER dispatch cannot save
+  // maxUniqueReads — that cap is checked before dispatch — so a post-read
+  // digest is retained-representation accounting only, and shared alias
+  // reuse must rely on trusted PRE-dispatch proof for the particular
+  // representation/scope or perform a normally charged read. Origin-
+  // versus-representation distinctions are made in the projection
+  // (canonical identity vs content digest), never by suppressing
+  // acquisition.
+  // ADVISORY ordering basis: "previous successful fetch within the
+  // per-document byte ceiling". A successful read whose body fit the
+  // per-doc ceiling records the URL's canonical identity here — nothing
+  // more. This is NOT an admission, retention or representation claim
+  // about the engine's state (the single-shot wrapper has no retention
+  // callback), and failed reads / oversize bodies never record anything.
+  // It only advises same-batch ordering below.
+  const previouslyFetchedIdentities = new Set<string>();
   const readAdmitted = async (url: string, options?: Parameters<LeanDeps["read"]>[1]): Promise<string> => {
     assertCallerUrl(url);
-    return deps.read(url, options);
+    const content = await deps.read(url, options);
+    if (Buffer.byteLength(content, "utf8") <= LEAN_LIMIT_CEILINGS.maxEvidenceBytesPerDoc) {
+      previouslyFetchedIdentities.add(canonicalFetchIdentity(url));
+    }
+    return content;
   };
   const searchAdmitted = async (query: string, options?: Parameters<LeanDeps["search"]>[1]) => {
     const results = await deps.search(query, options);
@@ -531,7 +552,16 @@ export async function resolveConflict(
       }
       kept.push({ url: r.url, ...(r.title !== undefined ? { title: r.title } : {}) });
     }
-    return kept;
+    // Same-batch ordering only (stable): hits whose canonical identity has
+    // a previous successful bounded fetch come after hits without one. No
+    // URL is rewritten, dropped or marked covered; the note below states
+    // the advisory basis only, never assessment.
+    const fresh = kept.filter(r => !previouslyFetchedIdentities.has(canonicalFetchIdentity(r.url)));
+    const previouslyFetched = kept.filter(r => previouslyFetchedIdentities.has(canonicalFetchIdentity(r.url)));
+    if (previouslyFetched.length > 0 && fresh.length > 0) {
+      notes.push(`search-batch-advisory-order: ${fresh.length} hit(s) without a previous successful bounded fetch ordered ahead of ${previouslyFetched.length} hit(s) whose identity has one, within this batch; every exact URL forwarded, unread hits remain engine-owned gaps`);
+    }
+    return [...fresh, ...previouslyFetched];
   };
 
   // One acquisition target per originating claim — mirrors are copies of a

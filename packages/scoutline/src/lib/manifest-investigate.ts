@@ -118,8 +118,19 @@ const offlineSeamDispatchers = new WeakMap<
   OfflineJudgeSeam["dispatch"]
 >();
 
-/** Opaque test-collaborator token for judge transmission. */
+/**
+ * Type-level nominal brand (`declare` — ZERO runtime footprint: no such
+ * property exists on minted tokens at runtime). It makes OfflineJudgeSeam
+ * OPAQUE as a TypeScript type: a structural lookalike `{ dispatch }` is a
+ * compile ERROR everywhere outside this module, while the runtime gate
+ * stays the WeakMap identity binding — two independent layers.
+ */
+declare const offlineSeamBrand: unique symbol;
+
+/** Opaque test-collaborator token for judge transmission. Only
+ *  createOfflineJudgeSeam can produce a value of this type. */
 export interface OfflineJudgeSeam {
+  readonly [offlineSeamBrand]: true;
   readonly dispatch: (
     input: LeanCandidateJudgeInput,
     options?: { timeoutMs: number; signal: AbortSignal },
@@ -142,10 +153,34 @@ export function createOfflineJudgeSeam(
   if (typeof dispatch !== "function") {
     throw new ValidationError("Offline judge seam dispatch must be a function.");
   }
-  const token: OfflineJudgeSeam = Object.freeze({ dispatch });
+  // The brand exists only in the type system; the runtime object carries
+  // just the dispatch, and the WeakMap — not any property — decides
+  // identity at the consent gate.
+  const token = Object.freeze({ dispatch }) as OfflineJudgeSeam;
   offlineSeamDispatchers.set(token, dispatch);
   return token;
 }
+
+/**
+ * Compile-time opacity guard — NEVER CALLED (zero runtime behavior), but
+ * type-checked by every build. A forged object literal must FAIL to
+ * type-check against the opaque seam type; if the nominal brand is ever
+ * dropped, the unused `@ts-expect-error` becomes a build error, so
+ * structural forgery cannot sneak back in silently. The minted-token
+ * line below pins the positive direction: factory output IS the type.
+ */
+function seamCompileTimeGuard(): void {
+  const minted: OfflineJudgeSeam = createOfflineJudgeSeam(async () => {
+    throw new Error("unreachable");
+  });
+  void minted;
+  // @ts-expect-error a forged literal lacks the nominal brand
+  const forged: OfflineJudgeSeam = { dispatch: async () => {
+    throw new Error("unreachable");
+  } };
+  void forged;
+}
+void seamCompileTimeGuard;
 
 export interface ManifestInvestigationOutcome {
   readonly result: LeanResult;
@@ -327,13 +362,28 @@ function manifestJudgeConsent(
  * caller lane settles interrupted committed rounds the same way). The
  * lean engine itself reports aborts as the reason string "cancelled" on
  * unresolved fields.
+ *
+ * SHARED-OWNER HANDOFF (minimal taxonomy cure; not doable in this lane
+ * because errors.ts is shared): add "USER_CANCELLED" to the
+ * ScoutlineErrorCode union and a CancellationError class (code
+ * USER_CANCELLED, default exitCode 130, no statusCode), then replace
+ * this subclass with it. The observable output regression to pin at
+ * that point: formatErrorOutput of a user abort currently emits
+ * {"success":false,"error":"...","code":"VALIDATION_ERROR"} with exit
+ * 130 and NO statusCode (suppressed below — a user abort has no HTTP
+ * status); after the taxonomy change exactly `code` flips to
+ * "USER_CANCELLED" and nothing else in the envelope may move. Until
+ * then, exit 130 alone does NOT remove the bad-input classification in
+ * the serialized envelope — that is the acknowledged gap.
  */
 class ManifestRunCancelledError extends ValidationError {
   readonly stopReason: "cancelled" = "cancelled";
   constructor(message: string) {
     super(message);
     this.name = "ManifestRunCancelledError";
-    Object.assign(this, { exitCode: 130 });
+    // A user cancellation has no HTTP status semantics: drop the 400
+    // the validation parent would serialize, and settle exit 130.
+    Object.assign(this, { statusCode: undefined, exitCode: 130 });
   }
 }
 

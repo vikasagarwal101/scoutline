@@ -601,6 +601,33 @@ test("pre-abort: an already-aborted signal throws before any input is read", asy
   assert.equal(judge.calls.length, 0);
 });
 
+test("cancellation envelope pin: serialized shape today, exit 130, no HTTP status", async () => {
+  const { formatErrorOutput } = await import(`${root}/dist/lib/output.js`);
+  const { getErrorExitCode } = await import(`${root}/dist/lib/errors.js`);
+  const judge = offlineJudge();
+  const controller = new AbortController();
+  controller.abort();
+  let thrown;
+  try {
+    await mi.investigateReleaseManifest(FLOW_INPUT(EXACT, judge, { externalSignal: controller.signal }));
+  } catch (error) {
+    thrown = error;
+  }
+  assert.ok(thrown, "pre-aborted run must throw");
+  // CURRENT serialized envelope — pinned so the deferred shared taxonomy
+  // change ("USER_CANCELLED") flips exactly `code` and nothing else.
+  const payload = JSON.parse(formatErrorOutput(thrown, "json"));
+  assert.deepEqual(payload, {
+    success: false,
+    error: "Manifest run aborted before admission.",
+    code: "VALIDATION_ERROR",
+  });
+  assert.equal("statusCode" in payload, false, "a user abort carries no HTTP status");
+  assert.equal(getErrorExitCode(thrown), 130);
+  // And exit 130 alone does not reclassify the envelope — that gap is
+  // the acknowledged shared handoff, not a local fix.
+});
+
 test("in-flight abort witness: a mid-run abort reaches the live dispatch and stops further work", async () => {
   const controller = new AbortController();
   const seen = [];
@@ -635,10 +662,20 @@ test("in-flight abort witness: a mid-run abort reaches the live dispatch and sto
   assert.equal(seen.length, 1, "one live dispatch witnessed the abort");
   assert.equal(seen[0].abortedInside, true, "the dispatch's own signal is aborted in flight");
   assert.equal(controller.signal.aborted, true);
-  // The run SETTLES (no hang, no throw) with nothing accepted.
+  // The run SETTLES (no hang, no throw) with nothing accepted — and the
+  // PARTIAL EVIDENCE it earned before the abort is retained: extraction
+  // and the single judgment remain in the audit trail, unpublished.
   assert.deepEqual(result.data, {});
   assert.equal(result.requirements.version.status, "unresolved");
   assert.equal(result.requirements.license.status, "unresolved");
+  assert.ok(
+    result.requirements.version.attemptedRecords.some((r) => r.metadata?.kind === "extraction"),
+    "partial evidence: extraction audit retained after abort",
+  );
+  assert.ok(
+    result.requirements.version.attemptedRecords.some((r) => r.metadata?.kind === "candidate-judgment"),
+    "partial evidence: the pre-abort judgment audit is retained",
+  );
 });
 
 test("entry bounds abort before hashing or engine work (consent alone is not enough)", async () => {

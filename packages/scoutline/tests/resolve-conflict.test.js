@@ -40,6 +40,11 @@ const URL_META = 'https://discuss.example.test/exampleapp/license-thread';
 const URL_LATE = 'https://releases.example.test/exampleapp/2.4.0/sponsor-note';
 const URL_GPL_ALIAS = 'https://releases.example.test:443/exampleapp/2.4.0/notice';
 const URL_GPL_COPY = 'https://copies.example.test/exampleapp/2.4.0/notice';
+const URL_GPL_B = 'https://independent.example.test/exampleapp/2.4.0/notice';
+const NOTICE_GPL_B = 'ExampleApp 2.4.0 distribution terms. License: GPL-3.0 applies to ExampleApp 2.4.0.';
+const URL_OVERSIZE_SEARCH = 'https://releases.example.test/exampleapp/2.4.0/huge-notice';
+const NOTICE_OVERSIZE_SEARCH = 'License: GPL-3.0 applies to ExampleApp 2.4.0. ' + 'filler '.repeat(3000);
+const LICENSE_QUESTION = `Which license applies to the caller-declared entity ${JSON.stringify(ENTITY)} and release ${JSON.stringify(RELEASE)}?`;
 const CORRECTIONS = {
   full: 'Correction to the ExampleApp 2.4.0 release notice. This correction explicitly supersedes the original ExampleApp 2.4.0 licensing notice. License: MIT applies to ExampleApp 2.4.0.',
   missing: 'Correction to the ExampleApp release notice. License: MIT applies to ExampleApp 2.4.0.',
@@ -63,6 +68,8 @@ function world({ correction = 'full', correctionUrl = URL_CORRECTION, applicabil
     [URL_LATE, NOTICE_LATE],
     [URL_GPL_ALIAS, NOTICE_MIT],
     [URL_GPL_COPY, NOTICE_GPL],
+    [URL_GPL_B, NOTICE_GPL_B],
+    [URL_OVERSIZE_SEARCH, NOTICE_OVERSIZE_SEARCH],
     [correctionUrl, CORRECTIONS[correction] ?? CORRECTIONS.full],
     ...MIRRORS.map(url => [url, NOTICE_GPL]),
     ...Object.entries(docs),
@@ -386,7 +393,7 @@ test('same-content mirror does not add a dispute side; established sides carry e
   assert.equal(resolution.dispute.sides.length, 2, 'duplicate representation collapses to one side');
   const digests = resolution.dispute.sides.map(s => s.sourceDigest);
   assert.equal(new Set(digests).size, 2, 'sides are nonduplicate retained contents');
-  const question = `Which license applies to ${ENTITY} ${RELEASE}?`;
+  const question = LICENSE_QUESTION;
   for (const side of resolution.dispute.sides) {
     const record = engineResult.evidence.find(e => e.evidenceId === side.sourceId);
     assert.ok(record, 'side bound to a retained record');
@@ -398,7 +405,9 @@ test('same-content mirror does not add a dispute side; established sides carry e
       opposingContext: engineResult.evidence.filter(e => e.evidenceId !== record.evidenceId),
       depBindings: {},
     });
-    assert.equal(side.assessmentId, expectedAssessment, 'assessment identity reproduces from the live final context');
+    assert.equal(side.assessmentId, expectedAssessment, 'published assessment identity reproduces from the live final context');
+    assert.match(side.candidateId, /^[a-f0-9]{64}$/, 'payload identity published for parity');
+    assert.equal(side.identity, undefined, 'internal canonical-identity helper is not published');
   }
 });
 
@@ -412,15 +421,24 @@ test('oversize body at a seeded alternative URL relisted by contrary search stay
   const w = world({
     docs: { [URL_APACHE]: NOTICE_OVERSIZE },
     // The oversize discovery re-lists on the FINAL contrary round (plan
-    // query 7 of 7): the pair's own contrary rounds complete first, so
-    // the pair gates stay green while the repeated hit stays visible.
-    searchResults: idx => (idx >= 7 ? [{ url: URL_APACHE, title: 'apache notice' }] : []),
+    // query 7 of 7), joined by a distinct search-only oversize witness so
+    // the relisted result's survival through the search path is asserted:
+    // the pair's own contrary rounds complete first, the pair gates stay
+    // green while the repeated hits stay visible.
+    searchResults: idx => (idx >= 7 ? [{ url: URL_APACHE, title: 'apache notice' }, { url: URL_OVERSIZE_SEARCH, title: 'huge notice' }] : []),
   });
   const { resolution, engineResult } = await resolveConflict(correctionInput(), w.deps);
   assert.equal(engineResult.requirements.correction.value, 'supported', 'pair gates green');
   assert.equal(engineResult.requirements.license.status, 'satisfied');
   assert.ok(engineResult.evidence.some(e => e.url === URL_GPL) && engineResult.evidence.some(e => e.url === URL_CORRECTION), 'valid retained pair');
   assert.ok(engineResult.acquisitionLog.some(e => /oversize|bytes-cap/.test(e.kind)), 'engine rejects the oversize body');
+  // The relisted discovery genuinely survives the search path: a distinct
+  // search-only oversize URL arrives on the FINAL contrary round after the
+  // plan's searches have been dispatched, is read (never suppressed by the
+  // consumer), and is rejected by the engine visibly.
+  assert.ok(w.calls.read.includes(URL_OVERSIZE_SEARCH), 'search-only oversize result was read, not suppressed');
+  assert.ok(engineResult.acquisitionLog.filter(e => /oversize|bytes-cap/.test(e.kind)).length >= 2, 'both rejections recorded by the engine');
+  assert.ok(w.calls.search.length >= 7, 'all planned searches dispatched');
   assert.ok(engineResult.evidence.every(e => e.url !== URL_APACHE), 'oversize body never retained');
   assert.ok(!resolution.notes.some(n => n.startsWith('search-result-')), 'no suppression of the repeated contrary hit');
   assert.equal(byId(resolution).apache.explanation.relationship, 'scope-unverified');
@@ -447,8 +465,10 @@ test('matched regression: failed current target re-judgment voids stale support 
 
 test('matched regression: canonical URL aliases cannot count as two dispute origins', async () => {
   // A search-found alias of the GPL notice (same canonical fetch identity,
-  // explicit :443) serves MIT content. Two supporting values exist on two
-  // records, but they are ONE origin — the dispute cannot be established.
+  // explicit :443) serves DIFFERENT bytes (MIT). It is acquired as a
+  // distinct raw-reader representation — never suppressed or rewritten —
+  // but it is ONE canonical origin, so the dispute cannot be established
+  // without an independent second origin.
   const w = world({ searchResults: idx => (idx === 1 ? [{ url: URL_GPL_ALIAS, title: 'notice copy' }] : []) });
   const input = {
     schemaVersion: 1,
@@ -457,11 +477,36 @@ test('matched regression: canonical URL aliases cannot count as two dispute orig
   };
   const { resolution, engineResult } = await resolveConflict(input, w.deps);
   assert.equal(engineResult.requirements.dispute.value, 'supported', 'generic two-record verdict accepted');
-  assert.ok(engineResult.evidence.some(e => e.url === URL_GPL) && engineResult.evidence.some(e => e.url === URL_GPL_ALIAS));
+  assert.ok(w.calls.read.includes(URL_GPL_ALIAS), 'alias acquired, never suppressed');
+  assert.ok(engineResult.evidence.some(e => e.url === URL_GPL) && engineResult.evidence.some(e => e.url === URL_GPL_ALIAS), 'both representations retained');
   assert.equal(resolution.dispute.established, false, 'alias collapses to one origin');
   assert.ok(resolution.notes.some(n => n.startsWith('dispute-verdict-unverified:')));
   assert.equal(resolution.status, 'unresolved');
   assert.equal(resolution.selected, undefined);
+});
+
+test('three witnesses: a valid alias+independent pair establishes the dispute', async () => {
+  // A(GPL), an alias of A serving MIT (same canonical origin, different
+  // bytes), and B(GPL, independent origin, different bytes). Greedy
+  // canonical-dedup would keep A and B — same value, no dispute. Pair-first
+  // selection finds alias(MIT) + B(GPL): distinct values, canonical
+  // identities and digests — the only valid proof pair — and publishes it.
+  const w = world({ searchResults: idx => (idx === 1 ? [{ url: URL_GPL_ALIAS, title: 'copy' }, { url: URL_GPL_B, title: 'independent' }] : []) });
+  const input = {
+    schemaVersion: 1,
+    scope: { entity: ENTITY, release: RELEASE },
+    alternatives: [alt('gpl', 'GPL-3.0', URL_GPL, RELEASE)],
+  };
+  const { resolution, engineResult } = await resolveConflict(input, w.deps);
+  assert.ok(engineResult.evidence.some(e => e.url === URL_GPL_ALIAS) && engineResult.evidence.some(e => e.url === URL_GPL_B), 'all three witnesses acquired');
+  assert.equal(resolution.dispute.established, true, 'alias+independent pair qualifies');
+  const sides = resolution.dispute.sides;
+  assert.equal(sides.length, 2);
+  assert.deepEqual(sides.map(s => s.value).sort(), ['GPL-3.0', 'MIT']);
+  assert.deepEqual(sides.map(s => s.url).sort(), [URL_GPL_ALIAS, URL_GPL_B].sort(), 'A excluded: its canonical identity belongs to the pair member');
+  const canonicals = sides.map(s => new URL(s.url).hostname);
+  assert.notEqual(canonicals[0], canonicals[1], 'distinct origins');
+  assert.equal(resolution.status, 'disputed');
 });
 
 test('matched regression: supported generic dispute without material sides stays unverified audit evidence', async () => {
@@ -653,7 +698,7 @@ test('declared mirrors are not acquisition targets; budget end preserves alterna
   const { resolution, engineResult } = await resolveConflict(input, w.deps);
   assert.deepEqual(w.calls.read, [URL_GPL], 'one origin read from leads; no mirror lead, no refused URL');
   assert.equal(engineResult.usage.readsRetained, 1);
-  assert.ok(resolution.notes.some(n => n.startsWith('search-result-refused:') && n.includes('10.0.0.5')));
+  assert.ok(resolution.notes.some(n => n.startsWith('search-result-refused:')), 'refusal noted without echoing the refused URL');
   assert.equal(resolution.status, 'unresolved');
   assert.equal(resolution.selected, undefined);
   const ids = byId(resolution);
@@ -739,6 +784,123 @@ test('abort after entered work vetoes the projection; retained evidence stays vi
   assert.equal(outcome.resolution, null);
   assert.ok(outcome.engineResult.evidence.length >= 1, 'audit-only evidence retained before the abort');
   assert.ok(Object.values(outcome.engineResult.requirements).some(row => row.reason === 'cancelled'));
+});
+
+test('a correction chain reaching a dangling id before its owner is checked fails as ValidationError', async () => {
+  // Order matters: the walker for 'b' traverses 'a' and reaches the
+  // dangling 'missing' BEFORE 'a's own reference check runs. The walk must
+  // never surface a raw TypeError.
+  const w = world();
+  const input = {
+    schemaVersion: 1,
+    scope: { entity: ENTITY, release: RELEASE },
+    alternatives: [
+      alt('b', 'MIT', URL_MIT, RELEASE, { correctionOf: 'a' }),
+      alt('a', 'GPL-3.0', URL_GPL, RELEASE, { correctionOf: 'missing-id' }),
+    ],
+  };
+  await assert.rejects(() => resolveConflict(input, w.deps), ValidationError);
+  assert.equal(w.calls.search.length, 0);
+});
+
+test('oversized free-text fields are rejected at the trust boundary', async () => {
+  const w = world();
+  const big = 'x'.repeat(600);
+  const cases = [
+    { schemaVersion: 1, scope: { entity: big, release: RELEASE }, alternatives: [alt('a', 'MIT', URL_MIT, RELEASE)] },
+    { schemaVersion: 1, scope: { entity: ENTITY, release: big }, alternatives: [alt('a', 'MIT', URL_MIT, RELEASE)] },
+    { schemaVersion: 1, scope: { entity: ENTITY, release: RELEASE }, alternatives: [alt('a', big, URL_MIT, RELEASE)] },
+    { schemaVersion: 1, scope: { entity: ENTITY, release: RELEASE }, alternatives: [alt(big, 'MIT', URL_MIT, RELEASE)] },
+    { schemaVersion: 1, scope: { entity: ENTITY, release: RELEASE }, alternatives: [{ ...alt('a', 'MIT', URL_MIT, RELEASE), source: { url: URL_MIT, title: big } }] },
+    { schemaVersion: 1, scope: { entity: ENTITY, release: RELEASE }, alternatives: [alt('a', 'MIT', URL_MIT, RELEASE, { correctionOf: big })] },
+  ];
+  for (const bad of cases) {
+    await assert.rejects(() => resolveConflict(bad, w.deps), /exceeds \d+ UTF-8 bytes/);
+  }
+  await assert.rejects(
+    () => resolveConflict({ schemaVersion: 1, scope: { entity: ENTITY, release: RELEASE }, limits: { evilKey: 1, maxUniqueReads: 1 }, alternatives: [alt('a', 'MIT', URL_MIT, RELEASE)] }, w.deps),
+    error => {
+      assert.ok(error instanceof ValidationError);
+      const message = String(error.message);
+      assert.ok(message.includes('readBatchSize') && message.includes('deadlineMs'), 'allowed keys are named');
+      assert.ok(!message.includes('evilKey'), 'untrusted key never echoed');
+      return true;
+    },
+  );
+  // Unknown keys are rejected by NAME before any value access: an unknown
+  // enumerable getter is never executed, let alone echoed.
+  const limits = { maxUniqueReads: 2 };
+  let getterRead = false;
+  Object.defineProperty(limits, 'evilAccessor', { enumerable: true, get: () => { getterRead = true; return 1; } });
+  await assert.rejects(
+    () => resolveConflict({ schemaVersion: 1, scope: { entity: ENTITY, release: RELEASE }, limits, alternatives: [alt('a', 'MIT', URL_MIT, RELEASE)] }, w.deps),
+    /may only contain the known keys/,
+  );
+  assert.equal(getterRead, false, 'unknown-key value accessor never executed');
+  assert.equal(w.calls.search.length, 0);
+});
+
+test('malformed source.title is rejected, consistent with mirror titles', async () => {
+  const w = world();
+  const input = {
+    schemaVersion: 1,
+    scope: { entity: ENTITY, release: RELEASE },
+    alternatives: [{ ...alt('a', 'MIT', URL_MIT, RELEASE), source: { url: URL_MIT, title: '' } }],
+  };
+  await assert.rejects(() => resolveConflict(input, w.deps), /source title must be a non-empty string/);
+});
+
+test('class-instance deps keep their original receiver, including private fields', async () => {
+  // Coordinator witness: a class whose now() reads a PRIVATE field throws
+  // TypeError when a delegating proxy becomes the receiver. Every member
+  // must be invoked with the original object as receiver.
+  const w = world();
+  class Deps {
+    #clock = Date.now();
+    get externalSignal() { return undefined; }
+    now() { return this.#clock; }
+    get search() { return this.inner.search; }
+    get read() { return this.inner.read; }
+    get judge() { return this.inner.judge; }
+    get extract() { return this.inner.extract; }
+    get candidateJudge() { return this.inner.candidateJudge; }
+    get extractorRevision() { return this.inner.extractorRevision; }
+    constructor(inner) { this.inner = inner; }
+  }
+  const { resolution, engineResult } = await resolveConflict(correctionInput(), new Deps(w.deps));
+  assert.equal(engineResult.status, 'complete', 'engine ran with private-field class deps');
+  assert.equal(resolution.status, 'resolved');
+  assert.equal(resolution.selected.value, 'MIT');
+});
+
+test('refused search results never leak the raw URL into caller-visible notes', async () => {
+  const w = world({ searchResults: [{ url: 'https://user:secret-token@releases.example.test/notice', title: 'credential carrier' }] });
+  const { resolution } = await resolveConflict(correctionInput(), w.deps);
+  const refusal = resolution.notes.find(n => n.startsWith('search-result-refused:'));
+  assert.ok(refusal, 'refusal noted');
+  assert.ok(!refusal.includes('secret-token') && !refusal.includes('user:'), 'no credential material echoed');
+  assert.ok(resolution.notes.every(n => !n.includes('secret-token')), 'no note carries the credential');
+});
+
+test('a canonical alias is never suppressed or rewritten at acquisition', async () => {
+  // The read-budget alias-forwarding optimization is REMOVED: canonical
+  // URL equality proves nothing about content. Every admitted result is
+  // forwarded to the engine untouched — contrary acquisition preserved,
+  // distinct raw-reader representations retained as their own evidence.
+  const w = world({ searchResults: idx => (idx === 1 ? [{ url: URL_GPL_ALIAS, title: 'alias copy' }] : idx === 2 ? [{ url: URL_MIT_AGREE, title: 'opposition' }] : []) });
+  const input = {
+    schemaVersion: 1,
+    scope: { entity: ENTITY, release: RELEASE },
+    limits: { maxUniqueReads: 3 },
+    alternatives: [alt('gpl', 'GPL-3.0', URL_GPL, RELEASE)],
+  };
+  const { resolution, engineResult } = await resolveConflict(input, w.deps);
+  assert.ok(w.calls.read.includes(URL_GPL_ALIAS), 'alias acquired as its own fetch');
+  assert.ok(w.calls.read.includes(URL_MIT_AGREE), 'opposition acquired');
+  assert.ok(engineResult.evidence.some(e => e.url === URL_GPL_ALIAS) && engineResult.evidence.some(e => e.url === URL_MIT_AGREE));
+  assert.ok(!resolution.notes.some(n => n.startsWith('search-result-alias-forwarded:')), 'no speculative forwarding exists');
+  assert.equal(resolution.dispute.established, true, 'alias(MIT) + independent opposition form the proof pair');
+  assert.equal(resolution.status, 'disputed');
 });
 
 test('malformed or inadmissible inventory fails before any acquisition', async () => {

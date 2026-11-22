@@ -182,7 +182,14 @@ function seamCompileTimeGuard(): void {
 }
 void seamCompileTimeGuard;
 
+/**
+ * Normal outcome: the run settled without the external signal winning.
+ * The shape is unchanged from before the run-level cancellation marker
+ * existed — existing consumers read result/parse/record as they always
+ * did (discriminate on `cancelled` only when they care).
+ */
 export interface ManifestInvestigationOutcome {
+  readonly cancelled: false;
   readonly result: LeanResult;
   /** Lane-visible parse detail of the SAME admitted snapshot: exact
    *  spans plus ambiguous/missing statuses the engine's unresolved rows
@@ -200,6 +207,35 @@ export interface ManifestInvestigationOutcome {
    *  is the digest-derived opaque locator (never the claimed URL). */
   readonly record: LeanEvidenceRecord;
 }
+
+/**
+ * Typed RUN-LEVEL cancelled indication (Qodo r4659857463): returned when
+ * the external signal aborted the run IN FLIGHT and the engine settled
+ * unfinished fields with its own "cancelled" reason. Every field of the
+ * normal outcome is still present — the EARNED PARTIAL EVIDENCE
+ * (retained sources, extraction/judgment audit rows, any fields already
+ * satisfied) is preserved, never dropped — so a consumer settling exit
+ * 130 can still project what was earned. `stopReason` carries the
+ * engine's own vocabulary; the pre-dispatch windows keep their typed
+ * throws (ManifestRunCancelledError). No success:false claim is made
+ * when the signal wins — the marker, not an error envelope, is the
+ * settlement signal. The typed USER_CANCELLED taxonomy itself stays in
+ * shared integration.
+ */
+export interface ManifestRunCancelledOutcome {
+  readonly cancelled: true;
+  readonly stopReason: "cancelled";
+  readonly result: LeanResult;
+  readonly parse: ReturnType<typeof parseReleaseManifest>;
+  readonly materialClass: ManifestAdmission["materialClass"];
+  readonly claimedUrl: string;
+  readonly claimedUrlVerification: "unverified";
+  readonly record: LeanEvidenceRecord;
+}
+
+export type ManifestInvestigationSettlement =
+  | ManifestInvestigationOutcome
+  | ManifestRunCancelledOutcome;
 
 /** First-slice contract shape (docs/plans/v3/FIRST-SLICE.json engineContract). */
 export function manifestContract() {
@@ -282,6 +318,12 @@ export function manifestEvidenceRecord(
 export function buildManifestDeps(input: ManifestInvestigationInput) {
   const producer = resolveDocumentProducer(input.producerId ?? RELEASE_MANIFEST_GRAMMAR_ID);
   const { text, admission } = admitManifestInput(input);
+  // OWNED SIGNAL CAPTURE: one synchronous read of the caller's property,
+  // taken before any await — the object the deps bridge hands the engine
+  // and the object every later cancellation check consults. A mid-flight
+  // replacement of `input.externalSignal` cannot swap what this run
+  // observes.
+  const signal = input.externalSignal;
   const record = manifestEvidenceRecord(text, admission);
   const deps = {
     now: input.now ?? (() => 0),
@@ -310,10 +352,14 @@ export function buildManifestDeps(input: ManifestInvestigationInput) {
     candidateJudge: manifestJudgeConsent(input),
     extract: producer.create(Object.keys(RELEASE_MANIFEST_FIELD_BINDINGS)).extract,
     extractorRevision: RELEASE_MANIFEST_PRODUCER_REVISION,
-    ...(input.externalSignal !== undefined ? { externalSignal: input.externalSignal } : {}),
+    ...(signal !== undefined ? { externalSignal: signal } : {}),
     seed: { evidence: [record] },
   };
-  return { deps, record, producer, admission };
+  // The captured signal is RETURNED: it is the exact object the engine's
+  // deps bridge consulted, so the entry point's post-admission and
+  // post-run cancellation checks read the OWNED signal — never a later
+  // reread of the caller's mutable `input.externalSignal` property.
+  return { deps, record, producer, admission, signal };
 }
 
 /**
@@ -407,22 +453,48 @@ function manifestRunCancelled(message: string): ManifestRunCancelledError {
  */
 export async function investigateReleaseManifest(
   input: ManifestInvestigationInput,
-): Promise<ManifestInvestigationOutcome> {
+): Promise<ManifestInvestigationSettlement> {
   // Pre-abort BEFORE reading input: nothing of the caller's material is
   // touched once cancellation is already signalled.
   if (input.externalSignal?.aborted) {
     throw manifestRunCancelled("Manifest run aborted before admission.");
   }
-  const { deps, record, admission } = buildManifestDeps(input);
+  const { deps, record, admission, signal } = buildManifestDeps(input);
   // Prepare the parse ONCE from the OWNED admitted body — the report and
   // the engine dispatch share this snapshot, and no later mutation or
   // cancellation re-scans anything.
   const parse = parseReleaseManifest(record.content, Object.keys(RELEASE_MANIFEST_FIELD_BINDINGS));
-  if (input.externalSignal?.aborted) {
+  // Post-admission check on the OWNED captured signal — the same object
+  // the deps bridge handed the engine, never a reread of the caller's
+  // (replaceable) input.externalSignal property.
+  if (signal?.aborted) {
     throw manifestRunCancelled("Manifest run aborted after admission.");
   }
   const result = (await runLeanInvestigation(manifestContract(), deps)) as LeanResult;
+  // Run-level settlement (Qodo r4659857463): the signal won IN FLIGHT
+  // iff the OWNED captured signal is aborted after the run AND the
+  // engine actually settled at least one field with its own "cancelled"
+  // reason — the engine-row guard also prevents a late or foreign
+  // signal from relabeling a run that completed its fields. Derived
+  // here once so consumers never have to scan field rows; no fresh scan
+  // of the admitted body happens in this branch.
+  const cancelledInFlight =
+    signal?.aborted === true &&
+    Object.values(result.requirements).some((row) => row.reason === "cancelled");
+  if (cancelledInFlight) {
+    return {
+      cancelled: true,
+      stopReason: "cancelled",
+      result,
+      parse,
+      materialClass: admission.materialClass,
+      claimedUrl: admission.claimedUrl,
+      claimedUrlVerification: "unverified",
+      record,
+    };
+  }
   return {
+    cancelled: false,
     result,
     parse,
     materialClass: admission.materialClass,

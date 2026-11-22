@@ -631,6 +631,7 @@ test("cancellation envelope pin: serialized shape today, exit 130, no HTTP statu
 test("in-flight abort witness: a mid-run abort reaches the live dispatch and stops further work", async () => {
   const controller = new AbortController();
   const seen = [];
+  let inputObject;
   // The dispatch itself performs the abort WHILE IN FLIGHT — the run is
   // executing, this dispatch is live, and the signal it received is
   // aborted at that moment (the engine bridges the external signal into
@@ -638,7 +639,12 @@ test("in-flight abort witness: a mid-run abort reaches the live dispatch and sto
   const judge = async (input, options) => {
     seen.push({ signal: options?.signal, field: input.candidates[0]?.fieldId });
     const alreadyAborted = options?.signal?.aborted === true;
+    // Abort the ORIGINAL signal, then REPLACE the caller's property with
+    // a fresh non-aborted signal mid-flight: the entry point's post-run
+    // check must consult the owned captured signal, not the reread
+    // property (owned-signal gap).
     controller.abort();
+    inputObject.externalSignal = new AbortController().signal;
     seen[seen.length - 1].abortedInside = options?.signal?.aborted === true;
     const answers = {};
     input.candidates.forEach((c, i) => {
@@ -654,14 +660,22 @@ test("in-flight abort witness: a mid-run abort reaches the live dispatch and sto
       elapsedMs: 1,
     };
   };
-  const { result } = await mi.investigateReleaseManifest(
-    FLOW_INPUT(EXACT, { judge }, { externalSignal: controller.signal }),
-  );
+  inputObject = FLOW_INPUT(EXACT, { judge }, { externalSignal: controller.signal });
+  const outcome = await mi.investigateReleaseManifest(inputObject);
   // Exactly ONE dispatch happened — the abort occurred mid-run, inside
   // that dispatch, and the engine performed no further judge work.
   assert.equal(seen.length, 1, "one live dispatch witnessed the abort");
   assert.equal(seen[0].abortedInside, true, "the dispatch's own signal is aborted in flight");
   assert.equal(controller.signal.aborted, true);
+  assert.equal(inputObject.externalSignal.aborted, false, "caller property was replaced mid-flight");
+  // TYPED RUN-LEVEL cancelled indication (Qodo r4659857463): consumers
+  // settle from the marker alone — no field-row scanning, no error
+  // envelope, no success:false claim when the signal wins. The marker
+  // survives the property replacement because the OWNED captured signal
+  // (the one deps bridged) decided.
+  assert.equal(outcome.cancelled, true);
+  assert.equal(outcome.stopReason, "cancelled");
+  const { result } = outcome;
   // The run SETTLES (no hang, no throw) with nothing accepted — and the
   // PARTIAL EVIDENCE it earned before the abort is retained: extraction
   // and the single judgment remain in the audit trail, unpublished.
@@ -676,6 +690,18 @@ test("in-flight abort witness: a mid-run abort reaches the live dispatch and sto
     result.requirements.version.attemptedRecords.some((r) => r.metadata?.kind === "candidate-judgment"),
     "partial evidence: the pre-abort judgment audit is retained",
   );
+});
+
+test("normal runs keep the ordinary shape: cancelled === false, no stopReason field", async () => {
+  const judge = offlineJudge();
+  const outcome = await mi.investigateReleaseManifest(FLOW_INPUT(EXACT, judge));
+  assert.equal(outcome.cancelled, false);
+  assert.equal("stopReason" in outcome, false);
+  assert.equal(outcome.result.status, "partial"); // closed-set withholding, unchanged
+  assert.deepEqual(outcome.result.data, {});
+  // The pre-judgement manifest without any abort also settles normally.
+  const prose = await mi.investigateReleaseManifest(FLOW_INPUT(PROSE, offlineJudge()));
+  assert.equal(prose.cancelled, false);
 });
 
 test("entry bounds abort before hashing or engine work (consent alone is not enough)", async () => {

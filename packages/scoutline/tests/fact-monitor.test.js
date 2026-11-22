@@ -13,6 +13,8 @@
  *     runLeanInvestigation with injected fixture deps (no network).
  */
 import test from "node:test";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -819,6 +821,98 @@ test("a 'cancelled' label on an ordinary refusal never classifies as cancellatio
   );
 });
 
+test("the REAL invocation adapter reads the definition over stdin (normal path, direct binding)", async (t) => {
+  const dir = await mkTmp(t);
+  // Static driver text (no nested template literals): paths arrive via env.
+  const driver = [
+    "const { monitorFactMain } = await import(process.env.FM_CMD);",
+    "const { createNodeCommandInvocationAdapter } = await import(process.env.FM_ADAPTER);",
+    "const adapter = createNodeCommandInvocationAdapter();",
+    "const result = await monitorFactMain(",
+    "  ['tick', '--definition', '-', '--monitor-id', 'csv-monitor', '--state-root', process.env.FM_DIR],",
+    "  {",
+    "    now: () => 0,",
+    "    search: async () => [{ url: 'https://fixture.invalid/supported', title: 'supported' }],",
+    "    read: async () => 'ExampleApp Community 2.4.0 for Linux supports CSV export.',",
+    "    judge: async (input) => ({ documents: input.documents.map((d) => ({",
+    "      evidenceId: d.evidenceId, relevant: true,",
+    "      supportsClaim: d.content.includes('supports CSV export'), refutesClaim: false,",
+    "    })) }),",
+    "    readStdin: adapter.readStdin.bind(adapter),",
+    "  },",
+    "  { now: new Date(0), stateRoot: process.env.FM_DIR },",
+    ");",
+    "process.stdout.write(result.stdout);",
+    "process.exit(result.code);",
+  ].join("\n");
+  const child = spawn(process.execPath, ["--input-type=module", "-e", driver], {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: { ...process.env, FM_CMD: `${root}/dist/commands/monitor-fact.js`, FM_ADAPTER: `${root}/dist/node-command-invocation-adapter.js`, FM_DIR: dir },
+  });
+  child.stdin.write(JSON.stringify(definition()));
+  child.stdin.end();
+  // Chunked capture + exit-only await: process.exit can truncate piped
+  // writes, so a stdout 'once' can hang even on success.
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
+  child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
+  const killTimer = setTimeout(() => child.kill("SIGKILL"), 8000);
+  try {
+    await once(child, "exit");
+  } finally {
+    clearTimeout(killTimer);
+  }
+  assert.equal(child.exitCode, 0, `driver exited 0 (stderr: ${stderr.slice(0, 400)})`);
+  const report = JSON.parse(stdout.trim().split("\n").at(-1));
+  assert.equal(report.committed, true);
+  assert.deepEqual(report.fields.csv.events, ["baseline_established"], `engine ran: ${stdout.slice(0, 200)}`);
+});
+
+test("the REAL invocation adapter path exits 130 when the signal aborts mid-read", async (t) => {
+  const dir = await mkTmp(t);
+  const driver = [
+    "const { monitorFactMain } = await import(process.env.FM_CMD);",
+    "const { createNodeCommandInvocationAdapter } = await import(process.env.FM_ADAPTER);",
+    "const adapter = createNodeCommandInvocationAdapter();",
+    "const controller = new AbortController();",
+    "setTimeout(() => controller.abort(), 25);",
+    "const result = await monitorFactMain(",
+    "  ['tick', '--definition', '-', '--monitor-id', 'csv-monitor', '--state-root', process.env.FM_DIR],",
+    "  { search: async () => [], read: async () => '', judge: null, readStdin: adapter.readStdin.bind(adapter) },",
+    "  { now: new Date(0), stateRoot: process.env.FM_DIR, signal: controller.signal },",
+    ");",
+    "process.stdout.write(result.stdout);",
+    "process.exit(result.code);",
+  ].join("\n");
+  const child = spawn(process.execPath, ["--input-type=module", "-e", driver], {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: { ...process.env, FM_CMD: `${root}/dist/commands/monitor-fact.js`, FM_ADAPTER: `${root}/dist/node-command-invocation-adapter.js`, FM_DIR: dir },
+  });
+  // Leave stdin OPEN and unwritten: the real adapter blocks reading the
+  // held pipe, the controller aborts at 25ms, and the command must exit
+  // 130 promptly. Robust capture: accumulate stdout/stderr chunks, await
+  // only the exit, and kill on a hard bound so a regression fails
+  // instead of hanging.
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
+  child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
+  const killTimer = setTimeout(() => child.kill("SIGKILL"), 8000);
+  const startedAt = Date.now();
+  let exitSignal = null;
+  try {
+    [exitSignal] = await once(child, "exit");
+  } finally {
+    clearTimeout(killTimer);
+    child.stdin.destroy();
+  }
+  assert.ok(exitSignal !== null, `child exited (stderr: ${stderr.slice(0, 400)})`);
+  assert.equal(child.exitCode, 130, `driver exited 130 (code=${child.exitCode}, stderr: ${stderr.slice(0, 400)})`);
+  assert.equal(JSON.parse(stdout.trim().split("\n").at(-1)).cancelled, true);
+  assert.ok(Date.now() - startedAt < 5000, "settled promptly");
+});
+
 test("the stdin adapter witnesses streaming-offset truncation at the propagated cap", async (t) => {
   const dir = await mkTmp(t);
   const payload = JSON.stringify(definition()) + "x".repeat(2 * 1024 * 1024);
@@ -830,7 +924,7 @@ test("the stdin adapter witnesses streaming-offset truncation at the propagated 
         ["tick", "--definition", "-", "--monitor-id", MONITOR, "--state-root", dir],
         {
           ...deps,
-          readStdin: async (_signal, maxBytes) => {
+          readStdin: async (maxBytes, _signal) => {
             streamed.cap = maxBytes ?? 0;
             // Stream in 4 KiB slices, stopping (rejecting) the moment the
             // running offset passes the propagated cap — the adapter never
@@ -981,8 +1075,9 @@ test("an abort-rejecting stdin adapter maps to exit 130, not a generic failure",
     ["tick", "--definition", "-", "--monitor-id", MONITOR, "--state-root", dir],
     {
       ...deps,
-      readStdin: (signal) =>
+      readStdin: (maxBytes, signal) =>
         new Promise((_, reject) => {
+          void maxBytes;
           signal?.addEventListener("abort", () => reject(new Error("stdin aborted")), { once: true });
         }),
     },

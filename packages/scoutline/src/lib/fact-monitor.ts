@@ -76,7 +76,18 @@
  * <root>/<monitorId>, whose directory chain is checked — a symlinked or
  * non-regular monitor/ticks directory or state file is refused, reads
  * open with O_NOFOLLOW|O_NONBLOCK on Linux, and all reads and writes
- * are byte-bounded.
+ * are byte-bounded. SCOPE of these guards (r4659866115): they catch
+ * misdirected opens and REFUSE pre-existing redirection at every entry
+ * (root, monitor dir, ticks dir, state and record files — including a
+ * re-check of the ticks directory immediately before the record write);
+ * they do NOT protect the PUBLICATION files (tick records, current.json,
+ * the lock database) against replacement by an arbitrary external actor
+ * after those checks — no in-contract writer replaces or unlinks them
+ * (each atomicReplaceFile renames onto the exact owned path; the lock
+ * module never unlinks its database), and the actual boundary is the
+ * CALLER-supplied owned, local, access-controlled, stable directory
+ * tree, whose owner must guard against external replacement. No safety
+ * against arbitrary external pathname/inode replacement is claimed.
  *
  * Cancellation: ALL sources (the tick option and the engine deps'
  * externalSignal) are merged once with AbortSignal.any; the merged

@@ -12,6 +12,27 @@
  * database only through SQLite. On POSIX a separate fs close on that inode
  * can release the process's advisory locks. Never remove the lock directory
  * or replace its database while monitor processes are running.
+ *
+ * Pathname-replacement trace (r4655167732): after requireLockDbPath and
+ * the DatabaseSync open, NO in-contract writer replaces the inode — this
+ * module never unlinks lock.db, node:sqlite keeps one open handle for the
+ * connection's lifetime, SQLite's rollback journal operates on a sidecar
+ * (lock.db-journal) it unlinks per transaction, and the permanent
+ * directory claim above keeps legacy lockfile binaries off the name
+ * (their unlink(2) on a directory fails).
+ *
+ * ACTUAL BOUNDARY, stated directly: the CALLER supplies an owned, local,
+ * access-controlled, stable directory tree and must itself guard against
+ * external pathname/inode replacement (POSIX advisory locks bind to
+ * (inode, process), not the pathname, so a replaced path is a different,
+ * lock-free inode). Within that tree, no cooperating writer replaces
+ * lock.db. The mode passed to mkdir applies only when THIS code creates
+ * a directory, subject to the process umask; pre-existing directory
+ * modes are neither verified nor enforced — lstat/isDirectory checks
+ * establish type, not access control. The tests and the existing
+ * symlink/regular-file guard catch misdirected opens; they do NOT prove
+ * protection against replacement of an already-held file, and no such
+ * protection is claimed here.
  */
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -109,6 +130,17 @@ export async function withSqliteTickLock<T>(
 ): Promise<T> {
   const label = options.label ?? "Fact monitor tick";
   const timeoutMs = options.timeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS;
+  // Typed refusal BEFORE any mutation (the lock directory is not even
+  // claimed): NaN/±Infinity poison the deadline arithmetic (NaN never
+  // compares true — the BUSY retry would spin forever; Infinity never
+  // times out) and a negative deadline fails accidentally on first BUSY.
+  // 0 stays supported: an uncontended acquire still succeeds, contention
+  // times out immediately.
+  if (typeof timeoutMs !== "number" || Number.isNaN(timeoutMs) || !Number.isFinite(timeoutMs) || timeoutMs < 0) {
+    throw new ValidationError(
+      `${label}: timeoutMs must be a finite non-negative number of milliseconds (got ${String(options.timeoutMs)}).`,
+    );
+  }
   const setT = options.setTimeout ?? setTimeout;
   const signal = options.signal;
   const deadline = performance.now() + timeoutMs;

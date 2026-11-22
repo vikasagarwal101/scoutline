@@ -61,7 +61,10 @@ IS the tick's result); 1 usage/validation; 2 rejected late commit;
  *  reading the moment it is exceeded (the post-read check remains as a
  *  backstop for adapters that ignore it). */
 export interface MonitorFactDeps extends LeanDeps {
-  readonly readStdin: (signal?: AbortSignal, maxBytes?: number) => Promise<string>;
+  /** Invocation-adapter order: (maxBytes, signal) — matches
+   *  CommandInvocationAdapter.readStdin so the production adapter binds
+   *  directly with no reordering wrapper. */
+  readonly readStdin: (maxBytes?: number, signal?: AbortSignal) => Promise<string>;
 }
 
 export function parseMonitorFactArgs(args: readonly string[]): {
@@ -138,7 +141,7 @@ async function readStdinWithCancellation(
   signal: AbortSignal | undefined,
   maxBytes: number,
 ): Promise<string> {
-  if (signal === undefined) return deps.readStdin(signal, maxBytes);
+  if (signal === undefined) return deps.readStdin(maxBytes);
   try {
     return await new Promise<string>((resolve, reject) => {
       const onAbort = (): void => reject(new FactMonitorCancelledError(monitorId));
@@ -149,7 +152,7 @@ async function readStdinWithCancellation(
       signal.addEventListener("abort", onAbort, { once: true });
       let adapter: Promise<string>;
       try {
-        adapter = deps.readStdin(signal, maxBytes);
+        adapter = deps.readStdin(maxBytes, signal);
       } catch (error) {
         signal.removeEventListener("abort", onAbort);
         throw error;

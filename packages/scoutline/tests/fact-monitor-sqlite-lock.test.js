@@ -110,6 +110,25 @@ async function bounded(work, what) {
   }
 }
 
+test("invalid timeoutMs values are refused typed, before any mutation", async (t) => {
+  const dir = await mkTmp(t);
+  for (const bad of [Number.NaN, Infinity, -Infinity, -1]) {
+    await assert.rejects(
+      () => withSqliteTickLock(path.join(dir, "mon"), MONITOR, async () => "ran", { timeoutMs: bad }),
+      (error) =>
+        error instanceof ValidationError &&
+        /finite non-negative/.test(error.message),
+      `timeoutMs ${bad} refused`,
+    );
+  }
+  // Nothing was created: the refusal precedes even the directory claim.
+  await assert.rejects(() => fs.stat(path.join(dir, "mon")));
+
+  // 0 remains supported: an uncontended acquire still runs the section.
+  const ran = await withSqliteTickLock(path.join(dir, "zero"), MONITOR, async () => "ran", { timeoutMs: 0 });
+  assert.equal(ran, "ran");
+});
+
 // ---------------------------------------------------------------------------
 // Exclusion — same process
 // ---------------------------------------------------------------------------

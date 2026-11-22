@@ -564,14 +564,19 @@ export async function resolveConflict(
     return [...fresh, ...previouslyFetched];
   };
 
-  // One acquisition target per originating claim — mirrors are copies of a
-  // known origin and never seeded as independent work.
+  // One acquisition seed per alternative's RAW source URL, deduplicated by
+  // EXACT string only (the engine's queue also dedupes exact repeats).
+  // Canonical grouping happens NOWHERE at acquisition: a different raw
+  // URL that canonicalizes together with another is a distinct fetch that
+  // may serve different bytes, so it is seeded too — canonical-identity
+  // grouping (one origin, representations by digest) lives exclusively in
+  // the proof projection. Mirrors remain unseeded copies: they never were
+  // acquisition targets.
   const leads: { url: string; title: string }[] = [];
-  const seenIdentities = new Set<string>();
+  const seenRawUrls = new Set<string>();
   for (const a of alternatives) {
-    const id = canonicalFetchIdentity(a.source.url);
-    if (seenIdentities.has(id)) continue;
-    seenIdentities.add(id);
+    if (seenRawUrls.has(a.source.url)) continue;
+    seenRawUrls.add(a.source.url);
     leads.push({ url: a.source.url, title: a.source.title ?? a.id });
   }
 

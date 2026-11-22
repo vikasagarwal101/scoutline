@@ -903,6 +903,85 @@ test('a canonical alias is never suppressed or rewritten at acquisition', async 
   assert.equal(resolution.status, 'disputed');
 });
 
+test('declared canonical-alias leads are all seeded as raw URLs (Greptile r4659854546)', async () => {
+  // Three declared alternatives, no search hits: the GPL notice, a
+  // canonical ALIAS of it serving MIT, and an independent GPL record with
+  // different bytes. The alias's raw URL is a distinct fetch that must be
+  // seeded — dropping it (canonical grouping at seeding time) would
+  // silently discard the MIT representation before acquisition. Canonical
+  // grouping belongs to the proof projection only: one origin (notice +
+  // alias) plus the independent record establish the dispute via the
+  // alias(MIT)+B(GPL) pair.
+  const w = world();
+  const input = {
+    schemaVersion: 1,
+    scope: { entity: ENTITY, release: RELEASE },
+    alternatives: [
+      alt('gpl', 'GPL-3.0', URL_GPL, RELEASE),
+      alt('alias-mit', 'MIT', URL_GPL_ALIAS, RELEASE),
+      alt('b', 'GPL-3.0', URL_GPL_B, RELEASE),
+    ],
+  };
+  const { resolution, engineResult } = await resolveConflict(input, w.deps);
+  assert.ok(w.calls.read.includes(URL_GPL_ALIAS), 'the alias raw URL was seeded and read');
+  assert.ok(engineResult.evidence.some(e => e.url === URL_GPL_ALIAS), 'alias representation retained');
+  assert.equal(resolution.dispute.established, true, 'alias(MIT)+independent(GPL) prove the disagreement');
+  assert.deepEqual(resolution.dispute.sides.map(s => s.value).sort(), ['GPL-3.0', 'MIT']);
+  assert.equal(resolution.status, 'disputed');
+});
+
+test('exact duplicate raw seeds are not duplicated', async () => {
+  // Two alternatives declaring the IDENTICAL raw source URL seed one
+  // fetch: the engine's exact-URL queue handling reads it once and both
+  // alternatives stay independently preserved in the projection.
+  const w = world();
+  const input = {
+    schemaVersion: 1,
+    scope: { entity: ENTITY, release: RELEASE },
+    alternatives: [
+      alt('a', 'GPL-3.0', URL_GPL, RELEASE),
+      alt('b', 'GPL-3.0 (same origin)', URL_GPL, RELEASE),
+    ],
+  };
+  const { resolution, engineResult } = await resolveConflict(input, w.deps);
+  assert.equal(w.calls.read.filter(u => u === URL_GPL).length, 1, 'one read of the exact-duplicate seed');
+  assert.equal(engineResult.evidence.filter(e => e.url === URL_GPL).length, 1, 'one retained record');
+  assert.equal(resolution.alternatives.length, 2, 'both alternatives preserved');
+  assert.deepEqual(resolution.alternatives.map(a => a.id), ['a', 'b']);
+});
+
+test('causal witness: a contrary-query alias stalls the dispute only through its own unread ctrv membership', async () => {
+  // Two runs identical in every respect except ONE result: the DISPUTE
+  // field's own contrary query (plan query 5 of 5) surfaces the raw alias
+  // of the already-read notice. Both leads consume the read budget, so
+  // the alias can never be read. With the alias, the contrary round's
+  // unretained membership blocks the dispute row honestly
+  // (counterevidence_not_acquired); without it, the identical world
+  // finalizes the dispute as supported and the projection reports it.
+  const base = {
+    schemaVersion: 1,
+    scope: { entity: ENTITY, release: RELEASE },
+    limits: { maxUniqueReads: 2 },
+    alternatives: [
+      alt('gpl', 'GPL-3.0', URL_GPL, RELEASE),
+      alt('mit', 'MIT', URL_MIT, RELEASE),
+    ],
+  };
+  const withAlias = world({ searchResults: idx => (idx === 5 ? [{ url: URL_GPL_ALIAS, title: 'contrary alias' }] : []) });
+  const control = world({ searchResults: () => [] });
+  const stalled = await resolveConflict(base, withAlias.deps);
+  assert.ok(stalled.engineResult.evidence.some(e => e.url === URL_GPL) && stalled.engineResult.evidence.some(e => e.url === URL_MIT), 'both leads read within budget');
+  assert.ok(!withAlias.calls.read.includes(URL_GPL_ALIAS), 'alias surfaced by the contrary query is never read (no slot)');
+  assert.equal(stalled.engineResult.requirements.dispute.reason, 'counterevidence_not_acquired', 'stall is exactly the contrary round\'s unread membership');
+  assert.equal(stalled.resolution.dispute.established, false);
+  assert.equal(stalled.resolution.status, 'unresolved');
+  assert.ok(stalled.resolution.notes.every(n => !n.includes('alias') || !n.startsWith('search-batch-')), 'no batch-order note for a single-hit batch');
+  const completed = await resolveConflict(base, control.deps);
+  assert.equal(completed.engineResult.requirements.dispute.value, 'supported', 'identical world without the contrary alias finalizes');
+  assert.equal(completed.resolution.dispute.established, true);
+  assert.equal(completed.resolution.status, 'disputed');
+});
+
 test('starvation fix: a fresh-identity hit outranks an alias within the same batch under a tight budget', async () => {
   // Concrete starvation: with ONE read slot left, the batch returns the
   // alias of the already-read notice FIRST and a distinct opposing hit

@@ -13,26 +13,9 @@
  * can release the process's advisory locks. Never remove the lock directory
  * or replace its database while monitor processes are running.
  *
- * Pathname-replacement trace (r4655167732): after requireLockDbPath and
- * the DatabaseSync open, NO in-contract writer replaces the inode — this
- * module never unlinks lock.db, node:sqlite keeps one open handle for the
- * connection's lifetime, SQLite's rollback journal operates on a sidecar
- * (lock.db-journal) it unlinks per transaction, and the permanent
- * directory claim above keeps legacy lockfile binaries off the name
- * (their unlink(2) on a directory fails).
- *
- * ACTUAL BOUNDARY, stated directly: the CALLER supplies an owned, local,
- * access-controlled, stable directory tree and must itself guard against
- * external pathname/inode replacement (POSIX advisory locks bind to
- * (inode, process), not the pathname, so a replaced path is a different,
- * lock-free inode). Within that tree, no cooperating writer replaces
- * lock.db. The mode passed to mkdir applies only when THIS code creates
- * a directory, subject to the process umask; pre-existing directory
- * modes are neither verified nor enforced — lstat/isDirectory checks
- * establish type, not access control. The tests and the existing
- * symlink/regular-file guard catch misdirected opens; they do NOT prove
- * protection against replacement of an already-held file, and no such
- * protection is claimed here.
+ * Every publisher locks the same permanent SQLite database. Use a private
+ * local directory tree whose paths stay stable while monitor processes run.
+ * Renaming or replacing the lock file would split the lock by inode.
  */
 import * as fs from "node:fs/promises";
 import * as path from "node:path";

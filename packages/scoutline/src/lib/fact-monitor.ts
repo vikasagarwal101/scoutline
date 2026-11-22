@@ -72,22 +72,13 @@
  * share one identity; a materially different compiled contract
  * re-baselines without comparing values.
  *
- * Owned-path confinement: every read/written path lives under
- * <root>/<monitorId>, whose directory chain is checked — a symlinked or
- * non-regular monitor/ticks directory or state file is refused, reads
- * open with O_NOFOLLOW|O_NONBLOCK on Linux, and all reads and writes
- * are byte-bounded. SCOPE of these guards (r4659866115): they catch
- * misdirected opens and REFUSE pre-existing redirection at every entry
- * (root, monitor dir, ticks dir, state and record files — including a
- * re-check of the ticks directory immediately before the record write);
- * they do NOT protect the PUBLICATION files (tick records, current.json,
- * the lock database) against replacement by an arbitrary external actor
- * after those checks — no in-contract writer replaces or unlinks them
- * (each atomicReplaceFile renames onto the exact owned path; the lock
- * module never unlinks its database), and the actual boundary is the
- * CALLER-supplied owned, local, access-controlled, stable directory
- * tree, whose owner must guard against external replacement. No safety
- * against arbitrary external pathname/inode replacement is claimed.
+ * Owned-path confinement: require an access-controlled local state tree
+ * with stable paths, and keep it protected against external replacement
+ * while monitoring. Entry checks reject pre-existing redirected paths.
+ * Readers use bounded reads and O_NOFOLLOW|O_NONBLOCK on Linux. With the
+ * lock held, publication atomically replaces the tick record and pointer.
+ * First-publication cleanup can remove only the attempt's verified record.
+ * The lock database stays at its original path.
  *
  * Cancellation: ALL sources (the tick option and the engine deps'
  * externalSignal) are merged once with AbortSignal.any; the merged

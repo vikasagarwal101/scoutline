@@ -843,7 +843,7 @@ test("the REAL invocation adapter reads the definition over stdin (normal path, 
     "  { now: new Date(0), stateRoot: process.env.FM_DIR },",
     ");",
     "process.stdout.write(result.stdout);",
-    "process.exit(result.code);",
+    "process.exitCode = result.code;",
   ].join("\n");
   const child = spawn(process.execPath, ["--input-type=module", "-e", driver], {
     stdio: ["pipe", "pipe", "pipe"],
@@ -851,15 +851,14 @@ test("the REAL invocation adapter reads the definition over stdin (normal path, 
   });
   child.stdin.write(JSON.stringify(definition()));
   child.stdin.end();
-  // Chunked capture + exit-only await: process.exit can truncate piped
-  // writes, so a stdout 'once' can hang even on success.
+  // Wait for the process and both pipes to finish before parsing stdout.
   let stdout = "";
   let stderr = "";
   child.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
   child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
   const killTimer = setTimeout(() => child.kill("SIGKILL"), 8000);
   try {
-    await once(child, "exit");
+    await once(child, "close");
   } finally {
     clearTimeout(killTimer);
   }
@@ -883,7 +882,7 @@ test("the REAL invocation adapter path exits 130 when the signal aborts mid-read
     "  { now: new Date(0), stateRoot: process.env.FM_DIR, signal: controller.signal },",
     ");",
     "process.stdout.write(result.stdout);",
-    "process.exit(result.code);",
+    "process.exitCode = result.code;",
   ].join("\n");
   const child = spawn(process.execPath, ["--input-type=module", "-e", driver], {
     stdio: ["pipe", "pipe", "pipe"],
@@ -891,23 +890,21 @@ test("the REAL invocation adapter path exits 130 when the signal aborts mid-read
   });
   // Leave stdin OPEN and unwritten: the real adapter blocks reading the
   // held pipe, the controller aborts at 25ms, and the command must exit
-  // 130 promptly. Robust capture: accumulate stdout/stderr chunks, await
-  // only the exit, and kill on a hard bound so a regression fails
-  // instead of hanging.
+  // 130 promptly. Wait for both pipes to finish and kill on a hard bound.
   let stdout = "";
   let stderr = "";
   child.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
   child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
   const killTimer = setTimeout(() => child.kill("SIGKILL"), 8000);
   const startedAt = Date.now();
-  let exitSignal = null;
+  let exitCode = null;
   try {
-    [exitSignal] = await once(child, "exit");
+    [exitCode] = await once(child, "close");
   } finally {
     clearTimeout(killTimer);
     child.stdin.destroy();
   }
-  assert.ok(exitSignal !== null, `child exited (stderr: ${stderr.slice(0, 400)})`);
+  assert.ok(exitCode !== null, `child exited (stderr: ${stderr.slice(0, 400)})`);
   assert.equal(child.exitCode, 130, `driver exited 130 (code=${child.exitCode}, stderr: ${stderr.slice(0, 400)})`);
   assert.equal(JSON.parse(stdout.trim().split("\n").at(-1)).cancelled, true);
   assert.ok(Date.now() - startedAt < 5000, "settled promptly");

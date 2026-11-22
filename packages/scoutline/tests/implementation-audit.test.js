@@ -1355,3 +1355,281 @@ describe("implementation audit: preflight validation", () => {
 
 const ValidationErrorLike = (error) =>
   error != null && typeof error === "object" && error.name === "ValidationError";
+
+// ---------------------------------------------------------------------------
+// PR #304 admission fixes — sparse arrays (r4654875641) and capture-once
+// headers/references (r4654875644); single-run architecture unchanged
+// ---------------------------------------------------------------------------
+
+describe("implementation audit: sparse-array rejection (r4654875641)", () => {
+  it("rejects holes in every bounded input array with a ValidationError", () => {
+    const holed = (items) => {
+      const array = [...items];
+      delete array[0];
+      return array;
+    };
+    // Sparse checks on a literal claim: previously sailed past the scans
+    // and detonated as a TypeError in relevantPaths.
+    assert.throws(
+      () =>
+        compileAuditClaimSet({
+          ...standardClaims(),
+          claims: [
+            { ...standardClaims().claims[0], checks: new Array(1) },
+          ],
+        }),
+      (error) => ValidationErrorLike(error) && /dense/.test(error.message),
+    );
+    // Sparse allOf: every() skips holes; for-of then hit undefined.
+    assert.throws(
+      () =>
+        compileAuditClaimSet({
+          ...standardClaims(),
+          claims: [
+            {
+              ...standardClaims().claims[0],
+              checks: [{ path: "src/registry.ts", allOf: holed(["x"]) }],
+            },
+          ],
+        }),
+      (error) => ValidationErrorLike(error) && /dense/.test(error.message),
+    );
+    // Sparse criteria.
+    assert.throws(
+      () =>
+        compileAuditClaimSet({
+          ...standardClaims(),
+          claims: [{ ...standardClaims().claims[0], criteria: holed(["c"]) }],
+        }),
+      (error) => ValidationErrorLike(error) && /dense/.test(error.message),
+    );
+    // Sparse claims array.
+    assert.throws(
+      () => compileAuditClaimSet({ ...standardClaims(), claims: holed([standardClaims().claims[0]]) }),
+      (error) => ValidationErrorLike(error) && /dense/.test(error.message),
+    );
+    // Sparse snapshot files.
+    assert.throws(
+      () => compilePinnedSnapshot({ ...FULLY_WIRED, files: holed(FULLY_WIRED.files) }),
+      (error) => ValidationErrorLike(error) && /dense/.test(error.message),
+    );
+  });
+
+  it("rejects a hole masked by an INHERITED index (own-property density, not `in`)", () => {
+    // A hole whose index exists on the prototype chain: `in` accepts it,
+    // map/every skip it — only Object.hasOwn-based density rejects it.
+    const inheritedHole = ["x"];
+    delete inheritedHole[0];
+    Object.setPrototypeOf(inheritedHole, { 0: "inherited" });
+    assert.ok(0 in inheritedHole, "fixture must genuinely mask the hole via inheritance");
+    assert.throws(
+      () =>
+        compileAuditClaimSet({
+          ...standardClaims(),
+          claims: [
+            {
+              ...standardClaims().claims[0],
+              checks: [{ path: "src/registry.ts", allOf: inheritedHole }],
+            },
+          ],
+        }),
+      (error) => ValidationErrorLike(error) && /dense/.test(error.message),
+    );
+  });
+
+  it("rejects huge sparse arrays on the CHEAP count ceiling, never after a density walk", () => {
+    assert.throws(
+      () => compileAuditClaimSet({ ...standardClaims(), claims: new Array(10_000_000) }),
+      (error) => ValidationErrorLike(error) && /field ceiling/.test(error.message),
+    );
+    assert.throws(
+      () => compilePinnedSnapshot({ ...FULLY_WIRED, files: new Array(10_000_000) }),
+      (error) => ValidationErrorLike(error) && /entry ceiling/.test(error.message),
+    );
+    assert.throws(
+      () =>
+        compileAuditClaimSet({
+          ...standardClaims(),
+          claims: [
+            {
+              ...standardClaims().claims[0],
+              checks: [{ path: "src/registry.ts", allOf: new Array(10_000_000) }],
+            },
+          ],
+        }),
+      (error) => ValidationErrorLike(error) && /per-check ceiling/.test(error.message),
+    );
+  });
+});
+
+describe("implementation audit: capture-once headers and references (r4654875644)", () => {
+  it("validates and returns the SAME captured pin values from drifting getters", () => {
+    let repoReads = 0;
+    let revReads = 0;
+    const driftingSnapshot = {
+      get repository() {
+        repoReads += 1;
+        return repoReads === 1 ? REPO : "other-repo";
+      },
+      get revision() {
+        revReads += 1;
+        return revReads === 1 ? PIN : OTHER_COMMIT;
+      },
+      files: FULLY_WIRED.files,
+    };
+    const compiledSnapshot = compilePinnedSnapshot(driftingSnapshot);
+    assert.equal(compiledSnapshot.repository, REPO);
+    assert.equal(compiledSnapshot.revision, PIN);
+    let claimRevReads = 0;
+    const driftingClaims = {
+      ...standardClaims(),
+      get revision() {
+        claimRevReads += 1;
+        return claimRevReads === 1 ? PIN : OTHER_COMMIT;
+      },
+    };
+    const compiledClaims = compileAuditClaimSet(driftingClaims);
+    assert.equal(compiledClaims.revision, PIN);
+    // A stable mismatch still fails at the seam (captured vs captured).
+    assert.throws(
+      () =>
+        createSnapshotReadDeps(
+          compiledClaims,
+          compilePinnedSnapshot({ ...FULLY_WIRED, revision: OTHER_COMMIT }),
+        ),
+      (error) => ValidationErrorLike(error) && /never be conflated/.test(error.message),
+    );
+    assert.doesNotThrow(() => createSnapshotReadDeps(compiledClaims, compiledSnapshot));
+  });
+
+  it("captures the named collection references once: a swapped second array is never admitted", () => {
+    // A claims getter that hands validation one array and the copy another:
+    // the FIRST captured array is the only one admitted.
+    const goodClaims = standardClaims().claims;
+    const evilClaims = [
+      { ...goodClaims[0], text: "SWAPPED-IN TEXT THAT WAS NEVER VALIDATED." },
+      goodClaims[1],
+      goodClaims[2],
+    ];
+    let claimsReads = 0;
+    const swapping = {
+      ...standardClaims(),
+      get claims() {
+        claimsReads += 1;
+        return claimsReads === 1 ? goodClaims : evilClaims;
+      },
+    };
+    const compiled = compileAuditClaimSet(swapping);
+    assert.equal(compiled.claims[0].text, goodClaims[0].text);
+    // Same rule for the snapshot files array.
+    const goodFiles = FULLY_WIRED.files;
+    const evilFiles = FULLY_WIRED.files.map((f) =>
+      f.path === "src/dispatcher.ts" ? { ...f, content: "export const swapped = true;\n" } : f,
+    );
+    let filesReads = 0;
+    const swappingSnapshot = {
+      ...FULLY_WIRED,
+      get files() {
+        filesReads += 1;
+        return filesReads === 1 ? goodFiles : evilFiles;
+      },
+    };
+    const compiledSnapshot = compilePinnedSnapshot(swappingSnapshot);
+    const dispatcher = compiledSnapshot.files.find((f) => f.path === "src/dispatcher.ts");
+    assert.equal(dispatcher.content, DISPATCHER_WIRED);
+    // And the digest of the admitted copy still binds the GOOD bytes.
+    assert.equal(dispatcher.sha256, sha256(DISPATCHER_WIRED));
+    // Per-claim check fields: a drifting path getter validates and admits
+    // the same captured value.
+    let pathReads = 0;
+    const driftingCheck = {
+      get path() {
+        pathReads += 1;
+        return pathReads === 1 ? "src/registry.ts" : "src/../outside.ts";
+      },
+      allOf: ["x"],
+    };
+    const compiledDrifting = compileAuditClaimSet({
+      ...standardClaims(),
+      claims: [{ ...standardClaims().claims[0], checks: [driftingCheck] }],
+    });
+    assert.equal(compiledDrifting.claims[0].checks[0].path, "src/registry.ts");
+  });
+});
+
+describe("implementation audit: own-index item capture (review follow-up)", () => {
+  it("allOf items are read once: drifting own-index accessors admit the captured literals only", () => {
+    // Each index read returns a DIFFERENT literal: validation sees "good",
+    // the copy spread must admit exactly the captured values — never a
+    // later drift, never a mixture.
+    const drifting = ["placeholder0", "placeholder1"];
+    let reads = 0;
+    Object.defineProperty(drifting, 0, {
+      get() {
+        reads += 1;
+        return reads <= 1 ? "first-good" : "LATE-DRIFT";
+      },
+    });
+    Object.defineProperty(drifting, 1, {
+      get() {
+        return "second-good";
+      },
+    });
+    assert.ok(Array.isArray(drifting) && Object.hasOwn(drifting, 0));
+    const compiled = compileAuditClaimSet({
+      ...standardClaims(),
+      claims: [
+        {
+          ...standardClaims().claims[0],
+          checks: [{ path: "src/registry.ts", allOf: drifting }],
+        },
+      ],
+    });
+    const admitted = compiled.claims[0].checks[0].allOf;
+    assert.deepEqual([...admitted], ["first-good", "second-good"]);
+    // Repeat reads of the compiled copy are stable regardless of drift.
+    assert.deepEqual([...admitted], [...admitted]);
+  });
+
+  it("criteria items are read once: the every-scan and the copy see the same captured values", () => {
+    const drifting = ["placeholder0", "placeholder1"];
+    let reads = 0;
+    Object.defineProperty(drifting, 0, {
+      get() {
+        reads += 1;
+        return reads <= 1 ? "criterion-one" : "LATE-DRIFT";
+      },
+    });
+    Object.defineProperty(drifting, 1, {
+      get() {
+        return "criterion-two";
+      },
+    });
+    assert.ok(Array.isArray(drifting) && Object.hasOwn(drifting, 0));
+    const compiled = compileAuditClaimSet({
+      ...standardClaims(),
+      claims: [{ ...standardClaims().claims[0], criteria: drifting }],
+    });
+    assert.deepEqual([...compiled.claims[0].criteria], ["criterion-one", "criterion-two"]);
+    assert.deepEqual([...compiled.claims[0].criteria], [...compiled.claims[0].criteria]);
+  });
+});
+
+
+describe("implementation audit: own-index capture under mutation", () => {
+  it("refuses a later slot removed while earlier literals are captured", () => {
+    const literals = ["first", "second"];
+    Object.defineProperty(literals, "0", {
+      get() { delete literals[1]; return "first"; },
+    });
+    const input = standardClaims();
+    const claim = input.claims[0];
+    assert.throws(
+      () => compileAuditClaimSet({
+        ...input,
+        claims: [{ ...claim, checks: [{ ...claim.checks[0], allOf: literals }] }],
+      }),
+      (error) => ValidationErrorLike(error) && /dense array/.test(error.message),
+    );
+  });
+});

@@ -125,6 +125,18 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
 }
 
+/** Copy the already bounded number of own items exactly once. */
+function copyDenseItems(array: readonly unknown[], count: number, label: string): unknown[] {
+  const copy: unknown[] = [];
+  for (let i = 0; i < count; i += 1) {
+    if (!Object.hasOwn(array, i)) {
+      throw new ValidationError(`${label} must be a dense array (no holes).`);
+    }
+    copy.push(array[i]);
+  }
+  return copy;
+}
+
 // ---------------------------------------------------------------------------
 // ONE address grammar (review fix3): a single component vocabulary shared
 // by ADMISSION (compile validators), BUILD (snapshotFileUrl) and PARSE
@@ -201,7 +213,8 @@ function validClaimId(value: unknown): value is string {
 }
 
 function decodeChecks(value: unknown, claimId: string, requireNonEmpty: boolean): AuditSourceCheck[] {
-  if (value === undefined || (Array.isArray(value) && value.length === 0)) {
+  const checkCount = Array.isArray(value) ? value.length : undefined;
+  if (value === undefined || checkCount === 0) {
     if (requireNonEmpty) {
       throw new ValidationError(
         `claims.${claimId}.checks must be a non-empty array of { path, allOf } literal checks.`,
@@ -209,48 +222,57 @@ function decodeChecks(value: unknown, claimId: string, requireNonEmpty: boolean)
     }
     return [];
   }
-  if (!Array.isArray(value)) {
+  if (!Array.isArray(value) || checkCount === undefined) {
     throw new ValidationError(
       `claims.${claimId}.checks must be an array of { path, allOf } literal checks.`,
     );
   }
-  if (value.length > AUDIT_CEILINGS.maxChecksPerClaim) {
+  if (!Number.isSafeInteger(checkCount) || checkCount < 1 || checkCount > AUDIT_CEILINGS.maxChecksPerClaim) {
     throw new ValidationError(
       `claims.${claimId}.checks exceeds the per-claim ceiling of ${AUDIT_CEILINGS.maxChecksPerClaim} declared files.`,
     );
   }
+  const items = copyDenseItems(value, checkCount, `claims.${claimId}.checks`);
   const seenPaths = new Set<string>();
-  return value.map((check, index): AuditSourceCheck => {
-    if (!isPlainObject(check) || !validRepoPath(check.path)) {
+  return items.map((check, index): AuditSourceCheck => {
+    if (!isPlainObject(check)) {
+      throw new ValidationError(`claims.${claimId}.checks[${index}] must be an object.`);
+    }
+    // CAPTURE ONCE before checked copy: a getter could drift between the
+    // validation read and the copy read — the validated value is the value
+    // that is admitted, byte for byte.
+    const path = check.path;
+    const allOf = check.allOf;
+    if (!validRepoPath(path)) {
       throw new ValidationError(
         `claims.${claimId}.checks[${index}].path must be a repository-relative path without traversal.`,
       );
     }
-    if (seenPaths.has(check.path)) {
+    if (seenPaths.has(path)) {
       throw new ValidationError(
-        `claims.${claimId}.checks declares duplicate path "${check.path}"; ambiguous basis is refused.`,
+        `claims.${claimId}.checks declares duplicate path "${path}"; ambiguous basis is refused.`,
       );
     }
-    seenPaths.add(check.path);
-    // COUNT caps BEFORE any per-item scan (review fix3: a malformed item
-    // past the cap must never be touched by a validation scan).
-    if (!Array.isArray(check.allOf) || check.allOf.length === 0) {
+    seenPaths.add(path);
+    const literalCount = Array.isArray(allOf) ? allOf.length : undefined;
+    if (!Array.isArray(allOf) || literalCount === undefined || literalCount === 0) {
       throw new ValidationError(
         `claims.${claimId}.checks[${index}].allOf must be a non-empty array of non-empty string literals.`,
       );
     }
-    if (check.allOf.length > AUDIT_CEILINGS.maxLiteralsPerCheck) {
+    if (!Number.isSafeInteger(literalCount) || literalCount < 1 || literalCount > AUDIT_CEILINGS.maxLiteralsPerCheck) {
       throw new ValidationError(
         `claims.${claimId}.checks[${index}].allOf exceeds the per-check ceiling of ${AUDIT_CEILINGS.maxLiteralsPerCheck} clauses.`,
       );
     }
-    if (!check.allOf.every((literal) => isNonEmptyString(literal))) {
+    const literals = copyDenseItems(allOf, literalCount, `claims.${claimId}.checks[${index}].allOf`);
+    if (!literals.every((literal) => isNonEmptyString(literal))) {
       throw new ValidationError(
         `claims.${claimId}.checks[${index}].allOf must be a non-empty array of non-empty string literals.`,
       );
     }
     const seenLiterals = new Set<string>();
-    for (const literal of check.allOf) {
+    for (const literal of literals) {
       if (seenLiterals.has(literal)) {
         throw new ValidationError(
           `claims.${claimId}.checks[${index}].allOf declares duplicate clause ${JSON.stringify(literal)}.`,
@@ -263,7 +285,7 @@ function decodeChecks(value: unknown, claimId: string, requireNonEmpty: boolean)
         );
       }
     }
-    return { path: check.path, allOf: [...check.allOf] };
+    return { path, allOf: Object.freeze([...literals]) };
   });
 }
 
@@ -279,87 +301,99 @@ export function compileAuditClaimSet(input: unknown): CompiledAuditClaimSet {
       `schemaVersion must be the number 1 (got ${describeValue(input.schemaVersion)}).`,
     );
   }
-  if (!validRepository(input.repository)) {
+  // CAPTURE ONCE (PR #304 r4654875644): getter/Proxy inputs could return
+  // different values per read, validating one pin while returning another.
+  // Header fields and the named claims array are captured exactly once;
+  // the captured values are validated AND returned/copied.
+  const repository = input.repository;
+  const revision = input.revision;
+  const claimsInput = input.claims;
+  if (!validRepository(repository)) {
     throw new ValidationError(
       "repository must match /^[A-Za-z0-9][A-Za-z0-9._-]*$/ (address-scheme safe).",
     );
   }
-  if (!validRevision(input.revision)) {
+  if (!validRevision(revision)) {
     throw new ValidationError(
       "revision must be a full canonical commit shape: 40 or 64 lowercase hex characters.",
     );
   }
-  if (!Array.isArray(input.claims) || input.claims.length === 0) {
+  if (!Array.isArray(claimsInput)) {
     throw new ValidationError("claims must be a non-empty array.");
   }
-  // Field-count ceiling BEFORE any snapshot work: one claim maps to one
-  // engine requirement, and the engine's own field ceiling is hard.
-  if (input.claims.length > AUDIT_CEILINGS.maxClaims) {
+  const claimCount = claimsInput.length;
+  if (claimCount === 0) throw new ValidationError("claims must be a non-empty array.");
+  if (!Number.isSafeInteger(claimCount) || claimCount < 1 || claimCount > AUDIT_CEILINGS.maxClaims) {
     throw new ValidationError(
-      `claims exceeds the engine field ceiling of ${AUDIT_CEILINGS.maxClaims} (got ${input.claims.length}).`,
+      `claims exceeds the engine field ceiling of ${AUDIT_CEILINGS.maxClaims} (got ${claimCount}).`,
     );
   }
+  const items = copyDenseItems(claimsInput, claimCount, "claims");
   const seen = new Set<string>();
-  const claims = input.claims.map((claim, index): AuditClaim => {
+  const claims = items.map((claim, index): AuditClaim => {
     if (!isPlainObject(claim)) {
       throw new ValidationError(`claims[${index}] must be an object.`);
     }
-    if (!validClaimId(claim.id) || RESERVED_IDS.has(claim.id)) {
+    // CAPTURE ONCE before checked copy: every named field of the claim is
+    // read a single time; the captured values are validated AND admitted.
+    const id = claim.id;
+    const text = claim.text;
+    const proofClass = claim.proofClass;
+    const criteriaInput = claim.criteria;
+    const checksInput = claim.checks;
+    if (!validClaimId(id) || RESERVED_IDS.has(id)) {
       throw new ValidationError(
         `claims[${index}].id must match ${CLAIM_ID_GRAMMAR.source} and not be a reserved key.`,
       );
     }
-    if (seen.has(claim.id)) {
-      throw new ValidationError(`claims[${index}].id "${claim.id}" is duplicated.`);
+    if (seen.has(id)) {
+      throw new ValidationError(`claims[${index}].id "${id}" is duplicated.`);
     }
-    seen.add(claim.id);
-    if (!isNonEmptyString(claim.text)) {
-      throw new ValidationError(`claims.${claim.id}.text must be a non-empty string.`);
+    seen.add(id);
+    if (!isNonEmptyString(text)) {
+      throw new ValidationError(`claims.${id}.text must be a non-empty string.`);
     }
     // Code-unit cap BEFORE any downstream use of the text (it flows into
     // the engine question, the acquisition log and the report projection).
-    if (claim.text.length > AUDIT_CEILINGS.maxClaimTextChars || !wellFormedUtf16(claim.text)) {
+    if (text.length > AUDIT_CEILINGS.maxClaimTextChars || !wellFormedUtf16(text)) {
       throw new ValidationError(
-        `claims.${claim.id}.text exceeds ${AUDIT_CEILINGS.maxClaimTextChars} code units or is not well-formed UTF-16.`,
+        `claims.${id}.text exceeds ${AUDIT_CEILINGS.maxClaimTextChars} code units or is not well-formed UTF-16.`,
       );
     }
-    if (claim.proofClass !== "literal" && claim.proofClass !== "reachability" && claim.proofClass !== "runtime") {
+    if (proofClass !== "literal" && proofClass !== "reachability" && proofClass !== "runtime") {
       throw new ValidationError(
-        `claims.${claim.id}.proofClass must be "literal", "reachability" or "runtime" (got ${describeValue(claim.proofClass)}).`,
+        `claims.${id}.proofClass must be "literal", "reachability" or "runtime" (got ${describeValue(proofClass)}).`,
       );
     }
-    // COUNT cap before the per-item scan (review fix3).
-    if (
-      claim.criteria !== undefined &&
-      (!Array.isArray(claim.criteria) || claim.criteria.length > AUDIT_CEILINGS.maxCriteriaPerClaim)
-    ) {
-      throw new ValidationError(
-        `claims.${claim.id}.criteria must be an array of at most ${AUDIT_CEILINGS.maxCriteriaPerClaim} strings.`,
-      );
+    const criteria: string[] = [];
+    if (criteriaInput !== undefined) {
+      const count = Array.isArray(criteriaInput) ? criteriaInput.length : undefined;
+      if (!Array.isArray(criteriaInput) || count === undefined || !Number.isSafeInteger(count) ||
+          count < 0 || count > AUDIT_CEILINGS.maxCriteriaPerClaim) {
+        throw new ValidationError(
+          `claims.${id}.criteria must be an array of at most ${AUDIT_CEILINGS.maxCriteriaPerClaim} strings.`,
+        );
+      }
+      for (const criterion of copyDenseItems(criteriaInput, count, `claims.${id}.criteria`)) {
+        if (!isNonEmptyString(criterion)) {
+          throw new ValidationError(`claims.${id}.criteria must be strings.`);
+        }
+        if (criterion.length > AUDIT_CEILINGS.maxCriterionChars || !wellFormedUtf16(criterion)) {
+          throw new ValidationError(
+            `claims.${id}.criteria entry exceeds ${AUDIT_CEILINGS.maxCriterionChars} code units or is not well-formed UTF-16.`,
+          );
+        }
+        criteria.push(criterion);
+      }
     }
-    const criteria =
-      claim.criteria === undefined
-        ? []
-        : Array.isArray(claim.criteria) && claim.criteria.every(isNonEmptyString)
-          ? claim.criteria.map((criterion) => {
-              if (criterion.length > AUDIT_CEILINGS.maxCriterionChars || !wellFormedUtf16(criterion)) {
-                throw new ValidationError(
-                  `claims.${claim.id}.criteria entry exceeds ${AUDIT_CEILINGS.maxCriterionChars} code units or is not well-formed UTF-16.`,
-                );
-              }
-              return criterion;
-            })
-          : (() => {
-              throw new ValidationError(`claims.${claim.id}.criteria must be strings.`);
-            })();
-    const checks = decodeChecks(claim.checks, claim.id, claim.proofClass === "literal");
+    const checks = decodeChecks(checksInput, id, proofClass === "literal");
     // OWNED validated state (fix4): the compiled claim set is deep-frozen
     // so no caller — and no mid-run mutation of a caller-held reference —
     // can alter proof-class policy, checks or basis after admission.
     return Object.freeze({
-      id: claim.id,
-      text: claim.text,
-      proofClass: claim.proofClass,
+      id,
+      text,
+      proofClass,
       checks: Object.freeze(
         checks.map((check) =>
           Object.freeze({ path: check.path, allOf: Object.freeze([...check.allOf]) }),
@@ -370,8 +404,8 @@ export function compileAuditClaimSet(input: unknown): CompiledAuditClaimSet {
   });
   return Object.freeze({
     schemaVersion: 1 as const,
-    repository: input.repository,
-    revision: input.revision,
+    repository,
+    revision,
     claims: Object.freeze(claims),
   });
 }
@@ -406,57 +440,66 @@ export function compilePinnedSnapshot(input: unknown): PinnedSnapshot {
   if (!isPlainObject(input)) {
     throw new ValidationError("Pinned snapshot must be a JSON object.");
   }
-  if (!validRepository(input.repository)) {
+  // CAPTURE ONCE (PR #304 r4654875644): the validated pin and file list are
+  // the ones returned — getters cannot validate one revision and hand back
+  // another, or swap the files array between check and copy.
+  const repository = input.repository;
+  const revision = input.revision;
+  const filesInput = input.files;
+  if (!validRepository(repository)) {
     throw new ValidationError(
       "Snapshot repository must match /^[A-Za-z0-9][A-Za-z0-9._-]*$/ (address-scheme safe).",
     );
   }
-  if (!validRevision(input.revision)) {
+  if (!validRevision(revision)) {
     throw new ValidationError(
       "Snapshot revision must be a full canonical commit shape: 40 or 64 lowercase hex characters.",
     );
   }
-  if (!Array.isArray(input.files) || input.files.length === 0) {
+  if (!Array.isArray(filesInput)) {
     throw new ValidationError("Snapshot files must be a non-empty array.");
   }
-  // Entry ceiling BEFORE the walk: a snapshot is bounded metadata, and no
-  // per-file work (copy, byte-count or hash) may run on an oversized one.
-  if (input.files.length > AUDIT_CEILINGS.maxSnapshotEntries) {
+  const fileCount = filesInput.length;
+  if (fileCount === 0) throw new ValidationError("Snapshot files must be a non-empty array.");
+  if (!Number.isSafeInteger(fileCount) || fileCount < 1 || fileCount > AUDIT_CEILINGS.maxSnapshotEntries) {
     throw new ValidationError(
       `Snapshot exceeds the entry ceiling of ${AUDIT_CEILINGS.maxSnapshotEntries} files; refusing before any walk, copy or hash.`,
     );
   }
+  const items = copyDenseItems(filesInput, fileCount, "Snapshot files");
   const seenPaths = new Set<string>();
-  const files = input.files.map((file, index): SnapshotFile => {
-    const digestOk =
-      isPlainObject(file) &&
-      typeof file.sha256 === "string" &&
-      /^[0-9a-f]{64}$/.test(file.sha256);
+  const files = items.map((file, index): SnapshotFile => {
+    // CAPTURE ONCE before checked copy, same rule as the header.
+    const path = isPlainObject(file) ? file.path : undefined;
+    const fileRevision = isPlainObject(file) ? file.revision : undefined;
+    const content = isPlainObject(file) ? file.content : undefined;
+    const digest = isPlainObject(file) ? file.sha256 : undefined;
+    const digestOk = typeof digest === "string" && /^[0-9a-f]{64}$/.test(digest);
     if (
       !isPlainObject(file) ||
-      !validRepoPath(file.path) ||
-      !validRevision(file.revision) ||
-      typeof file.content !== "string" ||
+      !validRepoPath(path) ||
+      !validRevision(fileRevision) ||
+      typeof content !== "string" ||
       !digestOk
     ) {
       throw new ValidationError(
         `files[${index}] must carry path, canonical hex revision (40/64 lowercase), content and a 64-hex sha256.`,
       );
     }
-    if (seenPaths.has(file.path)) {
+    if (seenPaths.has(path)) {
       throw new ValidationError(
-        `files[${index}] duplicates path "${file.path}"; ambiguous provenance is refused.`,
+        `files[${index}] duplicates path "${path}"; ambiguous provenance is refused.`,
       );
     }
-    seenPaths.add(file.path);
+    seenPaths.add(path);
     return {
-      path: file.path,
-      revision: file.revision,
-      content: file.content,
-      sha256: file.sha256 as string,
+      path,
+      revision: fileRevision,
+      content,
+      sha256: digest as string,
     };
   });
-  return { repository: input.repository, revision: input.revision, files };
+  return { repository, revision, files };
 }
 
 /** Canonical trusted-snapshot URL: the revision is part of the address, so

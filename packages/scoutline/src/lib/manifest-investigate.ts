@@ -209,18 +209,25 @@ export interface ManifestInvestigationOutcome {
 }
 
 /**
- * Typed RUN-LEVEL cancelled indication (Qodo r4659857463): returned when
- * the external signal aborted the run IN FLIGHT and the engine settled
- * unfinished fields with its own "cancelled" reason. Every field of the
- * normal outcome is still present — the EARNED PARTIAL EVIDENCE
- * (retained sources, extraction/judgment audit rows, any fields already
- * satisfied) is preserved, never dropped — so a consumer settling exit
- * 130 can still project what was earned. `stopReason` carries the
- * engine's own vocabulary; the pre-dispatch windows keep their typed
- * throws (ManifestRunCancelledError). No success:false claim is made
- * when the signal wins — the marker, not an error envelope, is the
- * settlement signal. The typed USER_CANCELLED taxonomy itself stays in
- * shared integration.
+ * Typed RUN-LEVEL cancelled indication (Qodo r4659857463) under the
+ * STANDALONE ADAPTER SETTLEMENT CONTRACT: returned when the OWNED
+ * captured signal aborts before this callable's continuation finishes
+ * settling an INCOMPLETE result. This is deliberately NOT an assertion
+ * that engine work was stopped — the tiny resource-teardown microtask
+ * window at the end of the engine invocation falls inside callable
+ * settlement and is disclosed here: an abort landing there still marks
+ * the outcome cancelled. Row reasons are engine-owned (withholding or
+ * judge-unavailable reasons appear for interrupted runs) and are never
+ * consulted for this marker. Every field of the normal outcome is still
+ * present — the EARNED PARTIAL EVIDENCE (retained sources,
+ * extraction/judgment audit rows, any fields already satisfied) is
+ * preserved, never dropped — so a consumer settling exit 130 can still
+ * project what was earned. `stopReason` carries the settlement
+ * vocabulary; the pre-dispatch windows keep their typed throws
+ * (ManifestRunCancelledError). No success:false claim is made when the
+ * signal wins — the marker, not an error envelope, is the settlement
+ * signal. The typed USER_CANCELLED taxonomy itself stays in shared
+ * integration (no shared engine/API move here).
  */
 export interface ManifestRunCancelledOutcome {
   readonly cancelled: true;
@@ -470,17 +477,40 @@ export async function investigateReleaseManifest(
   if (signal?.aborted) {
     throw manifestRunCancelled("Manifest run aborted after admission.");
   }
-  const result = (await runLeanInvestigation(manifestContract(), deps)) as LeanResult;
-  // Run-level settlement (Qodo r4659857463): the signal won IN FLIGHT
-  // iff the OWNED captured signal is aborted after the run AND the
-  // engine actually settled at least one field with its own "cancelled"
-  // reason — the engine-row guard also prevents a late or foreign
-  // signal from relabeling a run that completed its fields. Derived
-  // here once so consumers never have to scan field rows; no fresh scan
-  // of the admitted body happens in this branch.
-  const cancelledInFlight =
-    signal?.aborted === true &&
-    Object.values(result.requirements).some((row) => row.reason === "cancelled");
+  // Settlement observer (standalone adapter contract): no authoritative
+  // run-stop field exists on LeanResult, so the OWNED captured signal is
+  // observed directly — the listener is attached immediately before the
+  // engine dispatch and removed when the awaiting continuation resumes,
+  // so the observed window is exactly the callable's settlement of the
+  // result (engine work AND its trailing resource-teardown microtasks).
+  // An abort before the window is handled by the typed
+  // pre-admission/post-admission throws; an abort after the window
+  // cannot relabel anything (the outcome is already computed).
+  let interruptedDuringRun = signal?.aborted === true;
+  const onAbort = () => {
+    interruptedDuringRun = true;
+  };
+  signal?.addEventListener("abort", onAbort, { once: true });
+  let result: LeanResult;
+  try {
+    result = (await runLeanInvestigation(manifestContract(), deps)) as LeanResult;
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
+  }
+  // Settlement contract (standalone adapter): mark cancelled iff the
+  // owned captured signal aborted before this continuation finished
+  // settling an INCOMPLETE result. NOT an assertion that engine work
+  // stopped — the teardown microtask window at the end of the engine
+  // invocation is inside callable settlement and is disclosed. Row
+  // reasons are engine-owned and deliberately not consulted (the
+  // engine's interrupt finalization skips standing-accept fields, which
+  // then settle with withholding or judge-unavailable reasons). A fully
+  // satisfied result is never relabeled; an abort after settlement
+  // cannot relabel (the observer's lifetime ended with the invocation).
+  const incompleteSettlement = Object.values(result.requirements).some(
+    (row) => row.status !== "satisfied",
+  );
+  const cancelledInFlight = interruptedDuringRun && incompleteSettlement;
   if (cancelledInFlight) {
     return {
       cancelled: true,

@@ -692,6 +692,176 @@ test("in-flight abort witness: a mid-run abort reaches the live dispatch and sto
   );
 });
 
+test("second-clean-judge control: both fields judged clean, abort in the second dispatch still cancels", async () => {
+  // Greptile r4659930554 edge: standing accepts must not launder an
+  // interrupted run into a normal one when their rows settle with a
+  // withholding reason instead of the engine's "cancelled". The marker
+  // follows the invocation-window interruption, not any row reason.
+  const controller = new AbortController();
+  const dispatches = [];
+  const judge = async (input) => {
+    dispatches.push(input.candidates[0]?.fieldId);
+    if (dispatches.length === 2) controller.abort();
+    const answers = {};
+    input.candidates.forEach((c, i) => {
+      answers[`q${i}s`] = { type: "noul", noul: 0.97 };
+      answers[`q${i}c`] = { type: "noul", noul: 0.01 };
+    });
+    return {
+      model: "offline-fixture-judge",
+      answers,
+      usage: { inputTokens: 10, outputTokens: 5 },
+      requestSha256: sha256(JSON.stringify(input)),
+      elapsedMs: 1,
+    };
+  };
+  const outcome = await mi.investigateReleaseManifest(
+    FLOW_INPUT(EXACT, { judge }, { externalSignal: controller.signal }),
+  );
+  assert.equal(dispatches.length, 2, "both fields dispatched clean before/into the abort");
+  assert.equal(controller.signal.aborted, true);
+  assert.equal(outcome.cancelled, true, "interrupted run is marked regardless of row reasons");
+  assert.equal(outcome.stopReason, "cancelled");
+  // Earned partial evidence preserved: both judgments remain in the audit.
+  for (const id of ["version", "license"]) {
+    assert.ok(
+      outcome.result.requirements[id].attemptedRecords.some((r) => r.metadata?.kind === "candidate-judgment"),
+      `${id} judgment audit retained`,
+    );
+  }
+  assert.deepEqual(outcome.result.data, {});
+});
+
+test("completed/late controls: settled runs are never relabeled by a post-run abort", async () => {
+  // Completed: no abort during the invocation — ordinary outcome.
+  const judge = offlineJudge();
+  const completed = await mi.investigateReleaseManifest(FLOW_INPUT(EXACT, judge));
+  assert.equal(completed.cancelled, false);
+  // Late: aborting the signal AFTER the outcome resolved cannot relabel
+  // the already-computed settlement (the observer's lifetime ended with
+  // the engine invocation).
+  const controller = new AbortController();
+  const clean = offlineJudge();
+  const input = FLOW_INPUT(EXACT, clean, { externalSignal: controller.signal });
+  const outcome = await mi.investigateReleaseManifest(input);
+  assert.equal(outcome.cancelled, false, "no in-window abort — not cancelled");
+  controller.abort();
+  assert.equal(outcome.cancelled, false, "a post-run abort never relabels a settled outcome");
+  // And the now-aborted signal is handled by the typed pre-admission
+  // guard on the next call, not by relabeling this one.
+  await assert.rejects(
+    () => mi.investigateReleaseManifest(FLOW_INPUT(EXACT, clean, { externalSignal: controller.signal })),
+    (error) => error.name === "ManifestRunCancelledError" && error.exitCode === 130,
+  );
+});
+
+test("abort-rejection control: a judge rejecting on its dispatch signal still reports the owned abort", async () => {
+  // Qodo r4659936811: a cancellation-honoring judge REJECTS when its own
+  // dispatch signal aborts; the engine then settles the row as
+  // judge_unavailable — a row reason that is NOT "cancelled". The owned
+  // in-window interruption must still be reported at run level.
+  const controller = new AbortController();
+  const entered = [];
+  const judge = (input, options) => {
+    entered.push(input.candidates[0]?.fieldId); // judge-start barrier
+    const signal = options?.signal;
+    const rejectNow = () =>
+      Promise.reject(Object.assign(new Error("judge aborted"), { code: "ABORTED" }));
+    if (signal?.aborted) return rejectNow();
+    return new Promise((_, reject) => {
+      // Arm the abort only AFTER entry: guarantees the rejection is a
+      // real entered rejection, not a pre-dispatch skip.
+      queueMicrotask(() => controller.abort());
+      signal?.addEventListener(
+        "abort",
+        () => reject(Object.assign(new Error("judge aborted"), { code: "ABORTED" })),
+        { once: true },
+      );
+    });
+  };
+  const outcome = await mi.investigateReleaseManifest(
+    FLOW_INPUT(EXACT, { judge }, { externalSignal: controller.signal }),
+  );
+  assert.equal(controller.signal.aborted, true);
+  // Exactly ONE dispatch actually ENTERED and rejected on the abort.
+  assert.equal(entered.length, 1, "one actual entered rejection (judge-start barrier)");
+  assert.ok(
+    outcome.result.requirements[entered[0]].attemptedRecords.some(
+      (r) => r.metadata?.kind === "candidate-judgment",
+    ),
+    "the entered rejection left its audit row",
+  );
+  assert.equal(outcome.cancelled, true, "owned in-flight abort reported despite the rejection");
+  assert.equal(outcome.stopReason, "cancelled");
+  // Row reasons are engine-owned and vary by interleave (judge_unavailable
+  // per the finding's trace, or the interrupt reason here) — the marker
+  // is deliberately independent of them. Assert only what the contract
+  // promises: unresolved rows, nothing accepted.
+  for (const id of ["version", "license"]) {
+    assert.equal(outcome.result.requirements[id].status, "unresolved");
+  }
+  assert.deepEqual(outcome.result.data, {});
+});
+
+test("teardown microtask control: the disclosed settlement window catches a post-work abort", async () => {
+  // Contract disclosure: the marker asserts the owned signal aborted
+  // BEFORE the callable's continuation finished settling an incomplete
+  // result. The engine aborts its dispatch signal during teardown. Queue
+  // the owning abort from that event, after the engine prepared its result.
+  const controller = new AbortController();
+  const dispatches = [];
+  let teardownSeen = false;
+  const judge = async (input, options) => {
+    dispatches.push(input.candidates[0]?.fieldId);
+    if (dispatches.length === 2) {
+      options.signal.addEventListener("abort", () => {
+        if (!controller.signal.aborted) {
+          teardownSeen = true;
+          queueMicrotask(() => controller.abort());
+        }
+      }, { once: true });
+    }
+    const answers = {};
+    input.candidates.forEach((c, i) => {
+      answers[`q${i}s`] = { type: "noul", noul: 0.97 };
+      answers[`q${i}c`] = { type: "noul", noul: 0.01 };
+    });
+    return {
+      model: "offline-fixture-judge",
+      answers,
+      usage: { inputTokens: 10, outputTokens: 5 },
+      requestSha256: sha256(JSON.stringify(input)),
+      elapsedMs: 1,
+    };
+  };
+  const outcome = await mi.investigateReleaseManifest(
+    FLOW_INPUT(EXACT, { judge }, { externalSignal: controller.signal }),
+  );
+  assert.equal(dispatches.length, 2);
+  assert.equal(teardownSeen, true, "engine teardown preceded the owning abort");
+  assert.ok(
+    outcome.result.requirements.version.attemptedRecords.some((r) => r.metadata?.kind === "candidate-judgment") &&
+      outcome.result.requirements.license.attemptedRecords.some((r) => r.metadata?.kind === "candidate-judgment"),
+    "both completed judgments are in the audit",
+  );
+  assert.equal(controller.signal.aborted, true);
+  assert.equal(outcome.cancelled, true, "abort inside the disclosed settlement window marks cancelled");
+  assert.equal(outcome.stopReason, "cancelled");
+  // And the outcome is NOT a claim that work stopped: everything earned
+  // is still here, unpublished as always in the closed set.
+  assert.deepEqual(outcome.result.data, {});
+});
+
+test("ordinary judge rejection without abort stays non-cancelled", async () => {
+  const judge = async () => {
+    throw Object.assign(new Error("judge protocol failure"), { code: "PROTOCOL" });
+  };
+  const outcome = await mi.investigateReleaseManifest(FLOW_INPUT(EXACT, { judge }));
+  assert.equal(outcome.cancelled, false, "no signal, no interruption — never cancelled");
+  assert.deepEqual(outcome.result.data, {});
+  assert.equal(outcome.result.requirements.version.status, "unresolved");
+});
+
 test("normal runs keep the ordinary shape: cancelled === false, no stopReason field", async () => {
   const judge = offlineJudge();
   const outcome = await mi.investigateReleaseManifest(FLOW_INPUT(EXACT, judge));

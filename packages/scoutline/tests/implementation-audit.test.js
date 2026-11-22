@@ -27,6 +27,7 @@ import {
   createSnapshotReadDeps,
   snapshotFileUrl,
   SnapshotRefusalError,
+  AUDIT_CEILINGS,
 } from "../dist/lib/implementation-audit.js";
 
 // ---------------------------------------------------------------------------
@@ -1630,6 +1631,111 @@ describe("implementation audit: own-index capture under mutation", () => {
         claims: [{ ...claim, checks: [{ ...claim.checks[0], allOf: literals }] }],
       }),
       (error) => ValidationErrorLike(error) && /dense array/.test(error.message),
+    );
+  });
+});
+
+describe("implementation audit: literal guard ordering (Greptile r4659860497)", () => {
+  it("is CAUSAL: the oversized sentinel is never hashed into the dedup Set (instrumented)", () => {
+    // Instrument Set.has/add to count probes of exactly the oversized
+    // sentinel (restored in finally; synchronous compile only). The guard
+    // must reject the clause BEFORE any dedup lookup or insertion of it:
+    // zero sentinel lookups/insertions. Under the pre-fix order the very
+    // first occurrence is probed and inserted before the length check —
+    // this fails without relying on timing or duplicate error text.
+    const sentinel = "s".repeat(AUDIT_CEILINGS.maxLiteralChars + 1);
+    assert.ok(sentinel.length === 257);
+    const originalHas = Set.prototype.has;
+    const originalAdd = Set.prototype.add;
+    let sentinelHas = 0;
+    let sentinelAdd = 0;
+    Set.prototype.has = function (value) {
+      if (value === sentinel) sentinelHas += 1;
+      return originalHas.call(this, value);
+    };
+    Set.prototype.add = function (value) {
+      if (value === sentinel) sentinelAdd += 1;
+      return originalAdd.call(this, value);
+    };
+    try {
+      assert.throws(
+        () =>
+          compileAuditClaimSet({
+            ...standardClaims(),
+            claims: [
+              {
+                ...standardClaims().claims[0],
+                checks: [{ path: "src/registry.ts", allOf: [sentinel] }],
+              },
+            ],
+          }),
+        (error) =>
+          ValidationErrorLike(error) &&
+          /256 code units or is not well-formed UTF-16/.test(error.message),
+      );
+    } finally {
+      Set.prototype.has = originalHas;
+      Set.prototype.add = originalAdd;
+    }
+    assert.equal(sentinelHas, 0, "oversized sentinel must never reach Set.has (guard must fire first)");
+    assert.equal(sentinelAdd, 0, "oversized sentinel must never reach Set.add (guard must fire first)");
+  });
+
+  it("rejects an oversized clause on the cheap guard BEFORE dedup examines or records it", () => {
+    // The same oversized clause twice: the pre-fix order hashed it into
+    // the seen-literal Set first and reported the DUPLICATE; the guard
+    // must fire first, so the error is the ceiling diagnostic and the
+    // second occurrence is never examined.
+    const oversized = "x".repeat(AUDIT_CEILINGS.maxLiteralChars + 1);
+    assert.ok(oversized.length === 257);
+    assert.throws(
+      () =>
+        compileAuditClaimSet({
+          ...standardClaims(),
+          claims: [
+            {
+              ...standardClaims().claims[0],
+              checks: [{ path: "src/registry.ts", allOf: [oversized, oversized] }],
+            },
+          ],
+        }),
+      (error) =>
+        ValidationErrorLike(error) &&
+        /256 code units or is not well-formed UTF-16/.test(error.message) &&
+        !/duplicate clause/.test(error.message),
+    );
+    // Well-formedness likewise precedes dedup: an ill-formed clause that
+    // is also a duplicate reports the guard, not the duplicate.
+    const illFormedTwice = ["\uD800bad", "\uD800bad"];
+    assert.throws(
+      () =>
+        compileAuditClaimSet({
+          ...standardClaims(),
+          claims: [
+            {
+              ...standardClaims().claims[0],
+              checks: [{ path: "src/registry.ts", allOf: illFormedTwice }],
+            },
+          ],
+        }),
+      (error) =>
+        ValidationErrorLike(error) &&
+        /256 code units or is not well-formed UTF-16/.test(error.message) &&
+        !/duplicate clause/.test(error.message),
+    );
+    // The duplicate diagnostic itself is unchanged for bounded clauses.
+    assert.throws(
+      () =>
+        compileAuditClaimSet({
+          ...standardClaims(),
+          claims: [
+            {
+              ...standardClaims().claims[0],
+              checks: [{ path: "src/registry.ts", allOf: ["ok", "ok"] }],
+            },
+          ],
+        }),
+      (error) => ValidationErrorLike(error) && /duplicate clause/.test(error.message),
     );
   });
 });

@@ -273,17 +273,27 @@ function decodeChecks(value: unknown, claimId: string, requireNonEmpty: boolean)
     }
     const seenLiterals = new Set<string>();
     for (const literal of literals) {
+      // Greptile r4659860497: the CHEAP length check runs first, then the
+      // well-formedness scan — both BEFORE any seen-literal Set lookup or
+      // insertion. An oversized or ill-formed clause is rejected before
+      // its bytes are ever hashed into the dedup Set or examined further;
+      // diagnostics are unchanged.
+      if (literal.length > AUDIT_CEILINGS.maxLiteralChars) {
+        throw new ValidationError(
+          `claims.${claimId}.checks[${index}].allOf clause exceeds ${AUDIT_CEILINGS.maxLiteralChars} code units or is not well-formed UTF-16.`,
+        );
+      }
+      if (!wellFormedUtf16(literal)) {
+        throw new ValidationError(
+          `claims.${claimId}.checks[${index}].allOf clause exceeds ${AUDIT_CEILINGS.maxLiteralChars} code units or is not well-formed UTF-16.`,
+        );
+      }
       if (seenLiterals.has(literal)) {
         throw new ValidationError(
           `claims.${claimId}.checks[${index}].allOf declares duplicate clause ${JSON.stringify(literal)}.`,
         );
       }
       seenLiterals.add(literal);
-      if (literal.length > AUDIT_CEILINGS.maxLiteralChars || !wellFormedUtf16(literal)) {
-        throw new ValidationError(
-          `claims.${claimId}.checks[${index}].allOf clause exceeds ${AUDIT_CEILINGS.maxLiteralChars} code units or is not well-formed UTF-16.`,
-        );
-      }
     }
     return { path, allOf: Object.freeze([...literals]) };
   });

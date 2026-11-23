@@ -380,8 +380,9 @@ type ResolutionDeps = LeanDeps & Partial<Pick<LeanUnifiedDeps, "extract" | "cand
 
 /**
  * Resolve a conflicting-evidence set under the caller's requested scope.
- * `deps` are the caller's engine dependencies (acquisition + semantics);
- * this module attaches only the lead seed derived from the inventory,
+ * `runtime` accepts engine dependencies or an async factory. The factory
+ * runs after input and contract admission. This module attaches the lead
+ * seed derived from the inventory,
  * wraps read/search with the existing URL admission screen, and never
  * installs its own judge.
  */

@@ -668,7 +668,10 @@ Every kind returns one kind-tagged JSON document whose `resultSha256`
 binds the exact delivered (redacted) envelope; evidence display digests
 are computed against the delivered bytes. Exit 0 complete / 1 partial
 (absent judges, refused or incomplete coverage never fake success) /
-2 monitor late-commit rejection / 130 interrupted.
+2 monitor late-commit rejection / 130 interrupted. An audit reports when
+its local Git read deadline leaves part of its coverage incomplete.
+Completed workflows that dispatched provider acquisition can trigger the
+ordinary due quota refresh, outside the workflow's attempt ledger.
 
 ```bash
 scoutline investigate --workflow workflow.json

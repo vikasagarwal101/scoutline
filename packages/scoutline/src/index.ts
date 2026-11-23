@@ -5118,7 +5118,9 @@ async function handleInvestigate(
       },
       provider: workflowRouting as Parameters<typeof createSaveArtifactHook>[1]["provider"],
     });
+    let usedProviderAcquisition = false;
     const workflowDeps: InvestigateRequirementsDeps = {
+      onProviderAcquisition: () => { usedProviderAcquisition = true; },
       onResolvedProvider: (provider) => {
         workflowRouting.effective = provider;
       },
@@ -5156,7 +5158,7 @@ async function handleInvestigate(
       providerDescriptors: deps.providerDescriptors,
       judgeSettings: deps.judgeSettings,
     };
-    return invokeCommand(
+    const workflowExitCode = await invokeCommand(
       deps.invocation,
       () =>
         handleInvestigateWorkflow({ source }, workflowDeps, workflowHost, {
@@ -5169,6 +5171,12 @@ async function handleInvestigate(
       undefined,
       finalizeWorkflowData,
     );
+    // The ordinary quota cadence is separate from this workflow's usage
+    // ledger. Local, cache-only, unsuccessful and judge-only runs stay quiet.
+    if (workflowExitCode === 0 && usedProviderAcquisition && deps.requirementsRefreshSuppressed !== undefined) {
+      deps.requirementsRefreshSuppressed.value = false;
+    }
+    return workflowExitCode;
   }
 
   // Requirements mode (unified-investigation public-command-integration,
@@ -5394,6 +5402,8 @@ async function handleInvestigate(
         undefined,
         requirementsSecrets,
         reqSave,
+        undefined,
+        finalizeWorkflowData,
       );
       // The requirements lane owns its own save hook (above); journaling
       // stays off this experimental lane (the no-journal control is
@@ -8189,8 +8199,8 @@ export async function main(
   //     acquisition started. Preflight rejection must not trigger quota
   //     HTTP; post-acquisition errors conservatively use the same
   //     suppression. The request-local flag starts false and error paths
-  //     set it true; successful calls leave it false (there is no clear
-  //     assignment on the success path).
+  //     set it true. Workflow mode additionally suppresses the refresh
+  //     until a successful run is known to have dispatched acquisition.
   // For other command lanes, run even when the handler threw
   // (commandRecognized + caught):
   // the refresh is independent of the command's outcome and the

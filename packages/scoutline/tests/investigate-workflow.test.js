@@ -18,7 +18,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -130,9 +130,9 @@ function makeWorkflowRuntime(docs, { judge, candidateJudge, extract } = {}) {
   };
 }
 
-async function runMain(argv, { runtime, env = { ...ENV }, stdin = "", file } = {}) {
+async function runMain(argv, { runtime, env = { ...ENV }, stdin = "", file, now } = {}) {
   const { adapter, stdout, stderr } = makeAdapter({ stdin });
-  const deps = hermeticMainDeps({ invocation: adapter, env });
+  const deps = hermeticMainDeps({ invocation: adapter, env, ...(now === undefined ? {} : { now }) });
   if (runtime !== undefined) deps.requirementsRuntime = runtime;
   const argvFinal = file !== undefined ? [...argv, file] : argv;
   const code = await main(argvFinal, deps);
@@ -326,14 +326,25 @@ test("monitor kind: one explicit tick commits against a caller-owned state root"
   });
   const runtime = makeWorkflowRuntime(docs, { judge });
   const stateRoot = await mkdtemp(join(tmpdir(), "scoutline-monitor-state-"));
+  const now = new Date("2025-01-02T03:04:05.000Z");
   try {
     await withWorkflowFile(
       { schemaVersion: 1, kind: "monitor", request: { monitorId: "csv-monitor", stateRoot, definition: MONITOR_DEFINITION } },
       async (file) => {
-        const { code, parsed, stderr } = await runMain(["investigate", "--workflow", file], { runtime: runtime.factory });
+        const { code, parsed, stderr } = await runMain(["investigate", "--workflow", file], {
+          runtime: runtime.factory,
+          now: () => now.getTime(),
+        });
         assert.equal(code, 0, stderr);
         assert.equal(parsed.kind, "fact-monitor-tick");
         assert.equal(parsed.report.monitorId, "csv-monitor");
+        const at = now.toISOString();
+        assert.ok(parsed.report.events.length > 0);
+        assert.ok(parsed.report.events.every((event) => event.at === at));
+        const tickDir = join(stateRoot, "csv-monitor", "ticks");
+        const [fileName] = await readdir(tickDir);
+        const record = JSON.parse(await readFile(join(tickDir, fileName), "utf8"));
+        assert.equal(record.at, at);
         assert.equal(parsed.report.rejection, undefined);
         assert.match(parsed.resultSha256, /^[0-9a-f]{64}$/);
       },
@@ -443,6 +454,7 @@ test("audit kind: literal claim over the pinned local checkout accepts", async (
       assert.equal(parsed.kind, "implementation-audit");
       assert.equal(parsed.report.claims[0].status, "supported");
       assert.equal(parsed.report.revision, revision);
+      assert.ok(parsed.report.coverageNotes.some((note) => note.includes("exact pinned local Git commit")));
       assert.equal(runtime.calls.runtime, 0, "audit never constructs a provider runtime");
     },
   );
@@ -652,7 +664,7 @@ test("workflow stdout digests bind the final redacted evidence", async () => {
   }
 });
 
-test("workflow SIGINT settles even a blocked stdin adapter", { timeout: 2000 }, async () => {
+test("workflow interrupt callback settles even a blocked stdin adapter", { timeout: 2000 }, async () => {
   const { adapter, stderr } = makeAdapter();
   let interrupt;
   const deps = hermeticMainDeps({ invocation: {
@@ -806,6 +818,156 @@ test("invalid and local-only workflows do not refresh provider quotas", async ()
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("local Git audit reports a deadline cutoff and preserves completed claims", {
+  skip: process.platform === "win32",
+  timeout: 8000,
+}, async (t) => {
+  const revision = await headRevision();
+  const { stdout } = await execFileP("which", ["git"]);
+  const git = stdout.trim();
+  const directory = await mkdtemp(join(tmpdir(), "scoutline-audit-deadline-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const firstPath = "packages/scoutline/package.json";
+  const secondPath = "packages/scoutline/src/lib/errors.ts";
+  const envelope = {
+    schemaVersion: 1,
+    kind: "audit",
+    request: {
+      repository: "scoutline", revision, localRepositoryPath: REPO_ROOT,
+      claims: [
+        { id: "package", text: "Package name", proofClass: "literal", checks: [{ path: firstPath, allOf: ["scoutline"] }] },
+        { id: "errors", text: "Error declaration", proofClass: "literal", checks: [{ path: secondPath, allOf: ["ValidationError"] }] },
+      ],
+    },
+  };
+  const run = () => runMain(["investigate", "--workflow", "-"], { stdin: JSON.stringify(envelope) });
+  const control = await run();
+  assert.equal(control.code, 0, control.stderr);
+
+  const entered = join(directory, "entered");
+  const quote = (value) => "'" + value.replaceAll("'", "'\\''") + "'";
+  await writeFile(join(directory, "git"), [
+    "#!/bin/sh",
+    'for arg; do',
+    `  if [ "$arg" = ${quote(secondPath)} ]; then`,
+    `    : > ${quote(entered)}`,
+    "    exec sleep 30",
+    "  fi",
+    "done",
+    `exec ${quote(git)} "$@"`,
+  ].join("\n") + "\n", { mode: 0o700 });
+  const oldPath = process.env.PATH;
+  const deadline = new AbortController();
+  const actualTimeout = AbortSignal.timeout;
+  const timeout = t.mock.method(AbortSignal, "timeout", (ms) => ms === 10000 ? deadline.signal : actualTimeout(ms));
+  const bound = setTimeout(() => deadline.abort(), 3500);
+  let task;
+  try {
+    process.env.PATH = directory + ":" + oldPath;
+    task = run();
+    for (;;) {
+      const reached = await stat(entered).then(() => true, () => false);
+      if (reached) break;
+      assert.equal(deadline.signal.aborted, false, "Git must enter the second path before the synthetic timeout");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    deadline.abort(new DOMException("Synthetic audit deadline", "TimeoutError"));
+    const { code, parsed, stderr } = await task;
+    assert.equal(code, 1, stderr);
+    assert.deepEqual(parsed.report.claims.map(({ status }) => status), ["supported", "unresolved"]);
+    const cutoff = parsed.report.coverageNotes.find((note) => /reached its read deadline/.test(note));
+    assert.ok(cutoff.includes(secondPath));
+    assert.ok(!cutoff.includes(firstPath));
+  } finally {
+    clearTimeout(bound);
+    deadline.abort();
+    if (task !== undefined) await task.catch(() => undefined);
+    process.env.PATH = oldPath;
+    timeout.mock.restore();
+  }
+});
+
+test("compiled workflow quota cadence requires successful provider acquisition", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "scoutline-workflow-quota-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const preload = join(directory, "quota-fixture.mjs");
+  await writeFile(preload, [
+    'import { appendFileSync } from "node:fs";',
+    'const log = (stage) => appendFileSync(process.env.TEST_WORKFLOW_TRAFFIC, stage + "\\n");',
+    'const url = "https://fixture.example.com/releases/2.4.0";',
+    'const text = "ExampleApp Community 2.4.0 on Linux supports CSV export.";',
+    'globalThis.fetch = async (raw, init) => {',
+    '  const target = String(raw);',
+    '  if (target === "https://api.tavily.com/usage") { log("quota"); throw Error("synthetic quota refusal"); }',
+    '  if (target === "https://api.tavily.com/search") {',
+    '    log("search"); return Response.json({ results: [{ url, title: "Notes", content: text }] });',
+    '  }',
+    '  if (target === "https://api.tavily.com/extract") {',
+    '    log("read");',
+    '    if (process.env.TEST_WORKFLOW_ABORT === "1") process.emit("SIGINT");',
+    '    return Response.json({ results: [{ url, title: "Notes", raw_content: text }] });',
+    '  }',
+    '  if (target === "https://api.typesafe.ai/v1/systemone") {',
+    '    log("judge");',
+    '    const ids = Object.keys(JSON.parse(init.body).questions);',
+    '    return Response.json({ model: "jev-1.13.0", usage: { input_tokens: 1, output_tokens: 1 },',
+    '      answers: Object.fromEntries(ids.map((id) => [id, { type: "noul", noul: /[cf]$/.test(id) ? 0.02 : 0.98 }])) });',
+    '  }',
+    '  log("unexpected"); throw Error("unexpected synthetic transport");',
+    '};',
+  ].join("\n"));
+
+  const revision = await headRevision();
+  const comparison = { schemaVersion: 1, kind: "comparison", request: COMPARISON_REQUEST };
+  const run = async (name, profile, request, { consent = "1", exit = 0, abort = false } = {}) => {
+    const log = join(directory, name + ".log");
+    const envelope = join(directory, name + ".json");
+    const home = join(directory, profile);
+    await writeFile(log, "");
+    await writeFile(envelope, JSON.stringify(request));
+    const env = {
+      PATH: process.env.PATH, HOME: home, TMPDIR: directory,
+      SCOUTLINE_CONFIG_DIR: join(home, "config"),
+      SCOUTLINE_CACHE_DIR: join(home, "cache"),
+      SCOUTLINE_ARTIFACTS_DIR: join(home, "artifacts"),
+      SCOUTLINE_PROVIDER: "tavily", TAVILY_API_KEY: "test-workflow-tavily",
+      SCOUTLINE_JUDGE: "typesafe", TYPESAFE_API_KEY: "test-workflow-typesafe",
+      SCOUTLINE_JUDGE_TRANSMIT: consent, TEST_WORKFLOW_TRAFFIC: log, TEST_WORKFLOW_ABORT: abort ? "1" : "0",
+    };
+    const code = await execFileP(process.execPath, [
+      "--import", preload, join(REPO_ROOT, "packages/scoutline/bin/scoutline.js"),
+      "investigate", "--workflow", envelope,
+    ], { env }).then(() => 0, (error) => error.code);
+    assert.equal(code, exit, name);
+    const calls = (await readFile(log, "utf8")).trim().split("\n").filter(Boolean);
+    assert.ok(!calls.includes("unexpected"), name);
+    return calls;
+  };
+
+  const provider = await run("with-acquisition", "cache", comparison);
+  assert.ok(provider.includes("search") && provider.includes("read") && provider.includes("judge"));
+  assert.equal(provider.filter((call) => call === "quota").length, 1);
+  const cached = await run("cache-only", "cache", comparison);
+  assert.ok(cached.includes("judge"));
+  assert.ok(cached.every((call) => call === "judge"));
+  const partial = await run("partial-acquisition", "partial", comparison, { consent: "0", exit: 1 });
+  assert.ok(partial.includes("search") && partial.includes("read"));
+  assert.ok(!partial.includes("quota"));
+  const interrupted = await run("interrupted", "interrupted", comparison, { abort: true, exit: 130 });
+  assert.ok(interrupted.includes("read"));
+  assert.ok(!interrupted.includes("quota"));
+  const judgeOnly = await run("judge-only", "extraction", extractionDocument());
+  assert.deepEqual(judgeOnly, ["judge", "judge"]);
+  const audit = await run("local-audit", "audit", {
+    schemaVersion: 1, kind: "audit", request: {
+      repository: "scoutline", revision, localRepositoryPath: REPO_ROOT,
+      claims: [{ id: "package", text: "The manifest names Scoutline", proofClass: "literal",
+        checks: [{ path: "packages/scoutline/package.json", allOf: ["scoutline"] }] }],
+    },
+  });
+  assert.deepEqual(audit, []);
 });
 
 test("interrupting an entered extraction judge returns 130 and stops new dispatches", async () => {

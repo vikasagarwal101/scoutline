@@ -29,7 +29,7 @@ import { realpath } from "node:fs/promises";
 import { devNull } from "node:os";
 
 import type { CommandResult } from "../command-invocation.js";
-import { CancellationError, ValidationError } from "../lib/errors.js";
+import { CancellationError, TimeoutError, ValidationError } from "../lib/errors.js";
 import { redactSecrets } from "../lib/redact.js";
 import { validateCallerPhysical, type CallerPhysicalSnapshot } from "../lib/caller-physical.js";
 import {
@@ -104,7 +104,7 @@ Kinds (each maps to one reviewed engine-backed consumer):
                of an EXISTING local repository (bounded local Git object
                reads; no fetch, no hooks, no shell).
                request: { repository, revision, localRepositoryPath,
-               claims: [{ id, text, proofClass, checks: [{ path,
+               claims: [{ id, text, proofClass, criteria?, checks: [{ path,
                allOf: [...] }] }] }
   resolution   Conflicting-evidence resolution under the caller's
                declared scope and alternatives.
@@ -117,6 +117,9 @@ display digests are computed against the delivered bytes.
 Exit codes: 0 complete; 1 partial (honest — absent judges, refused or
 incomplete coverage never fake success); 2 monitor late-commit rejection;
 130 interrupted (SIGINT).
+
+Completed workflows that dispatched provider acquisition can trigger the
+normal due quota refresh, outside the workflow attempt ledger.
 
 Examples:
   scoutline investigate --workflow workflow.json
@@ -208,7 +211,7 @@ export function deliverEvidenceRows(
   });
 }
 
-/** Rebind generated hashes to the actual final redacted JSON data.
+/** Rebind requirements and workflow hashes to the final redacted JSON data.
  *  Comparison contains a second, independently bound engine envelope. */
 export function finalizeWorkflowData(data: unknown): unknown {
   if (!isPlainObject(data)) throw new ValidationError("Invalid workflow result.");
@@ -253,11 +256,13 @@ export function projectWorkflowResult(
 // ---------------------------------------------------------------------------
 
 const execFileP = promisify(execFile);
+const LOCAL_GIT_READ_TIMEOUT_MS = 10_000;
+
 async function readLocalGitSnapshot(
   localRepositoryPath: string,
   claims: CompiledAuditClaimSet,
   signal: AbortSignal,
-): Promise<PinnedSnapshot> {
+): Promise<{ snapshot: PinnedSnapshot; unreadAtDeadline: readonly string[] }> {
   const { repository, revision } = claims;
   const paths = [...new Set(claims.claims.flatMap((claim) => claim.checks.map((check) => check.path)))];
   if (paths.length > AUDIT_CEILINGS.maxRelevantPaths) {
@@ -277,7 +282,11 @@ async function readLocalGitSnapshot(
     GIT_TERMINAL_PROMPT: "0",
     GIT_OPTIONAL_LOCKS: "0",
   };
-  const deadline = AbortSignal.any([signal, AbortSignal.timeout(10_000)]);
+  const deadline = AbortSignal.any([signal, AbortSignal.timeout(LOCAL_GIT_READ_TIMEOUT_MS)]);
+  const preflightTimeout = () => new TimeoutError(
+    LOCAL_GIT_READ_TIMEOUT_MS,
+    "Local Git audit timed out during repository or commit verification.",
+  );
   let root: string;
   try {
     root = await realpath(localRepositoryPath);
@@ -290,6 +299,7 @@ async function readLocalGitSnapshot(
     }
   } catch {
     if (signal.aborted) throw signal.reason;
+    if (deadline.aborted) throw preflightTimeout();
     throw new ValidationError("Audit requires the exact root of an existing local Git worktree.");
   }
   const git = ["-C", root, "--literal-pathspecs"];
@@ -300,11 +310,13 @@ async function readLocalGitSnapshot(
     if (out.stdout.trim() !== revision) throw new Error("not the exact commit");
   } catch {
     if (signal.aborted) throw signal.reason;
+    if (deadline.aborted) throw preflightTimeout();
     throw new ValidationError("Audit revision is not present as a commit in the local repository.");
   }
 
   const files: PinnedSnapshot["files"][number][] = [];
-  for (const path of paths) {
+  let unreadAtDeadline: readonly string[] = [];
+  for (const [index, path] of paths.entries()) {
     try {
       const { stdout } = await execFileP("git", [...git, "ls-tree", "-z", revision, "--", path], {
         env, signal: deadline, maxBuffer: 4096,
@@ -319,12 +331,15 @@ async function readLocalGitSnapshot(
       files.push({ path, revision, content, sha256: createHash("sha256").update(bytes).digest("hex") });
     } catch {
       if (signal.aborted) throw signal.reason;
-      if (deadline.aborted) break;
+      if (deadline.aborted) {
+        unreadAtDeadline = paths.slice(index);
+        break;
+      }
       // The claim's exact path remains in the engine declaration. Missing,
       // unreadable or non-text blobs cannot be used as absence proof.
     }
   }
-  return { repository, revision, files };
+  return { snapshot: { repository, revision, files }, unreadAtDeadline };
 }
 
 // ---------------------------------------------------------------------------
@@ -430,7 +445,7 @@ export async function handleInvestigateWorkflow(
       if (!isPlainObject(definition)) {
         throw new ValidationError("monitor request definition must be a JSON object (the engine contract for the fact).");
       }
-      const tickOptions = { now: new Date(), signal: owned.controller.signal };
+      const tickOptions = { now: new Date(deps.now()), signal: owned.controller.signal };
       let composed: ComposedLeanRuntime | undefined;
       try {
         const prepared = await prepareFactMonitorTick(stateRoot, monitorId, definition, tickOptions);
@@ -628,14 +643,24 @@ export async function handleInvestigateWorkflow(
       }
       const claimSet = compileAuditClaimSet({ schemaVersion: 1, repository, revision, claims: request.claims });
       for (const claim of claimSet.claims) assertWorkflowId(claim.id, basis);
-      const snapshot = await raceWithInterrupt(
+      const { snapshot, unreadAtDeadline } = await raceWithInterrupt(
         readLocalGitSnapshot(localRepositoryPath, claimSet, owned.controller.signal), owned,
       );
-      const report = await runImplementationAudit(claimSet, snapshot, {
-        localGit: true,
+      const audited = await runImplementationAudit(claimSet, snapshot, {
+        allowEmptySnapshot: true,
         signal: owned.controller.signal,
       });
       owned.settle();
+      const coverageNotes = [
+        ...audited.coverageNotes,
+        "Retained text was read from regular blobs in the exact pinned local Git commit. This does not verify remote origin.",
+      ];
+      if (unreadAtDeadline.length > 0) {
+        coverageNotes.push(
+          `Local Git audit reached its read deadline. Unchecked paths: ${JSON.stringify(unreadAtDeadline)}.`,
+        );
+      }
+      const report = { ...audited, coverageNotes };
       return projectWorkflowResult("implementation-audit", { report }, basis, report.status === "complete" ? 0 : 1);
     }
 

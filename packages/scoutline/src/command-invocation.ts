@@ -60,6 +60,10 @@ export interface CommandInvocationAdapter {
   setExitCode(value: number): void;
 }
 
+interface DeliveredData {
+  readonly value: unknown;
+}
+
 /**
  * Input handed to the optional save hook (save-artifacts T4). The seam
  * passes the successful CommandResult, the SAME resolved secrets the
@@ -67,10 +71,6 @@ export interface CommandInvocationAdapter {
  * channel - a hook notice rides the existing stderr flush ahead of the
  * stdout write, so saving never reorders documented output.
  */
-interface DeliveredData {
-  readonly value: unknown;
-}
-
 export interface SaveHookContext {
   readonly result: CommandResult;
   /** Invocation-finalized data, after the success-boundary redaction. */

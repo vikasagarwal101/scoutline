@@ -23,6 +23,7 @@ import * as path from "node:path";
 const root = new URL("..", import.meta.url).pathname;
 const {
   prepareFactMonitorTick,
+  runPreparedFactMonitorTick,
   commitFactMonitorTick,
   runFactMonitorTick,
   loadFactMonitorState,
@@ -98,6 +99,44 @@ const definition = () => ({
 
 const T = (n) => new Date(`2026-11-0${n}T09:00:00.000Z`);
 const MONITOR = "csv-monitor";
+
+test("prepared tick awaits a rejecting async check and leaves no publication", async (t) => {
+  const dir = await mkTmp(t);
+  const now = T(1);
+  const prepared = await prepareFactMonitorTick(dir, MONITOR, definition(), { now });
+  const entered = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  const refused = new Error("publication check rejected");
+  const task = runPreparedFactMonitorTick(
+    dir, prepared,
+    { search: async () => [], read: async () => "", judge: null, now: () => now.getTime() },
+    { now },
+    () => {
+      entered.resolve();
+      const check = release.promise.then(() => { throw refused; });
+      void check.catch(() => {});
+      return check;
+    },
+  );
+  const settled = task.then(
+    () => ({ committed: true }),
+    (error) => ({ error }),
+  );
+  try {
+    await awaitBarrier(entered.promise, [task], "pre-publication check");
+    await assert.rejects(fs.access(path.join(dir, MONITOR, "current.json")), { code: "ENOENT" });
+  } finally {
+    release.resolve();
+    await settled;
+  }
+  assert.deepEqual(await settled, { error: refused });
+  await assert.rejects(fs.access(path.join(dir, MONITOR, "current.json")), { code: "ENOENT" });
+  const ticks = await fs.readdir(path.join(dir, MONITOR, "ticks")).catch((error) => {
+    if (error.code !== "ENOENT") throw error;
+    return [];
+  });
+  assert.deepEqual(ticks, []);
+});
 
 // --- synthetic engine outcomes (deterministic state-machine seam) --------
 

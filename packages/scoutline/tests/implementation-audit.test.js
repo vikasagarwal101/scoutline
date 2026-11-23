@@ -1383,6 +1383,15 @@ describe("implementation audit: preflight validation", () => {
   });
 });
 
+it("a caller option cannot claim Git provenance for a fixture snapshot", async () => {
+  const report = await runImplementationAudit(standardClaims(), FULLY_WIRED, {
+    localGit: true,
+    allowEmptySnapshot: true,
+  });
+  assert.equal(literalClaim(report).status, "supported");
+  assert.equal(report.coverageNotes.some((note) => note.includes("exact pinned local Git commit")), false);
+});
+
 const ValidationErrorLike = (error) =>
   error != null && typeof error === "object" && error.name === "ValidationError";
 

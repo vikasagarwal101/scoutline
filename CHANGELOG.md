@@ -26,6 +26,8 @@
 
 ### Fixed
 
+- **Investigation delivery and workflow settlement:** Requirements-mode display digests and the envelope hash bind the final stdout and saved JSON. Local Git audits disclose deadline cutoffs and report verified Git provenance only through the pinned reader. Monitor ticks wait for their pre-publication check and use the injected clock. The due quota refresh applies to completed workflows that dispatched provider acquisition.
+
 - **Concurrent caller rounds:** start and continue return the round they committed, even if another caller commits a newer revision before the response is assembled.
 
 - **Bounded investigation API redirects:** requirements/caller acquisition refuses redirects on its app-to-supplier API requests, preventing hidden follow-up hops inside one counted fetch. This does not enforce the remote Reader's content-URL DNS or redirect policy; normal Reader commands are unchanged.

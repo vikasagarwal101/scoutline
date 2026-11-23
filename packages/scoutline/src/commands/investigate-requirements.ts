@@ -505,6 +505,8 @@ export interface InvestigateRequirementsDeps {
    * record the real serving supplier instead of a guess.
    */
   readonly onResolvedProvider?: (provider: string) => void;
+  /** Reports that the run dispatched provider acquisition over the transport. */
+  readonly onProviderAcquisition?: () => void;
 }
 
 /** Incremental bounded file read: reads 64 KiB chunks until EOF,
@@ -997,6 +999,7 @@ export async function composeLeanRuntime(
       safeSum(ledger.attempts,physical.judgeDispatches,physical.producerDispatches);
       physical.acquisitionAttempts = ledger.attempts;
       physical.perAttempt = ledger.perAttempt;
+      if (ledger.attempts > 0) deps.onProviderAcquisition?.();
       // Shared closure owns refusal accounting across every stage; bridge ledger overlaps it.
       acquisitionOptions.onPhysicalLedger?.(ledger);
     },

@@ -1154,13 +1154,13 @@ function unresolvedLiteralReason(
 export async function runImplementationAudit(
   claimSetInput: unknown,
   snapshotInput: unknown,
-  options: { readonly signal?: AbortSignal; readonly localGit?: boolean } = {},
+  options: { readonly signal?: AbortSignal; readonly allowEmptySnapshot?: boolean } = {},
 ): Promise<AuditReport> {
   const claims = compileAuditClaimSet(claimSetInput);
-  const snapshot = compilePinnedSnapshot(snapshotInput, options.localGit === true);
+  const snapshot = compilePinnedSnapshot(snapshotInput, options.allowEmptySnapshot === true);
   // Pin agreement is enforced INSIDE the exported seam (single authority,
   // direct callers included); it fires here before any acquisition.
-  const { deps, journal, observe } = createSnapshotReadDeps(claims, snapshot, options.localGit === true);
+  const { deps, journal, observe } = createSnapshotReadDeps(claims, snapshot, options.allowEmptySnapshot === true);
   const result = await runLeanInvestigation(buildEngineContract(claims), {
     ...deps,
     ...(options.signal !== undefined ? { externalSignal: options.signal } : {}),
@@ -1248,9 +1248,7 @@ export async function runImplementationAudit(
       "Acquisition is closed-scope: queries resolve against the claim-relevant file index of the pinned snapshot (scoped to the claim owning each query), not remote discovery; contrary coverage is bounded to that scope.",
       "Closed-source coverage runs through the engine's closed-evidence capability (v3 public integration): each claim binds to the exact declared sources its checks name, and coverage closes only while every one is retained byte-exact. The earlier claim-scoped-enumeration approximation is retired; acceptance is still withheld wherever a declared source was refused or is absent.",
       "Observation rows (basis.observed) come from the seam's own verified materialization of files the engine never retained; they preserve literal facts with locators and never support acceptance.",
-      options.localGit
-        ? "Retained text was read from regular blobs in the exact pinned local Git commit; this does not verify remote origin."
-        : "Revision identity is fixture-declared: digests verify byte consistency, not commit membership. Claim-relevant bytes were digest-verified and frozen by the consumer before the run.",
+      "Snapshot digests verify byte consistency, not commit membership. Claim-relevant bytes were digest-verified and frozen before the run.",
       "Absence findings are bounded to each claim's declared files at the pinned revision, not whole-repository absence proofs.",
     ]),
   });

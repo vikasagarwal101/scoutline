@@ -303,12 +303,6 @@ export function manifestEvidenceRecord(
   });
 }
 
-/**
- * Deps for the closed-document-set run. Exported so offline tests
- * compose the same wiring (e.g. omit `extract` for the producer-disabled
- * control). Everything derives from ONE admitted snapshot; mutating the
- * caller's input object afterwards changes nothing the engine sees.
- */
 /** Trusted judge-transmission route for the public CLI wiring (function
  *  parameter — caller JSON can never assert it). Mirrors the offline
  *  test seam's dispatch shape. */
@@ -317,6 +311,12 @@ export type AuthorizedRuntimeJudge = (
   options?: { timeoutMs: number; signal: AbortSignal },
 ) => Promise<LeanCandidateJudgeResponse>;
 
+/**
+ * Deps for the closed-document-set run. Exported so offline tests
+ * compose the same wiring (e.g. omit `extract` for the producer-disabled
+ * control). Everything derives from ONE admitted snapshot; mutating the
+ * caller's input object afterwards changes nothing the engine sees.
+ */
 export function buildManifestDeps(
   input: ManifestInvestigationInput,
   options: { authorizedRuntimeJudge?: AuthorizedRuntimeJudge } = {},

@@ -1559,13 +1559,18 @@ export async function runFactMonitorTick(
   return executePreparedFactMonitorTick(root, prepared, deps, normalized);
 }
 
-/** Run a prepared tick with the workflow's pre-publication capability check. */
+/**
+ * Run a prepared tick with an optional pre-publication check. The check
+ * settles before commit begins. Failure propagates without publishing a
+ * tick. Early cancellation can skip the check, and late-commit decisions
+ * are made afterward under the commit lock.
+ */
 export async function runPreparedFactMonitorTick(
   root: string,
   prepared: PreparedFactMonitorTick,
   deps: LeanDeps,
   options: FactMonitorOptions,
-  beforeCommit?: (outcome: FactMonitorEngineOutcome) => void,
+  beforeCommit?: (outcome: FactMonitorEngineOutcome) => void | Promise<void>,
 ): Promise<FactMonitorTickReport> {
   const signal = mergeSignals([options.signal, deps.externalSignal]);
   const normalized: FactMonitorOptions = signal === undefined ? options : { ...options, signal };
@@ -1577,7 +1582,7 @@ async function executePreparedFactMonitorTick(
   prepared: PreparedFactMonitorTick,
   deps: LeanDeps,
   normalized: FactMonitorOptions,
-  beforeCommit?: (outcome: FactMonitorEngineOutcome) => void,
+  beforeCommit?: (outcome: FactMonitorEngineOutcome) => void | Promise<void>,
 ): Promise<FactMonitorTickReport> {
   let engineOutcome: FactMonitorEngineOutcome;
   try {
@@ -1628,6 +1633,6 @@ async function executePreparedFactMonitorTick(
       reason: error instanceof Error ? error.message : String(error),
     };
   }
-  beforeCommit?.(engineOutcome);
+  if (beforeCommit !== undefined) await beforeCommit(engineOutcome);
   return commitFactMonitorTick(root, prepared, engineOutcome, normalized);
 }

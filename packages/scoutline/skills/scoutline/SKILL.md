@@ -459,8 +459,10 @@ partial / 2 monitor late commit / 130 interrupted. `monitor` requires
 an explicit caller-owned `stateRoot`; `extraction` accepts only the
 `Version:`/`License:` release-manifest grammar and never a
 caller-supplied judge; `audit` reads pinned objects from an EXISTING
-local repository via bounded local Git reads only. The default
-resolution runtime can return partial evidence without selecting a
+local repository via bounded local Git reads only and reports an
+incomplete snapshot if the read deadline is reached. Completed
+workflows with provider acquisition can trigger the ordinary due quota
+refresh outside the attempt ledger. The default resolution runtime can return partial evidence without selecting a
 value because it has no registered extractor.
 
 ```bash

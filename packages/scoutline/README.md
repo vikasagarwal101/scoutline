@@ -631,6 +631,84 @@ cat reqs.json | scoutline investigate --requirements -
 scoutline investigate --requirements-json '{"schemaVersion":1,"question":"What version?","requirements":{"version":{"question":"What version?","schema":{"type":"string"}}}}'
 ```
 
+#### Workflow mode (`investigate --workflow`, EXPERIMENTAL)
+
+`investigate --workflow <file|->` runs ONE reviewed v3 consumer workflow
+from a bounded JSON document (file or stdin, <= 1 MiB). The envelope is
+exact — `{ "schemaVersion": 1, "kind": "...", "request": {...} }` with
+kind one of `comparison`, `monitor`, `extraction`, `audit`,
+`resolution`; unknown keys and kinds reject before any runtime is
+constructed, and the mode is mutually exclusive with the positional
+question, the requirements modes, the caller modes and plain-mode
+controls. Each kind forwards to its reviewed engine-backed consumer
+through the same runtime selection, owned interruption, judge consent
+and one-basis redaction as requirements mode:
+
+- `comparison` — evidence-backed comparison matrix across declared
+  entities/dimensions (per-cell outcomes, evidence provenance).
+- `monitor` — ONE explicit monitoring tick for one fact against its
+  last accepted baseline; the request names the caller-owned
+  `stateRoot` (no implicit real-user store is created).
+- `extraction` — structured extraction over ONE caller-retained public
+  or synthetic release-manifest text (`Version:`/`License:` grammar);
+  the claimed URL is unverified attribution; judgment routes only
+  through the authorized runtime judge (consent-gated) — a request can
+  never carry its own judge; without consent the outcome is an honest
+  partial.
+- `audit` — literal implementation claims against one pinned revision
+  of an EXISTING local repository; evidence comes from bounded local
+  Git object reads only (no fetch, no hooks, no shell); symlinks and
+  submodules are refused as files.
+- `resolution` — conflicting-evidence resolution under the caller's
+  declared scope and alternatives. A value requires proof covering every
+  material alternative. The default runtime has no resolution extractor,
+  so it can return partial evidence without a selected value.
+
+Every kind returns one kind-tagged JSON document whose `resultSha256`
+binds the exact delivered (redacted) envelope; evidence display digests
+are computed against the delivered bytes. Exit 0 complete / 1 partial
+(absent judges, refused or incomplete coverage never fake success) /
+2 monitor late-commit rejection / 130 interrupted.
+
+```bash
+scoutline investigate --workflow workflow.json
+cat workflow.json | scoutline investigate --workflow -
+```
+
+Save one of these request objects as the workflow file. The monitor
+directory must exist and be owned by the caller. For audit, use the
+repository root and full commit ID from your local checkout.
+
+**Comparison**
+
+```json
+{"schemaVersion":1,"kind":"comparison","request":{"schemaVersion":1,"question":"Compare CSV export","entities":["2.4.0","2.5.0"],"dimensions":{"csv":{"question":"Does ExampleApp {entity} support CSV export?"}},"frame":{"entity":"ExampleApp","edition":"Community"}}}
+```
+
+**Monitor**
+
+```json
+{"schemaVersion":1,"kind":"monitor","request":{"monitorId":"csv-export","stateRoot":"./monitor-state","definition":{"schemaVersion":1,"question":"Check CSV export","requirements":{"csv":{"question":"Does ExampleApp 2.4.0 support CSV export?","schema":{"enum":["supported","refuted","disputed"]},"required":true}}}}}
+```
+
+**Extraction**
+
+```json
+{"schemaVersion":1,"kind":"extraction","request":{"manifestText":"Version: 2.4.0\nLicense: MIT\n","admission":{"materialClass":"synthetic","claimedUrl":"https://example.org/releases/2.4.0","title":"Release manifest"}}}
+```
+
+**Audit** (example for the Scoutline checkout at the reviewed base)
+
+```json
+{"schemaVersion":1,"kind":"audit","request":{"repository":"scoutline","revision":"e850b5fdc5d556bdf1ef893d524515534fafa094","localRepositoryPath":".","claims":[{"id":"package-name","text":"The package manifest names Scoutline","proofClass":"literal","checks":[{"path":"packages/scoutline/package.json","allOf":["scoutline"]}]}]}}
+```
+
+**Resolution**
+
+```json
+{"schemaVersion":1,"kind":"resolution","request":{"schemaVersion":1,"scope":{"entity":"ExampleApp","release":"2.4.0"},"alternatives":[{"id":"notice","value":"GPL-3.0","source":{"url":"https://example.org/releases/notice"},"scope":{"entity":"ExampleApp","release":"2.4.0"}},{"id":"correction","value":"MIT","correctionOf":"notice","source":{"url":"https://example.org/releases/correction"},"scope":{"entity":"ExampleApp","release":"2.4.0"}}]}}
+```
+
 #### Caller-assisted Investigation (EXPERIMENTAL)
 
 `investigate --caller-request <file|->` (or `--caller-request-json

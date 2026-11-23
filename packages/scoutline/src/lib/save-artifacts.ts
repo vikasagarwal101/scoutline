@@ -93,7 +93,7 @@ export function createSaveArtifactHook(
   const save = deps.save;
   if (save === undefined) return undefined;
   const { request, capture } = save;
-  return async ({ result, resolvedSecrets, now, notice }) => {
+  return async ({ result, deliveredData, resolvedSecrets, now, notice }) => {
     try {
       const dir = resolveArtifactsDir(deps.env);
       const requestId = newRequestId(now());
@@ -103,7 +103,7 @@ export function createSaveArtifactHook(
       // run carries saveRef (PRD AC10).
       capture.savedRequestId = requestId;
       const data = result.kind === "data" ? result.data : result.text;
-      const redactedData = redactSecrets(data, resolvedSecrets);
+      const redactedData = deliveredData === undefined ? redactSecrets(data, resolvedSecrets) : deliveredData.value;
       const content =
         request.format === "markdown"
           ? `${artifactHeaderComment(requestId)}\n${renderMarkdownArtifactBody(result, redactedData, resolvedSecrets, now)}\n`

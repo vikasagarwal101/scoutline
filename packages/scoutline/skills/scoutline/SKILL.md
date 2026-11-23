@@ -445,6 +445,29 @@ per-claim `negationCues` count exists for exactly that re-judgment.
 `--max-chars` never cuts claim text or verdicts (evidence pointers
 drop last, whole); cost notices state "N claims × M arms".
 
+### Workflow mode (`investigate --workflow`, EXPERIMENTAL)
+
+`investigate --workflow <file|->` runs ONE reviewed v3 consumer
+workflow from a bounded JSON document. Envelope is exactly
+`{ "schemaVersion": 1, "kind": "...", "request": {...} }`; kind one of
+`comparison`, `monitor`, `extraction`, `audit`, `resolution`. Unknown
+keys/kinds reject before any runtime construction; mutually exclusive
+with the positional question, requirements/caller modes and plain-mode
+controls. Output is one kind-tagged envelope with `resultSha256`
+binding the delivered redacted bytes. Exit 0 complete / 1 honest
+partial / 2 monitor late commit / 130 interrupted. `monitor` requires
+an explicit caller-owned `stateRoot`; `extraction` accepts only the
+`Version:`/`License:` release-manifest grammar and never a
+caller-supplied judge; `audit` reads pinned objects from an EXISTING
+local repository via bounded local Git reads only. The default
+resolution runtime can return partial evidence without selecting a
+value because it has no registered extractor.
+
+```bash
+scoutline investigate --workflow workflow.json
+cat workflow.json | scoutline investigate --workflow -
+```
+
 ### Requirements mode (`investigate --requirements`, EXPERIMENTAL)
 
 `investigate --requirements <path|->` or `--requirements-json '<json>'`

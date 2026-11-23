@@ -106,6 +106,7 @@ import {
   type InvestigateRequirementsDeps,
 } from "./commands/investigate-requirements.js";
 import { handleInvestigateCaller, readCallerRequest, CallerInputInterruptedError, INVESTIGATE_CALLER_HELP } from "./commands/investigate-caller.js";
+import { finalizeWorkflowData, handleInvestigateWorkflow, INVESTIGATE_WORKFLOW_HELP } from "./commands/investigate-workflow.js";
 import { ZaiApiClient } from "./lib/api-client.js";
 import {
   buildProviderCacheKey,
@@ -716,6 +717,11 @@ export const STRICT_FLAG_ALLOWLIST: Readonly<Record<string, ReadonlySet<string>>
     "requirements-json",
     "caller-request",
     "caller-request-json",
+    // v3 consumer public integration (EXPERIMENTAL): one bounded JSON
+    // file/stdin workflow document; mutually exclusive with every other
+    // investigate mode, enforced inside handleInvestigate before any
+    // runtime construction.
+    "workflow",
   ]),
 };
 
@@ -5015,6 +5021,156 @@ async function handleInvestigate(
 ): Promise<number> {
   const { flags, positional } = parseArgs(args);
 
+  // Workflow mode (v3 consumer public integration, EXPERIMENTAL):
+  // `--workflow <file|->` runs ONE reviewed v3 consumer workflow from a
+  // bounded JSON document. Mutually exclusive with plain mode, the
+  // requirements modes and the caller modes; every guard below fires
+  // BEFORE any input read or runtime construction.
+  if (flags.workflow !== undefined) {
+    if (deps.requirementsRefreshSuppressed !== undefined) deps.requirementsRefreshSuppressed.value = true;
+    if (args.filter((arg) => arg === "--workflow").length !== 1) {
+      throw new ValidationError("Pass exactly one --workflow source.");
+    }
+    if (flags.requirements !== undefined || flags["requirements-json"] !== undefined) {
+      throw new ValidationError(
+        "--workflow and --requirements/--requirements-json are mutually exclusive.",
+        "Pass exactly one investigation mode.",
+      );
+    }
+    if (flags["caller-request"] !== undefined || flags["caller-request-json"] !== undefined) {
+      throw new ValidationError(
+        "--workflow and --caller-request/--caller-request-json are mutually exclusive.",
+        "Pass exactly one investigation mode.",
+      );
+    }
+    const dashStdin = flags.workflow === true && positional.length === 1 && positional[0] === "-";
+    if (positional.length > 0 && !dashStdin) {
+      throw new ValidationError(
+        "investigate --workflow does not accept a positional question; the workflow document's request is authoritative.",
+        "Move the inputs into the workflow document.",
+      );
+    }
+    const PLAIN_MODE_ONLY = [
+      "verify",
+      "synthesize",
+      "context",
+      "sources",
+      "max-chars",
+      "depth",
+      "arms",
+      "budget-tokens",
+      "context-stdin",
+      "no-journal",
+    ] as const;
+    for (const flag of PLAIN_MODE_ONLY) {
+      if (flags[flag] !== undefined) {
+        throw new ValidationError(
+          `--${flag} is a plain-mode (EvidencePack) control and cannot combine with --workflow.`,
+          "Drop it, or run plain mode: investigate <question>.",
+        );
+      }
+    }
+    // The common parser supplies cache:false in addition to no-cache:true.
+    const derivedNoCache = flags.cache === false && args.includes("--no-cache") && !args.includes("--cache");
+    if (Object.keys(flags).some((key) =>
+      key !== "workflow" && key !== "no-cache" && !(key === "cache" && derivedNoCache))) {
+      throw new ValidationError("Unsupported workflow flag. See investigate --workflow --help.");
+    }
+    if (!dashStdin && (typeof flags.workflow !== "string" || flags.workflow === "")) {
+      throw new ValidationError(
+        "--workflow requires a file path or '-' for stdin.",
+        "Pass --workflow <path> or --workflow -.",
+      );
+    }
+    const source = dashStdin
+      ? ({ kind: "stdin" } as const)
+      : ({ kind: "file", path: flags.workflow as string } as const);
+
+    // ONE captured credential basis (the requirements-lane pattern):
+    // invocation provider secrets + the explicit direct-judge credential,
+    // with runtime/producer secrets joined through the handler's sink the
+    // moment they exist — the SAME live array reaches the projection, the
+    // error boundary and the save hook, so redaction can never act twice
+    // over a different basis.
+    const workflowSecrets: string[] = [
+      ...new Set([
+        ...deps.secrets,
+        ...(typeof deps.env?.TYPESAFE_API_KEY === "string" && deps.env.TYPESAFE_API_KEY !== ""
+          ? [deps.env.TYPESAFE_API_KEY]
+          : []),
+      ]),
+    ];
+    const workflowRouting = {
+      mode: "single" as const,
+      ...(deps.provider !== undefined ? { requested: deps.provider } : {}),
+      ...(deps.provider === undefined && deps.env?.SCOUTLINE_PROVIDER !== undefined
+        ? { requested: deps.env.SCOUTLINE_PROVIDER as string }
+        : {}),
+      effective: deps.provider ?? "zai",
+    };
+    const workflowSave = createSaveArtifactHook(deps, {
+      command: "investigate",
+      outputMode,
+      args: {
+        ...(deps.provider !== undefined ? { provider: deps.provider } : {}),
+        ...(flags["no-cache"] !== undefined ? { "no-cache": true } : {}),
+        workflow: true,
+      },
+      provider: workflowRouting as Parameters<typeof createSaveArtifactHook>[1]["provider"],
+    });
+    const workflowDeps: InvestigateRequirementsDeps = {
+      onResolvedProvider: (provider) => {
+        workflowRouting.effective = provider;
+      },
+      onRuntimeSecrets: (secrets) => {
+        for (const secret of secrets) {
+          if (typeof secret === "string" && secret !== "" && !workflowSecrets.includes(secret)) {
+            workflowSecrets.push(secret);
+          }
+        }
+      },
+      readFile: (path) => readRequirementsFileBounded(path, MAX_REQUIREMENTS_BYTES_HANDLER),
+      readStdin: (signal) => deps.invocation.readStdin(MAX_REQUIREMENTS_BYTES_HANDLER, signal),
+      ...(deps.requirementsUserInterrupt !== undefined
+        ? { registerUserInterrupt: deps.requirementsUserInterrupt }
+        : typeof process !== "undefined" && typeof process.on === "function" ? {
+            registerUserInterrupt: (onInterrupt: () => void) => {
+              process.on("SIGINT", onInterrupt);
+              return () => process.removeListener("SIGINT", onInterrupt);
+            },
+          } : {}),
+      now: deps.now ?? Date.now,
+      ...(deps.requirementsRuntime !== undefined ? { requirementsRuntime: deps.requirementsRuntime } : {}),
+    };
+    const workflowHost = {
+      env: deps.env,
+      secrets: workflowSecrets,
+      ...(deps.provider !== undefined ? { provider: deps.provider } : {}),
+      noCache: flags["no-cache"] !== undefined,
+      cache: deps.searchCache,
+      sleep: deps.searchSleep,
+      random: deps.searchRandom,
+      routing: deps.routing,
+      quotaState: deps.quotaState,
+      readQuotaSnapshot: deps.readRequirementsQuotaSnapshot,
+      providerDescriptors: deps.providerDescriptors,
+      judgeSettings: deps.judgeSettings,
+    };
+    return invokeCommand(
+      deps.invocation,
+      () =>
+        handleInvestigateWorkflow({ source }, workflowDeps, workflowHost, {
+          basis: workflowSecrets,
+        }),
+      outputMode,
+      undefined,
+      workflowSecrets,
+      workflowSave,
+      undefined,
+      finalizeWorkflowData,
+    );
+  }
+
   // Requirements mode (unified-investigation public-command-integration,
   // EXPERIMENTAL): --requirements <path|-> / --requirements-json '<json>'
   // delegate to the requirements handler BEFORE any plain-mode guard so
@@ -6809,8 +6965,8 @@ export async function main(
   // Experimental lane flags must not turn documentation into input parsing,
   // record work or a paid investigation. Keep plain-mode flag precedence intact.
   if (command === "investigate" && isCommandHelpInvocation(commandArgs) &&
-      commandArgs.some(arg => ["--requirements", "--requirements-json", "--caller-request", "--caller-request-json"].includes(arg))) {
-    invocation.writeStdout(INVESTIGATE_HELP + INVESTIGATE_REQUIREMENTS_HELP + INVESTIGATE_CALLER_HELP);
+      commandArgs.some(arg => ["--requirements", "--requirements-json", "--caller-request", "--caller-request-json", "--workflow"].includes(arg))) {
+    invocation.writeStdout(INVESTIGATE_HELP + INVESTIGATE_REQUIREMENTS_HELP + INVESTIGATE_CALLER_HELP + INVESTIGATE_WORKFLOW_HELP);
     return 0;
   }
 

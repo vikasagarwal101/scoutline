@@ -44,6 +44,7 @@
  *    read/search dispatch.
  */
 import {
+  compileLeanContract,
   runLeanInvestigation,
   LEAN_LIMIT_CEILINGS,
   type LeanContract,
@@ -375,6 +376,8 @@ function sameChannel(a: string, b: string): boolean {
   return new URL(a).hostname.toLowerCase() === new URL(b).hostname.toLowerCase();
 }
 
+type ResolutionDeps = LeanDeps & Partial<Pick<LeanUnifiedDeps, "extract" | "candidateJudge" | "extractorRevision">>;
+
 /**
  * Resolve a conflicting-evidence set under the caller's requested scope.
  * `deps` are the caller's engine dependencies (acquisition + semantics);
@@ -384,7 +387,7 @@ function sameChannel(a: string, b: string): boolean {
  */
 export async function resolveConflict(
   input: unknown,
-  deps: LeanDeps & Partial<Pick<LeanUnifiedDeps, "extract" | "candidateJudge" | "extractorRevision">>,
+  runtime: ResolutionDeps | (() => Promise<ResolutionDeps>),
 ): Promise<ResolveConflictOutcome> {
   const { scope, alternatives, limits } = validatedInput(input);
   const notes: string[] = [];
@@ -473,6 +476,9 @@ export async function resolveConflict(
     requirements,
   };
   if (limits !== undefined) contract.limits = limits;
+  // The workflow composes its runtime only after input and contract admission.
+  if (typeof runtime === "function") compileLeanContract(contract);
+  const deps = typeof runtime === "function" ? await runtime() : runtime;
 
   // --- acquisition boundary: admission + conservative canonical identity --
   // An unverified mirror claim must never suppress another alternative:

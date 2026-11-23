@@ -30,6 +30,10 @@ export type ScoutlineErrorCode =
   | "UNKNOWN_ERROR"
   | "CONFIGURATION_ERROR"
   | "TEST_ISOLATION_VIOLATION"
+  // User-initiated cancellation (SIGINT / caller abort). Not an input
+  // defect: no HTTP statusCode semantics, exit 130 per the repo's
+  // interruption convention. See CancellationError below.
+  | "USER_CANCELLED"
   // Retained investigation record store (caller-assisted engine).
   | "STORE_CAPACITY"
   | "OWNER_BUSY"
@@ -200,6 +204,27 @@ export class ConfigurationError extends ScoutlineError {
     // wrong (FILE_ERROR is reserved for file/media failures in Phase 3).
     super(message, "CONFIGURATION_ERROR", { help, exitCode: 3 });
     this.name = "ConfigurationError";
+  }
+}
+
+/**
+ * User-initiated cancellation of the current invocation (SIGINT / a
+ * caller-supplied abort signal), as opposed to invalid input
+ * (`ValidationError`), a retryable transport condition, or an
+ * authorization failure.
+ *
+ * Deliberately carries NO `statusCode`: a user abort is not an HTTP-4xx
+ * input defect, and the serialized envelope (`formatErrorOutput`) omits
+ * the key entirely rather than mapping a bogus 400. Exit code is 130 —
+ * the repo's existing interruption convention (consumers settle
+ * interrupted committed rounds the same way). Not retryable: the
+ * invocation was cancelled by its user, and retrying it is a fresh user
+ * decision, never an automatic one.
+ */
+export class CancellationError extends ScoutlineError {
+  constructor(message: string) {
+    super(message, "USER_CANCELLED", { exitCode: 130 });
+    this.name = "CancellationError";
   }
 }
 

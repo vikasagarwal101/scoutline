@@ -272,7 +272,7 @@ test("callable boundary: full in-flight mutation and cooperative abort at invest
   assert.equal(outcome.claimedUrl, ADMITTED_URL, "echo is the admitted claim, not the mutation");
   assert.equal(outcome.record.title, "Release manifest");
   assert.ok(judge.calls.length > 0, "the admitted judge dispatch ran");
-  assert.equal(outcome.result.requirements.version.reason, "counterevidence_not_acquired");
+  assert.equal(outcome.result.requirements.version.status, "satisfied", "closed declared source set closes contrary coverage");
 
   // Cooperative abort at the callable: already-aborted signal → the
   // entry throws before reading ANY input, malformed included.
@@ -593,9 +593,8 @@ test("pre-abort: an already-aborted signal throws before any input is read", asy
     (error) =>
       /aborted before admission/.test(error.message) &&
       error.exitCode === 130 &&
-      error.name === "ManifestRunCancelledError" &&
-      error.stopReason === "cancelled" &&
-      error.code === "VALIDATION_ERROR" && // shared taxonomy is closed; distinguished locally, production deferred
+      error.name === "CancellationError" &&
+      error.code === "USER_CANCELLED" &&
       error instanceof Error,
   );
   assert.equal(judge.calls.length, 0);
@@ -614,18 +613,14 @@ test("cancellation envelope pin: serialized shape today, exit 130, no HTTP statu
     thrown = error;
   }
   assert.ok(thrown, "pre-aborted run must throw");
-  // CURRENT serialized envelope — pinned so the deferred shared taxonomy
-  // change ("USER_CANCELLED") flips exactly `code` and nothing else.
   const payload = JSON.parse(formatErrorOutput(thrown, "json"));
   assert.deepEqual(payload, {
     success: false,
     error: "Manifest run aborted before admission.",
-    code: "VALIDATION_ERROR",
+    code: "USER_CANCELLED",
   });
   assert.equal("statusCode" in payload, false, "a user abort carries no HTTP status");
   assert.equal(getErrorExitCode(thrown), 130);
-  // And exit 130 alone does not reclassify the envelope — that gap is
-  // the acknowledged shared handoff, not a local fix.
 });
 
 test("in-flight abort witness: a mid-run abort reaches the live dispatch and stops further work", async () => {
@@ -676,11 +671,10 @@ test("in-flight abort witness: a mid-run abort reaches the live dispatch and sto
   assert.equal(outcome.cancelled, true);
   assert.equal(outcome.stopReason, "cancelled");
   const { result } = outcome;
-  // The run SETTLES (no hang, no throw) with nothing accepted — and the
-  // PARTIAL EVIDENCE it earned before the abort is retained: extraction
-  // and the single judgment remain in the audit trail, unpublished.
-  assert.deepEqual(result.data, {});
-  assert.equal(result.requirements.version.status, "unresolved");
+  // Preserve the accepted version and the audit trail. The interrupt
+  // prevented the license judgment, so the license stays unpublished.
+  assert.deepEqual(result.data, { version: "2.4.0" });
+  assert.equal(result.requirements.version.status, "satisfied");
   assert.equal(result.requirements.license.status, "unresolved");
   assert.ok(
     result.requirements.version.attemptedRecords.some((r) => r.metadata?.kind === "extraction"),
@@ -692,11 +686,9 @@ test("in-flight abort witness: a mid-run abort reaches the live dispatch and sto
   );
 });
 
-test("second-clean-judge control: both fields judged clean, abort in the second dispatch still cancels", async () => {
-  // Greptile r4659930554 edge: standing accepts must not launder an
-  // interrupted run into a normal one when their rows settle with a
-  // withholding reason instead of the engine's "cancelled". The marker
-  // follows the invocation-window interruption, not any row reason.
+test("second-clean-judge control: both fields accepted, abort in the second dispatch does not relabel the result", async () => {
+  // The closed basis permits both completed judgments to be accepted.
+  // The abort marker requires an incomplete settlement.
   const controller = new AbortController();
   const dispatches = [];
   const judge = async (input) => {
@@ -720,16 +712,16 @@ test("second-clean-judge control: both fields judged clean, abort in the second 
   );
   assert.equal(dispatches.length, 2, "both fields dispatched clean before/into the abort");
   assert.equal(controller.signal.aborted, true);
-  assert.equal(outcome.cancelled, true, "interrupted run is marked regardless of row reasons");
-  assert.equal(outcome.stopReason, "cancelled");
-  // Earned partial evidence preserved: both judgments remain in the audit.
+  assert.equal(outcome.cancelled, false);
+  assert.equal("stopReason" in outcome, false);
+  assert.equal(outcome.result.status, "complete");
   for (const id of ["version", "license"]) {
     assert.ok(
       outcome.result.requirements[id].attemptedRecords.some((r) => r.metadata?.kind === "candidate-judgment"),
       `${id} judgment audit retained`,
     );
   }
-  assert.deepEqual(outcome.result.data, {});
+  assert.deepEqual(outcome.result.data, { version: "2.4.0", license: "MIT" });
 });
 
 test("completed/late controls: settled runs are never relabeled by a post-run abort", async () => {
@@ -751,7 +743,7 @@ test("completed/late controls: settled runs are never relabeled by a post-run ab
   // guard on the next call, not by relabeling this one.
   await assert.rejects(
     () => mi.investigateReleaseManifest(FLOW_INPUT(EXACT, clean, { externalSignal: controller.signal })),
-    (error) => error.name === "ManifestRunCancelledError" && error.exitCode === 130,
+    (error) => error.name === "CancellationError" && error.exitCode === 130,
   );
 });
 
@@ -823,7 +815,8 @@ test("teardown microtask control: the disclosed settlement window catches a post
     }
     const answers = {};
     input.candidates.forEach((c, i) => {
-      answers[`q${i}s`] = { type: "noul", noul: 0.97 };
+      // Leave one field unresolved even though both judges returned.
+      answers[`q${i}s`] = { type: "noul", noul: c.fieldId === "license" ? 0.05 : 0.97 };
       answers[`q${i}c`] = { type: "noul", noul: 0.01 };
     });
     return {
@@ -847,9 +840,9 @@ test("teardown microtask control: the disclosed settlement window catches a post
   assert.equal(controller.signal.aborted, true);
   assert.equal(outcome.cancelled, true, "abort inside the disclosed settlement window marks cancelled");
   assert.equal(outcome.stopReason, "cancelled");
-  // And the outcome is NOT a claim that work stopped: everything earned
-  // is still here, unpublished as always in the closed set.
-  assert.deepEqual(outcome.result.data, {});
+  assert.equal(outcome.result.status, "partial");
+  assert.deepEqual(outcome.result.data, { version: "2.4.0" });
+  assert.equal(outcome.result.requirements.license.status, "unresolved");
 });
 
 test("ordinary judge rejection without abort stays non-cancelled", async () => {
@@ -867,8 +860,8 @@ test("normal runs keep the ordinary shape: cancelled === false, no stopReason fi
   const outcome = await mi.investigateReleaseManifest(FLOW_INPUT(EXACT, judge));
   assert.equal(outcome.cancelled, false);
   assert.equal("stopReason" in outcome, false);
-  assert.equal(outcome.result.status, "partial"); // closed-set withholding, unchanged
-  assert.deepEqual(outcome.result.data, {});
+  assert.equal(outcome.result.status, "complete");
+  assert.deepEqual(outcome.result.data, { version: "2.4.0", license: "MIT" });
   // The pre-judgement manifest without any abort also settles normally.
   const prose = await mi.investigateReleaseManifest(FLOW_INPUT(PROSE, offlineJudge()));
   assert.equal(prose.cancelled, false);
@@ -937,12 +930,12 @@ test("judge input is pinned to the digest-derived opaque locator, never the clai
 
 // ---------------------------------------------------------------------------
 // Complete first-slice flow through the shared engine
-// (closed document set: NO fake acquisition, acceptance stays unresolved)
+// (closed declared source with no external acquisition)
 // ---------------------------------------------------------------------------
 
 const run = (text, judge) => mi.investigateReleaseManifest(FLOW_INPUT(text, judge));
 
-test("flow: closed document set refuses search and never claims contrary coverage", async () => {
+test("flow: closed document set refuses search without recording success", async () => {
   const judge = offlineJudge();
   const { result } = await run(EXACT, judge);
   const failedSearches = result.acquisitionLog.filter((e) => e.kind === "search-failed");
@@ -951,23 +944,56 @@ test("flow: closed document set refuses search and never claims contrary coverag
   assert.equal(result.acquisitionLog.filter((e) => e.kind === "search").length, 0);
 });
 
-test("flow: judged-clean manifest stays UNPUBLISHED without a closed-source contract", async () => {
+test("flow: judged-clean manifest ACCEPTS over the closed declared source set", async () => {
   const judge = offlineJudge();
   const { result, parse } = await run(EXACT, judge);
   // Candidates WERE validated and judged clean — the trail exists...
   assert.ok(judge.calls.length > 0, "candidate judge dispatched on the retained manifest");
   const trusted = result.requirements.version.attemptedRecords.filter((r) => r.trusted === true);
   assert.ok(trusted.length > 0, "the earned acceptance trail is retained in the audit");
-  // ...but a closed set has no counterevidence coverage, so nothing may
-  // publish. Honest outcome: unresolved with the explicit reason.
-  assert.deepEqual(result.data, {});
-  assert.equal(result.requirements.version.status, "unresolved");
-  assert.equal(result.requirements.version.reason, "counterevidence_not_acquired");
-  assert.equal(result.requirements.license.status, "unresolved");
-  assert.equal(result.requirements.license.reason, "counterevidence_not_acquired");
-  assert.equal(result.status, "partial");
+  // ...and the engine's closed-evidence capability closes contrary
+  // coverage over the one declared retained source: values publish.
+  assert.equal(result.requirements.version.status, "satisfied");
+  assert.equal(result.requirements.version.value, "2.4.0");
+  assert.equal(result.requirements.license.status, "satisfied");
+  assert.equal(result.requirements.license.value, "MIT");
+  assert.equal(result.data.version, "2.4.0");
+  assert.equal(result.data.license, "MIT");
+  assert.equal(result.status, "complete");
   // Lane report binds to the same admitted snapshot the engine judged.
   assert.equal(parse.sourceDigest, sha256(EXACT));
+});
+
+test("flow: without judgment the closed set still proposes nothing as accepted", async () => {
+  const { result } = await run(EXACT, null);
+  assert.equal(result.requirements.version.status, "unresolved");
+  assert.equal(result.requirements.license.status, "unresolved");
+  assert.deepEqual(result.data, {});
+  assert.equal(result.status, "partial");
+});
+
+test("flow: the authorized runtime judge routes through the options seam, never the caller label", async () => {
+  const judge = offlineJudge();
+  // Caller JSON asserting the production capability spelling rejects.
+  await assert.rejects(
+    mi.investigateReleaseManifest({
+      ...FLOW_INPUT(EXACT, null),
+      judgeTransmission: { capability: "authorized-runtime-judge", dispatch: judge.judge },
+    }),
+    (error) => error.code === "VALIDATION_ERROR",
+  );
+  await assert.rejects(
+    mi.investigateReleaseManifest(FLOW_INPUT(EXACT, judge), { authorizedRuntimeJudge: judge.judge }),
+    /Only one judge transmission route/,
+  );
+  assert.equal(judge.calls.length, 0);
+  // The trusted options seam (CLI wiring) routes the same judge.
+  const { result } = await mi.investigateReleaseManifest(FLOW_INPUT(EXACT, null), {
+    authorizedRuntimeJudge: judge.judge,
+  });
+  assert.ok(judge.calls.length > 0, "authorized runtime judge dispatched");
+  assert.equal(result.requirements.version.status, "satisfied");
+  assert.equal(result.status, "complete");
 });
 
 test("flow: ambiguous version and missing license judge nothing and invent nothing", async () => {
@@ -1008,3 +1034,26 @@ test("flow: producer disabled reports no_extractor without inventing values", as
 // (`[run-tests] mode=offline files=...,tests/document-manifest.test.js,...`
 // in the gate logs) and this suite's tests being counted in the offline
 // gate totals — not a duplicated selection rule inside the suite.
+
+
+test("authorized manifest judge settles against the signal captured for the engine", async () => {
+  const original = new AbortController();
+  const replacement = new AbortController();
+  const input = FLOW_INPUT(EXACT, null, { externalSignal: original.signal });
+  const judge = offlineJudge();
+  const outcome = await mi.investigateReleaseManifest(input, {
+    authorizedRuntimeJudge: (request, dispatch) => {
+      input.externalSignal = replacement.signal;
+      original.abort();
+      assert.equal(dispatch.signal.aborted, true);
+      return judge.judge(request);
+    },
+  });
+  assert.equal(judge.calls.length, 1);
+  assert.equal(replacement.signal.aborted, false);
+  assert.equal(outcome.cancelled, true);
+  assert.equal(outcome.stopReason, "cancelled");
+  assert.equal(outcome.record.content, EXACT);
+  assert.equal(outcome.parse.sourceDigest, sha256(EXACT));
+  assert.ok(Object.values(outcome.result.requirements).some((row) => row.reason === "cancelled"));
+});

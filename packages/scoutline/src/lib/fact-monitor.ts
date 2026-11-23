@@ -1556,6 +1556,29 @@ export async function runFactMonitorTick(
   const signal = mergeSignals([options.signal, deps.externalSignal]);
   const normalized: FactMonitorOptions = signal === undefined ? options : { ...options, signal };
   const prepared = await prepareFactMonitorTick(root, monitorId, definition, normalized);
+  return executePreparedFactMonitorTick(root, prepared, deps, normalized);
+}
+
+/** Run a prepared tick with the workflow's pre-publication capability check. */
+export async function runPreparedFactMonitorTick(
+  root: string,
+  prepared: PreparedFactMonitorTick,
+  deps: LeanDeps,
+  options: FactMonitorOptions,
+  beforeCommit?: (outcome: FactMonitorEngineOutcome) => void,
+): Promise<FactMonitorTickReport> {
+  const signal = mergeSignals([options.signal, deps.externalSignal]);
+  const normalized: FactMonitorOptions = signal === undefined ? options : { ...options, signal };
+  return executePreparedFactMonitorTick(root, prepared, deps, normalized, beforeCommit);
+}
+
+async function executePreparedFactMonitorTick(
+  root: string,
+  prepared: PreparedFactMonitorTick,
+  deps: LeanDeps,
+  normalized: FactMonitorOptions,
+  beforeCommit?: (outcome: FactMonitorEngineOutcome) => void,
+): Promise<FactMonitorTickReport> {
   let engineOutcome: FactMonitorEngineOutcome;
   try {
     // Pass deps through UNCHANGED when no override is needed. When the
@@ -1598,12 +1621,13 @@ export async function runFactMonitorTick(
     if (normalized.signal?.aborted) {
       // The cancellation that failed the engine also stops the tick —
       // a user cancellation must not be recorded as an unresolved attempt.
-      throw new FactMonitorCancelledError(monitorId);
+      throw new FactMonitorCancelledError(prepared.monitorId);
     }
     engineOutcome = {
       kind: "error",
       reason: error instanceof Error ? error.message : String(error),
     };
   }
+  beforeCommit?.(engineOutcome);
   return commitFactMonitorTick(root, prepared, engineOutcome, normalized);
 }

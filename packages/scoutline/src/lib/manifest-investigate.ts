@@ -23,31 +23,21 @@
  * the read seam, or the parse report.
  *
  * CLOSED DOCUMENT SET — no fake acquisition. This slice configures NO
- * external search: the search dependency refuses loudly, the engine
- * records search-failed events, and a failed counterevidence search is
- * NOT coverage. A manifest whose candidates validate and even judge
- * clean therefore ends UNRESOLVED with reason `counterevidence_not_
- * acquired` — the honest outcome for a closed set. Legitimately
- * accepting values from a closed document set requires an EXPLICIT
- * engine contract declaration that does not exist today; the narrow
- * interface this needs (proposed for convergence, deliberately NOT
- * implemented here — it is an engine change):
- *
- *   contract.evidencePolicy = {
- *     acquisition: "none",                    // skip the search plan entirely; nothing faked
- *     documentSet: "closed",                  // evidence = the provided documents only
- *     counterevidence: "provided-documents",  // opposing context = other provided documents
- *   }
- *
- * With that declaration the engine could mark coverage
- * "closed-document-set" and finalize acceptance judged over the provided
- * set; without it, unresolved is the only truthful answer. No public CLI
- * surface is claimed — shared CLI/producer-registration wiring is
- * proposed in the coordination review.
+ * external search: the search dependency refuses loudly and the engine
+ * records search-failed events (a failed search is never coverage, and
+ * nothing is faked as a successful one). Contrary coverage for the
+ * slice's fields closes through the engine's closed-evidence capability
+ * (deps.closedEvidence, a private adapter capability declared HERE —
+ * never a client-assertable contract key): the retained manifest record
+ * is the one declared source, and acceptance publishes only while its
+ * retained bytes match the admission digest, through the engine's
+ * unchanged acceptCandidate and final-context proof checks. Without a
+ * judge (no consent, no authorized runtime judge) nothing is judged and
+ * the honest outcome stays unresolved/proposals.
  */
 
 import { createHash } from "node:crypto";
-import { ValidationError } from "./errors.js";
+import { CancellationError, ValidationError } from "./errors.js";
 import {
   RELEASE_MANIFEST_FIELD_BINDINGS,
   RELEASE_MANIFEST_GRAMMAR_ID,
@@ -98,9 +88,7 @@ export interface ManifestInvestigationInput {
    * it is not proof of offline execution and not production consent.
    * Optional: omitted (or denied) means no candidate judgment dispatches
    * at all — the engine retains validated candidates but accepts
-   * nothing. There is NO production route from this module: externally
-   * authorized production judging stays in the shared integration,
-   * behind its own consent review.
+   * nothing unless the workflow supplies its separately authorized runtime judge.
    */
   readonly judgeTransmission?: OfflineJudgeSeam;
   /** Deterministic by default; supply a real clock for deadline runs. */
@@ -224,10 +212,9 @@ export interface ManifestInvestigationOutcome {
  * preserved, never dropped — so a consumer settling exit 130 can still
  * project what was earned. `stopReason` carries the settlement
  * vocabulary; the pre-dispatch windows keep their typed throws
- * (ManifestRunCancelledError). No success:false claim is made when the
+ * (CancellationError). No success:false claim is made when the
  * signal wins — the marker, not an error envelope, is the settlement
- * signal. The typed USER_CANCELLED taxonomy itself stays in shared
- * integration (no shared engine/API move here).
+ * signal. Pre-dispatch cancellation uses the shared USER_CANCELLED taxonomy.
  */
 export interface ManifestRunCancelledOutcome {
   readonly cancelled: true;
@@ -265,7 +252,7 @@ export function manifestContract() {
   } as const;
 }
 
-function admitManifestInput(input: ManifestInvestigationInput): {
+export function admitManifestInput(input: ManifestInvestigationInput): {
   readonly text: string;
   readonly admission: Readonly<ManifestAdmission>;
 } {
@@ -286,7 +273,7 @@ function admitManifestInput(input: ManifestInvestigationInput): {
   if (typeof title !== "string" || title.length === 0) {
     throw new ValidationError("Manifest admission title must be a non-empty string.");
   }
-  // Consent is checked FIRST; bounds next — both before any digest,
+  // Material admission comes first, then bounds, both before any digest,
   // record or engine invocation.
   const text = admitManifestText(input.manifestText);
   return { text, admission: Object.freeze({ materialClass, claimedUrl, title }) };
@@ -322,7 +309,18 @@ export function manifestEvidenceRecord(
  * control). Everything derives from ONE admitted snapshot; mutating the
  * caller's input object afterwards changes nothing the engine sees.
  */
-export function buildManifestDeps(input: ManifestInvestigationInput) {
+/** Trusted judge-transmission route for the public CLI wiring (function
+ *  parameter — caller JSON can never assert it). Mirrors the offline
+ *  test seam's dispatch shape. */
+export type AuthorizedRuntimeJudge = (
+  input: LeanCandidateJudgeInput,
+  options?: { timeoutMs: number; signal: AbortSignal },
+) => Promise<LeanCandidateJudgeResponse>;
+
+export function buildManifestDeps(
+  input: ManifestInvestigationInput,
+  options: { authorizedRuntimeJudge?: AuthorizedRuntimeJudge } = {},
+) {
   const producer = resolveDocumentProducer(input.producerId ?? RELEASE_MANIFEST_GRAMMAR_ID);
   const { text, admission } = admitManifestInput(input);
   // OWNED SIGNAL CAPTURE: one synchronous read of the caller's property,
@@ -332,12 +330,17 @@ export function buildManifestDeps(input: ManifestInvestigationInput) {
   // observes.
   const signal = input.externalSignal;
   const record = manifestEvidenceRecord(text, admission);
+  if (input.judgeTransmission !== undefined && options.authorizedRuntimeJudge !== undefined) {
+    throw new ValidationError(
+      "Only one judge transmission route may be admitted: the caller test seam or the authorized runtime judge, never both.",
+    );
+  }
   const deps = {
     now: input.now ?? (() => 0),
     // Closed document set: NO external acquisition is configured. The
     // search dependency REFUSES — the engine logs search-failed and a
     // failed counterevidence search is not coverage, so nothing is
-    // faked and acceptance honestly stays unresolved.
+    // faked.
     search: async () => {
       throw Object.assign(new Error("Manifest closed-document-set: no acquisition configured."), {
         code: "MANIFEST_NO_ACQUISITION",
@@ -353,14 +356,23 @@ export function buildManifestDeps(input: ManifestInvestigationInput) {
     judge: async () => {
       throw new ValidationError("enum_fields_not_declared_in_manifest_slice");
     },
-    // Judge transmission is consent-gated: without the module-minted
-    // seam token there is NO dispatch (null), and the engine keeps
-    // acceptance off.
-    candidateJudge: manifestJudgeConsent(input),
+    // Judge transmission is consent-gated: without an admitted capability
+    // there is NO dispatch (null), and the engine keeps acceptance off.
+    candidateJudge: manifestJudgeConsent(input) ?? options.authorizedRuntimeJudge ?? null,
     extract: producer.create(Object.keys(RELEASE_MANIFEST_FIELD_BINDINGS)).extract,
     extractorRevision: RELEASE_MANIFEST_PRODUCER_REVISION,
     ...(signal !== undefined ? { externalSignal: signal } : {}),
     seed: { evidence: [record] },
+    // Closed evidence set (engine capability, v3 public integration):
+    // the manifest record is the ONE declared source; both slice fields
+    // close contrary coverage only while its retained bytes match the
+    // admission digest.
+    closedEvidence: {
+      sources: [{ url: record.url, sha256: record.url.slice("urn:x-scoutline:manifest:sha256-".length) }],
+      fieldSources: Object.fromEntries(
+        Object.keys(RELEASE_MANIFEST_FIELD_BINDINGS).map((field) => [field, [record.url]]),
+      ),
+    },
   };
   // The captured signal is RETURNED: it is the exact object the engine's
   // deps bridge consulted, so the entry point's post-admission and
@@ -405,46 +417,6 @@ function manifestJudgeConsent(
 }
 
 /**
- * Locally distinguishable user-cancellation settlement (lane-local
- * subclass; the shared error taxonomy has no cancellation code yet —
- * production taxonomy is explicitly deferred to shared integration).
- * The inherited `code` stays "VALIDATION_ERROR" (the ScoutlineErrorCode
- * union is closed in the shared module); `name` and `stopReason`
- * distinguish cancellation locally, and exit stays 130 (user
- * cancellation per the repo's existing interruption convention — the
- * caller lane settles interrupted committed rounds the same way). The
- * lean engine itself reports aborts as the reason string "cancelled" on
- * unresolved fields.
- *
- * SHARED-OWNER HANDOFF (minimal taxonomy cure; not doable in this lane
- * because errors.ts is shared): add "USER_CANCELLED" to the
- * ScoutlineErrorCode union and a CancellationError class (code
- * USER_CANCELLED, default exitCode 130, no statusCode), then replace
- * this subclass with it. The observable output regression to pin at
- * that point: formatErrorOutput of a user abort currently emits
- * {"success":false,"error":"...","code":"VALIDATION_ERROR"} with exit
- * 130 and NO statusCode (suppressed below — a user abort has no HTTP
- * status); after the taxonomy change exactly `code` flips to
- * "USER_CANCELLED" and nothing else in the envelope may move. Until
- * then, exit 130 alone does NOT remove the bad-input classification in
- * the serialized envelope — that is the acknowledged gap.
- */
-class ManifestRunCancelledError extends ValidationError {
-  readonly stopReason: "cancelled" = "cancelled";
-  constructor(message: string) {
-    super(message);
-    this.name = "ManifestRunCancelledError";
-    // A user cancellation has no HTTP status semantics: drop the 400
-    // the validation parent would serialize, and settle exit 130.
-    Object.assign(this, { statusCode: undefined, exitCode: 130 });
-  }
-}
-
-function manifestRunCancelled(message: string): ManifestRunCancelledError {
-  return new ManifestRunCancelledError(message);
-}
-
-/**
  * Run the first-slice flow over one retained manifest. Cancellation is
  * cooperative and front-loaded: an already-aborted signal throws BEFORE
  * any input is read or admitted; a signal aborting after admission
@@ -455,18 +427,19 @@ function manifestRunCancelled(message: string): ManifestRunCancelledError {
  *
  * Acceptance is the engine's: validateCandidates → assessCandidates →
  * acceptCandidate — over a closed document set, so without an explicit
- * closed-source engine contract (see module header) fields end
- * counterevidence_not_acquired rather than accepted.
+ * retained digest matching the closed-source declaration, withheld fields
+ * remain unresolved.
  */
 export async function investigateReleaseManifest(
   input: ManifestInvestigationInput,
+  options: { authorizedRuntimeJudge?: AuthorizedRuntimeJudge } = {},
 ): Promise<ManifestInvestigationSettlement> {
   // Pre-abort BEFORE reading input: nothing of the caller's material is
   // touched once cancellation is already signalled.
   if (input.externalSignal?.aborted) {
-    throw manifestRunCancelled("Manifest run aborted before admission.");
+    throw new CancellationError("Manifest run aborted before admission.");
   }
-  const { deps, record, admission, signal } = buildManifestDeps(input);
+  const { deps, record, admission, signal } = buildManifestDeps(input, options);
   // Prepare the parse ONCE from the OWNED admitted body — the report and
   // the engine dispatch share this snapshot, and no later mutation or
   // cancellation re-scans anything.
@@ -475,7 +448,7 @@ export async function investigateReleaseManifest(
   // the deps bridge handed the engine, never a reread of the caller's
   // (replaceable) input.externalSignal property.
   if (signal?.aborted) {
-    throw manifestRunCancelled("Manifest run aborted after admission.");
+    throw new CancellationError("Manifest run aborted after admission.");
   }
   // Settlement observer (standalone adapter contract): no authoritative
   // run-stop field exists on LeanResult, so the OWNED captured signal is
@@ -507,31 +480,17 @@ export async function investigateReleaseManifest(
   // then settle with withholding or judge-unavailable reasons). A fully
   // satisfied result is never relabeled; an abort after settlement
   // cannot relabel (the observer's lifetime ended with the invocation).
-  const incompleteSettlement = Object.values(result.requirements).some(
-    (row) => row.status !== "satisfied",
-  );
-  const cancelledInFlight = interruptedDuringRun && incompleteSettlement;
-  if (cancelledInFlight) {
-    return {
-      cancelled: true,
-      stopReason: "cancelled",
-      result,
-      parse,
-      materialClass: admission.materialClass,
-      claimedUrl: admission.claimedUrl,
-      claimedUrlVerification: "unverified",
-      record,
-    };
-  }
-  return {
-    cancelled: false,
+  const outcome = {
     result,
     parse,
     materialClass: admission.materialClass,
     claimedUrl: admission.claimedUrl,
-    claimedUrlVerification: "unverified",
+    claimedUrlVerification: "unverified" as const,
     record,
   };
+  const cancelled = interruptedDuringRun &&
+    Object.values(result.requirements).some((row) => row.status !== "satisfied");
+  return cancelled ? { ...outcome, cancelled: true, stopReason: "cancelled" } : { ...outcome, cancelled: false };
 }
 
 export { manifestExtractorAttempt };

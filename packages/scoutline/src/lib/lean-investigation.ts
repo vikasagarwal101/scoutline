@@ -227,6 +227,83 @@ export interface LeanDispatchOptions {
   readonly signal: AbortSignal;
 }
 
+/**
+ * Closed evidence set (v3 public integration): a PRIVATE runtime/adapter
+ * capability carried on deps — never a client-assertable contract key
+ * (the compiler's fixed key set rejects it there by construction). The
+ * declaring adapter (structured extraction, implementation audit) owns
+ * the exact distinct source identity and the digest of the accepted
+ * retained review bytes; a field's contrary coverage closes on this
+ * basis ONLY while every source its obligation names is currently
+ * retained byte-exact. Nothing else changes: the open-search contrary
+ * policy, the frozen query plan and the acceptCandidate/final-context
+ * proof machinery are untouched, and no search is faked as successful —
+ * acquisition events keep reporting honest refusals.
+ */
+export interface LeanClosedEvidenceSource {
+  readonly url: string;
+  /** null declares an unavailable source. Its obligation cannot close. */
+  readonly sha256: string | null;
+}
+
+export interface LeanClosedEvidence {
+  /** Distinct declared sources: identity + digest of the retained bytes. */
+  readonly sources: readonly LeanClosedEvidenceSource[];
+  /** Per-field required source urls (⊆ sources). A field not named here
+   *  never closes on this basis; an absent/refused declared source blocks
+   *  only the fields that name it. */
+  readonly fieldSources: Readonly<Record<string, readonly string[]>>;
+  /** Judge declared enum fields only against their own trusted snapshot basis. */
+  readonly scopeEnumAssessments?: true;
+}
+
+/** Validate a closed-evidence declaration at admission — before any
+ *  acquisition. Returns the digest map, or undefined when absent. */
+function validateClosedEvidence(
+  declaration: LeanDeps["closedEvidence"],
+  hasField: (id: string) => boolean,
+): { byUrl: ReadonlyMap<string, string | null>; byField: ReadonlyMap<string, readonly string[]> } | undefined {
+  if (declaration === undefined) return undefined;
+  if (!isPlainObject(declaration)) {
+    throw new ValidationError("closedEvidence must be an object.");
+  }
+  if (!Array.isArray(declaration.sources) || declaration.sources.length === 0 ||
+      declaration.sources.length > LEAN_LIMIT_CEILINGS.maxUniqueReads) {
+    throw new ValidationError("closedEvidence.sources must be a non-empty bounded array.");
+  }
+  const byUrl = new Map<string, string | null>();
+  for (const source of declaration.sources) {
+    if (!isPlainObject(source) || !isNonEmptyString(source.url) ||
+        (source.sha256 !== null && (typeof source.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(source.sha256)))) {
+      throw new ValidationError("closedEvidence.sources entries require a URL and a SHA-256 digest or null.");
+    }
+    if (byUrl.has(source.url)) {
+      throw new ValidationError(`closedEvidence.sources declares duplicate url ${source.url}.`);
+    }
+    byUrl.set(source.url, source.sha256);
+  }
+  if (!isPlainObject(declaration.fieldSources)) {
+    throw new ValidationError("closedEvidence.fieldSources must be an object.");
+  }
+  const byField = new Map<string, readonly string[]>();
+  for (const [fieldId, urls] of Object.entries(declaration.fieldSources)) {
+    if (!hasField(fieldId)) {
+      throw new ValidationError("closedEvidence.fieldSources must name declared fields.");
+    }
+    if (!Array.isArray(urls) || urls.length === 0 || urls.length > byUrl.size ||
+        !urls.every(isNonEmptyString) || new Set(urls).size !== urls.length) {
+      throw new ValidationError(`closedEvidence.fieldSources.${fieldId} must be a non-empty array of urls.`);
+    }
+    for (const url of urls) {
+      if (!byUrl.has(url)) {
+        throw new ValidationError(`closedEvidence.fieldSources.${fieldId} names url ${url} that sources does not declare.`);
+      }
+    }
+    byField.set(fieldId, [...urls]);
+  }
+  return { byUrl, byField };
+}
+
 export interface LeanDeps {
   readonly search: (
     query: string,
@@ -246,6 +323,12 @@ export interface LeanDeps {
    * only removes its listener at exit. Absent = unchanged behavior.
    */
   readonly externalSignal?: AbortSignal;
+  /**
+   * Closed evidence set (v3 public integration): PRIVATE adapter
+   * capability — see {@link LeanClosedEvidence}. Absent = unchanged
+   * open-search contrary policy.
+   */
+  readonly closedEvidence?: LeanClosedEvidence;
 }
 
 /**
@@ -1206,6 +1289,22 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
   let candidateJudgeCalls = 0;
   let retainedBytes = 0;
   const startMs = deps.now();
+  const closedDeclaration = deps.closedEvidence;
+  const closed = validateClosedEvidence(closedDeclaration, (id) => fields.has(id));
+  const scopeEnumAssessments = closedDeclaration?.scopeEnumAssessments === true;
+  if (closed !== undefined) {
+    coverageNotes.push(
+      `closed-evidence-set: ${closed.byUrl.size} declared source(s); each closed field requires its declared sources to be retained byte-exact in the assessed context`,
+    );
+  }
+  const contraryComplete = (f: FieldState): boolean => {
+    const urls = closed?.byField.get(f.id);
+    if (urls === undefined) return f.ctrvIssued && f.ctrvSources.size === 0;
+    return urls.every((url) => {
+      const rec = evidence.find((e) => e.url === url);
+      return rec !== undefined && callerDigest(rec.content) === closed!.byUrl.get(url);
+    });
+  };
   // Caller-rounds seed (caller-assisted ticket): retained evidence and
   // round-scoped lead exclusions injected BEFORE the loop. A seeded
   // record carries its origins and counts toward this round's retained
@@ -1213,9 +1312,22 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
   // eligible work (a prior round's failed read requeues with a fresh
   // attempt budget — prior failure never becomes coverage).
   const seed = (deps as { seed?: LeanSeed }).seed;
+  let closedSeedCount = 0;
   if (seed !== undefined) {
+    if (closed !== undefined && (seed.evidence?.length ?? 0) > limits.maxUniqueReads) {
+      throw new ValidationError("Closed seed evidence exceeds the source ceiling.");
+    }
     for (const rec of seed.evidence ?? []) {
       const byteLength = Buffer.byteLength(rec.content, "utf8");
+      if (closed !== undefined) {
+        closedSeedCount += 1;
+        retainedBytes += byteLength;
+        if (byteLength > limits.maxEvidenceBytesPerDoc ||
+            retainedBytes > limits.maxTotalEvidenceBytes ||
+            evidence.some((seed) => seed.url === rec.url || seed.evidenceId === rec.evidenceId)) {
+          throw new ValidationError("Closed seed evidence exceeds byte limits or contains duplicate identities.");
+        }
+      }
       evidence.push({ ...rec, byteLength });
       // Reused context is not newly admitted round bytes.
       originsByUrl.set(rec.url, new Set(rec.origins));
@@ -1641,7 +1753,8 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
     // are not future acquisition for progress purposes (the contrary
     // round records them as unassessed coverage, which blocks acceptance
     // honestly instead).
-    const canReadMore = (): boolean => hasUnread() && attemptedUrls.size < limits.maxUniqueReads;
+    const usedReadSlots = (): number => attemptedUrls.size + closedSeedCount;
+    const canReadMore = (): boolean => hasUnread() && usedReadSlots() < limits.maxUniqueReads;
 
     // One paid query may be the contrary round of several fields. Only
     // genuine success settles coverage; every owner keeps its unread URLs.
@@ -1893,7 +2006,7 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
             // Exact semantics stay visited while acquisition runs. Publication
             // still waits for actual coverage, stops and live proof guards.
             f.acceptedCandidate = { provenance: proof.provenance, judgment: proof.judgment };
-            f.terminal = quiescent && runTypedStop === null && f.ctrvIssued && f.ctrvSources.size === 0
+            f.terminal = quiescent && runTypedStop === null && contraryComplete(f)
               ? { status: "satisfied", value: proof.provenance.value } : null;
             f.lastJudgedKey = evidenceKey(); f.depBindingKey = depBindingKeyOf(f);
             continue;
@@ -1927,7 +2040,7 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
                 const prior = f.sideHistory.get(d.evidenceId);
                 return !prior || prior.every((before, axis) => before === null || before === [d.relevant, d.supportsClaim, d.refutesClaim][axis]);
               });
-              const covered = runTypedStop === null && f.ctrvIssued && f.ctrvSources.size === 0;
+              const covered = runTypedStop === null && contraryComplete(f);
               f.terminal = !quiescent ? null : !compatible ? { status: "unresolved", reason: "inconsistent_judgments" }
                 : old.disposition.status === "satisfied" && !covered ? null : { ...old.disposition };
               f.pendingAccept = compatible && runTypedStop === null && old.disposition.status === "satisfied" ? old.disposition.value : null;
@@ -2177,7 +2290,7 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
           const batch: { url: string; title: string }[] = [];
           while (
             batch.length < limits.readBatchSize &&
-            attemptedUrls.size + batch.length < limits.maxUniqueReads &&
+            usedReadSlots() + batch.length < limits.maxUniqueReads &&
             hasUnread()
           ) {
             batch.push(queue[readPtr]!);
@@ -2439,7 +2552,7 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
         const batch: { url: string; title: string }[] = [];
         while (
           batch.length < limits.readBatchSize &&
-          attemptedUrls.size + batch.length < limits.maxUniqueReads &&
+          usedReadSlots() + batch.length < limits.maxUniqueReads &&
           hasUnread()
         ) {
           batch.push(queue[readPtr]!);
@@ -3191,6 +3304,18 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
         // Visited even when preflight refuses this context; only actual
         // invocations consume the shared slot or emit a dispatch event.
         f.lastJudgedKey = key;
+        // The trusted adapter can declare a complete, field-specific basis.
+        // Scope only the enum request and resulting verdict. Acquisition,
+        // finalization keys, and the shared dispatch budget stay run-wide.
+        const declaredUrls = scopeEnumAssessments && seed?.callerHistory === undefined
+          ? closed?.byField.get(f.id)
+          : undefined;
+        const assessedEvidence = declaredUrls === undefined
+          ? evidence
+          : evidence.filter((record) => declaredUrls.includes(record.url));
+        if (assessedEvidence.length === 0) continue;
+        const assessedIds = assessedEvidence.map((record) => record.evidenceId);
+        const assessedKey = assessedIds.join(",");
         let response: LeanJudgeResponse;
         let classificationInvoked = false;
         try {
@@ -3200,7 +3325,7 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
             criteria: [...f.req.criteria, ...compiled.evidenceCriteria],
             scope: compiled.scope,
             candidates: [...f.req.schema.enum!],
-            documents: evidence.map((e) => ({
+            documents: assessedEvidence.map((e) => ({
               evidenceId: e.evidenceId,
               url: e.url,
               title: e.title,
@@ -3218,7 +3343,7 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
               assessments: [],
               metadata: {
                 kind: "classification-judgment",
-                evidenceIds: evidence.map((e) => e.evidenceId),
+                evidenceIds: assessedIds,
               },
             });
             continue;
@@ -3231,7 +3356,7 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
           }
           judgeCalls += 1;
           f.judgmentCount += 1;
-          pushLog("judge", `${f.id} over [${key}]`);
+          pushLog("judge", `${f.id} over [${assessedKey}]`);
           const options = dispatchOptions();
           classificationInvoked = true;
           response = await judge(enumRequest, options);
@@ -3262,14 +3387,14 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
             });
           }
           if (code === "JEV_DEV_INDETERMINATE") {
-            pushLog("judge-invalid", `${f.id} indeterminate over [${key}]`);
+            pushLog("judge-invalid", `${f.id} indeterminate over [${assessedKey}]`);
             f.judgeIndeterminate = true;
             f.pendingAccept = null;
             f.pendingSinceKey = null;
             f.disputedSinceKey = null;
             continue;
           }
-          pushLog("judge-invalid", `${f.id} judge unavailable over [${key}]`);
+          pushLog("judge-invalid", `${f.id} judge unavailable over [${assessedKey}]`);
           // Classification composed-run stops take the SAME finite trust
           // boundary as the value path: only an exact vocabulary root
           // promotes; anything else keeps the honest unavailability label.
@@ -3284,7 +3409,7 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
           continue;
         }
         // --- runtime verdict validation (repair pass finding 3) ------
-        const presented = new Set(evidence.map((e) => e.evidenceId));
+        const presented = new Set(assessedIds);
         const rawDocs = Array.isArray(response?.documents) ? response.documents : null;
         let valid = rawDocs !== null && rawDocs.length === presented.size;
         const seen = new Set<string>();
@@ -3338,7 +3463,7 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
           });
         }
         if (!valid) {
-          pushLog("judge-invalid", `${f.id} over [${key}]`);
+          pushLog("judge-invalid", `${f.id} over [${assessedKey}]`);
           // Conservative: an invalid response contributes nothing. Any
           // previously pending accept was decided on a strictly smaller
           // evidence set and may be stale — clear it.
@@ -3382,7 +3507,7 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
           f.pendingAccept = null;
           f.pendingSinceKey = null;
           f.disputedSinceKey = null;
-          pushLog("judge-invalid", `${f.id} side-flip on unchanged evidence over [${key}]`);
+          pushLog("judge-invalid", `${f.id} side-flip on unchanged evidence over [${assessedKey}]`);
           // Mark the just-recorded attempt untrusted with the reason —
           // visible in audit, never in trusted history.
           const last = f.attemptedRecords.at(-1);
@@ -3522,8 +3647,7 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
             midProof !== null &&
             f.lastJudgedKey === evidenceKey() &&
             f.req.dependsOn.every((dep) => fields.get(dep)?.terminal?.status === "satisfied") &&
-            f.ctrvIssued &&
-            f.ctrvSources.size === 0 &&
+            contraryComplete(f) &&
             !hasUnread() &&
             !canStillAcquire
           ) {
@@ -3536,7 +3660,7 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
         }
         if (f.pendingAccept === null) continue;
         if (f.pendingAccept === "disputed") {
-          if (f.disputedSinceKey === evidenceKey()) {
+          if (f.disputedSinceKey === evidenceKey() && (!closed?.byField.has(f.id) || contraryComplete(f))) {
             f.terminal = { status: "satisfied", value: f.pendingAccept };
           }
           continue;
@@ -3560,8 +3684,7 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
         // closure rule identical to the final projection.
         if (
           f.req.dependsOn.every((dep) => fields.get(dep)?.terminal?.status === "satisfied") &&
-          f.ctrvIssued &&
-          f.ctrvSources.size === 0 &&
+          contraryComplete(f) &&
           !hasUnread() &&
           !canStillAcquire
         ) {
@@ -3632,8 +3755,7 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
             prereqsSatisfied &&
             stillRetained &&
             finalBindingMatches &&
-            f.ctrvIssued &&
-            f.ctrvSources.size === 0
+            contraryComplete(f)
           ) {
             f.terminal = { status: "satisfied", value: chosen.provenance.value };
             f.acceptedCandidate = { provenance: chosen.provenance, judgment: chosen.judgment };
@@ -3646,12 +3768,12 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
           continue;
         }
         if (f.pendingAccept === "disputed") {
-          if (f.disputedSinceKey === evidenceKey()) {
+          if (f.disputedSinceKey === evidenceKey() && (!closed?.byField.has(f.id) || contraryComplete(f))) {
             f.terminal = { status: "satisfied", value: f.pendingAccept };
           }
           continue;
         }
-        if (f.pendingSinceKey === evidenceKey() && f.ctrvIssued && f.ctrvSources.size === 0) {
+        if (f.pendingSinceKey === evidenceKey() && contraryComplete(f)) {
           f.terminal = { status: "satisfied", value: f.pendingAccept };
         }
       }
@@ -3702,7 +3824,7 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
           f.terminal = { status: "unresolved", reason: runTypedStop };
           continue;
         }
-        if (f.ctrvIssued && f.ctrvSources.size === 0) {
+        if (contraryComplete(f)) {
           // Contrary round settled and SOME trusted accept exists. If
           // projection finalized it, terminal is already set and this pass
           // never runs. If it did NOT, the accepts are on smaller/stale
@@ -3756,7 +3878,7 @@ export async function runLeanInvestigation(input: unknown, deps: LeanDeps): Prom
         f.terminal = { status: "unresolved", reason: "no_extractor" };
         continue;
       }
-      if (!(f.ctrvIssued && f.ctrvSources.size === 0)) {
+      if (!contraryComplete(f)) {
         f.terminal = { status: "unresolved", reason: "counterevidence_not_acquired" };
         continue;
       }

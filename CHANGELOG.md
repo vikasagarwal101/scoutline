@@ -26,7 +26,13 @@
 
 ### Fixed
 
-- **Investigation delivery and workflow settlement:** Requirements-mode display digests and the envelope hash bind the final stdout and saved JSON. Local Git audits disclose deadline cutoffs and report verified Git provenance only through the pinned reader. Monitor ticks wait for their pre-publication check and use the injected clock. The due quota refresh applies to completed workflows that dispatched provider acquisition.
+- **Requirements output:** Evidence display digests and the result hash now match the redacted data written to stdout and saved JSON.
+
+- **Local Git audits:** Reports identify paths left unchecked at the read deadline. Commit provenance is reported only for files read from the verified local commit.
+
+- **Fact monitoring:** A cancelled tick stops waiting for a pending validation check and leaves the stored state unchanged. Tick timestamps consistently use the configured clock.
+
+- **Workflow quotas:** The usual quota refresh can run after a workflow completes with provider acquisition.
 
 - **Concurrent caller rounds:** start and continue return the round they committed, even if another caller commits a newer revision before the response is assembled.
 

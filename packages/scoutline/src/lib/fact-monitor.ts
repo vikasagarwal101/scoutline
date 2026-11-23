@@ -97,6 +97,7 @@
  * exactly one referenced record, and never scans beyond it.
  */
 import { createHash } from "node:crypto";
+import { addAbortListener } from "node:events";
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
 
@@ -1559,18 +1560,24 @@ export async function runFactMonitorTick(
   return executePreparedFactMonitorTick(root, prepared, deps, normalized);
 }
 
+type FactMonitorBeforeCommit = (
+  outcome: FactMonitorEngineOutcome,
+  signal?: AbortSignal,
+) => void | Promise<void>;
+
 /**
  * Run a prepared tick with an optional pre-publication check. The check
  * settles before commit begins. Failure propagates without publishing a
- * tick. Early cancellation can skip the check, and late-commit decisions
- * are made afterward under the commit lock.
+ * tick. Cancellation can skip the check or stop waiting for it. The
+ * check receives the tick's merged signal for its own cleanup. Late
+ * commits are decided afterward under the commit lock.
  */
 export async function runPreparedFactMonitorTick(
   root: string,
   prepared: PreparedFactMonitorTick,
   deps: LeanDeps,
   options: FactMonitorOptions,
-  beforeCommit?: (outcome: FactMonitorEngineOutcome) => void | Promise<void>,
+  beforeCommit?: FactMonitorBeforeCommit,
 ): Promise<FactMonitorTickReport> {
   const signal = mergeSignals([options.signal, deps.externalSignal]);
   const normalized: FactMonitorOptions = signal === undefined ? options : { ...options, signal };
@@ -1582,7 +1589,7 @@ async function executePreparedFactMonitorTick(
   prepared: PreparedFactMonitorTick,
   deps: LeanDeps,
   normalized: FactMonitorOptions,
-  beforeCommit?: (outcome: FactMonitorEngineOutcome) => void | Promise<void>,
+  beforeCommit?: FactMonitorBeforeCommit,
 ): Promise<FactMonitorTickReport> {
   let engineOutcome: FactMonitorEngineOutcome;
   try {
@@ -1633,6 +1640,36 @@ async function executePreparedFactMonitorTick(
       reason: error instanceof Error ? error.message : String(error),
     };
   }
-  if (beforeCommit !== undefined) await beforeCommit(engineOutcome);
+  if (beforeCommit !== undefined) {
+    await checkBeforeFactMonitorCommit(beforeCommit, engineOutcome, prepared.monitorId, normalized.signal);
+  }
   return commitFactMonitorTick(root, prepared, engineOutcome, normalized);
+}
+
+async function checkBeforeFactMonitorCommit(
+  check: FactMonitorBeforeCommit,
+  outcome: FactMonitorEngineOutcome,
+  monitorId: string,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  if (signal === undefined) {
+    await check(outcome);
+    return;
+  }
+
+  let listener: ReturnType<typeof addAbortListener> | undefined;
+  const cancelled = new Promise<never>((_, reject) => {
+    listener = addAbortListener(signal, () => reject(new FactMonitorCancelledError(monitorId)));
+  });
+  try {
+    // Register both arms before the callback starts so synchronous aborts
+    // and late rejections are handled as well as pending checks.
+    const pending = Promise.resolve().then(() => {
+      if (signal.aborted) throw new FactMonitorCancelledError(monitorId);
+      return check(outcome, signal);
+    });
+    await Promise.race([cancelled, pending]);
+  } finally {
+    listener?.[Symbol.dispose]();
+  }
 }

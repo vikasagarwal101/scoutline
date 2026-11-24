@@ -1,4 +1,9 @@
 import { ValidationError } from "./errors.js";
+import {
+  JUDGE_TRIAL_THRESHOLD_BAND,
+  judgeThresholdBandByRevision,
+  type JudgeThresholdBand,
+} from "./judge-threshold-band.js";
 
 export type JudgeRoute = "openrouter" | "typesafe";
 
@@ -8,7 +13,10 @@ export interface JudgeDescriptor {
   readonly requestedModel: string;
   readonly expectedResolvedModel: string;
   readonly questionRevision: string;
+  /** `threshold.revision`. Part of the judgment identity. */
   readonly thresholdRevision: string;
+  /** The registered band this profile's answers are read under. */
+  readonly threshold: JudgeThresholdBand;
   readonly uncertaintyRevision: string;
   readonly maxAttempts: 1;
   readonly allowFallbacks: false;
@@ -53,18 +61,45 @@ export const JUDGE_ROUTE_MODELS: Readonly<Record<JudgeRoute, readonly string[]>>
   typesafe: Object.freeze(Object.keys(ROUTES.typesafe.models)),
 });
 
+/**
+ * Threshold band per pinned profile, by registered revision (#307).
+ *
+ * A profile that is not listed is read under the trial band. A profile is
+ * listed only once its band is derived from the labelled development set,
+ * with a new revision id and the evidence linked at the band's definition.
+ * None is listed yet, so every profile is on the trial band.
+ *
+ * Constants, not configuration: no environment variable or stored setting
+ * reaches this table.
+ */
+const THRESHOLD_BAND_REVISIONS: Readonly<Record<JudgeRoute, Readonly<Record<string, string>>>> = Object.freeze({
+  openrouter: Object.freeze({}),
+  typesafe: Object.freeze({}),
+});
+
+/**
+ * The band a pinned profile is read under. An unlisted or mistyped
+ * revision falls back to the trial band; it never invents a band.
+ */
+export function judgeThresholdBandFor(route: JudgeRoute, requestedModel: string): JudgeThresholdBand {
+  const revision = (THRESHOLD_BAND_REVISIONS[route] as Readonly<Record<string, string | undefined>>)[requestedModel];
+  return judgeThresholdBandByRevision(revision) ?? JUDGE_TRIAL_THRESHOLD_BAND;
+}
+
 export function judgeDescriptor(route: JudgeRoute, model?: string): JudgeDescriptor {
   if (route !== "openrouter" && route !== "typesafe") throw new ValidationError("Unsupported judge route.");
   const policy = ROUTES[route];
   const requestedModel = model ?? JUDGE_ROUTE_MODELS[route][0]!;
   if (!Object.hasOwn(policy.models, requestedModel)) throw new ValidationError("Unsupported judge model.");
+  const threshold = judgeThresholdBandFor(route, requestedModel);
   return Object.freeze({
     route,
     endpoint: policy.endpoint,
     requestedModel,
     expectedResolvedModel: (policy.models as Readonly<Record<string, string>>)[requestedModel]!,
     questionRevision: "native-noul-attribution-v1",
-    thresholdRevision: "trial-v1-p9-p1",
+    thresholdRevision: threshold.revision,
+    threshold,
     uncertaintyRevision: "per-source-null-v1",
     maxAttempts: 1,
     allowFallbacks: false,

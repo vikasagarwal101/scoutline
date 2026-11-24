@@ -131,7 +131,7 @@ async function pureFixture(config={}) {
     observeProjection:(input,output)=>config.onRuntimeProjection?.(input,output.projected.data),
   },'test-only-runtime-observer');
   fixed['test:caller-options-observer']=synthetic({observe:options=>calls.callerOptions.push(observeCallerOptions(options))},'test-only-caller-options-observer');
-  const bodies=new Set(['commands/investigate-caller.js','commands/investigate-requirements.js','lib/caller-investigation.js','lib/lean-caller-rounds.js','lib/caller-physical.js','providers/selection.js','providers/types.js','lib/quota-mapping.js','lib/judge-config.js']);
+  const bodies=new Set(['commands/investigate-caller.js','commands/investigate-requirements.js','lib/caller-investigation.js','lib/lean-caller-rounds.js','lib/caller-physical.js','providers/selection.js','providers/types.js','lib/quota-mapping.js','lib/judge-config.js','lib/judge-threshold-band.js']);
   for(const name of ['lib/lean-investigation','lib/lean-candidates','lib/lean-composed-stop','lib/caller-url','lib/errors','lib/redact','lib/output'])for(const ext of ['src','dist']){const url=new URL(`../${ext}/${name}.${ext==='src'?'ts':'js'}`,import.meta.url);hashes[url.href]=pureHash(readFileSync(url));}
   const load=name=>{if(modules.has(name))return modules.get(name);
     if((config.observeRuntimeInput||config.onRuntimeProjection)&&name==='commands/investigate-requirements.js'){

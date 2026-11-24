@@ -72,7 +72,9 @@ function sha256Hex(value:string):string{return createHash("sha256").update(value
  *     candidate judge is still a semantic runtime;
  *   - no descriptor and no collaborator is the no-judge case.
  */
-function callerJudgeIdentity(descriptor:JudgeDescriptor|undefined, hasSemanticCollaborator:boolean):{
+// The band's bounds are hashed alongside its revision, so two bands that
+// share a revision but differ in numbers never share an identity (#307).
+export function callerJudgeIdentity(descriptor:JudgeDescriptor|undefined, hasSemanticCollaborator:boolean):{
   judgeIdentity?:string;policyRevision?:string;
 }{
   if(descriptor!==undefined){
@@ -83,6 +85,8 @@ function callerJudgeIdentity(descriptor:JudgeDescriptor|undefined, hasSemanticCo
       descriptor.expectedResolvedModel,
       descriptor.questionRevision,
       descriptor.thresholdRevision,
+      descriptor.threshold.trueBound,
+      descriptor.threshold.falseBound,
       descriptor.uncertaintyRevision,
       descriptor.maxAttempts,
       descriptor.allowFallbacks,
@@ -90,6 +94,8 @@ function callerJudgeIdentity(descriptor:JudgeDescriptor|undefined, hasSemanticCo
     const policyFields=JSON.stringify([
       descriptor.questionRevision,
       descriptor.thresholdRevision,
+      descriptor.threshold.trueBound,
+      descriptor.threshold.falseBound,
       descriptor.uncertaintyRevision,
       descriptor.maxAttempts,
       descriptor.allowFallbacks,

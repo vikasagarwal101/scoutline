@@ -31,6 +31,7 @@ import { createHash } from "node:crypto";
 import { ValidationError } from "./errors.js";
 import { COMPOSED_STOP_ROOTS } from "./lean-composed-stop.js";
 import type { LeanEvidenceRecord } from "./lean-investigation.js";
+import { JUDGE_TRIAL_THRESHOLD_BAND, judgeThresholdBandByRevision, translateNoul } from "./judge-threshold-band.js";
 
 // ---------------------------------------------------------------------------
 // Extractor dep (injected; runtime-configured; NO defaults, no env reads)
@@ -615,6 +616,10 @@ export interface CandidateJudgement {
   readonly conflict: boolean | null;
   readonly rawSupport: number;
   readonly rawConflict: number;
+  /** Registered band the raw values were read under. Absent on records
+   *  written before bands were recorded; those re-check under the trial
+   *  band. */
+  readonly thresholdRevision?: string;
 }
 
 export interface CandidateJudgeDeps {
@@ -624,6 +629,8 @@ export interface CandidateJudgeDeps {
     readonly usage: { readonly inputTokens: number; readonly outputTokens: number } | null;
     readonly requestSha256: string;
     readonly elapsedMs: number;
+    /** The registered band the judge applied. Absent means the trial band. */
+    readonly thresholdRevision?: string;
   }>;
 }
 
@@ -681,12 +688,13 @@ export function buildCandidateJudgeRequest(input: CandidateJudgeInput, model: st
  * Assess candidates through the injected judge dep. Strict native
  * validation: model identity present; every expected question answered
  * exactly once with noul ∈ [0,1]; usage counters present and nonnegative
- * for real calls; trial .9/.1 thresholds translate to boolean|null
- * (null = unknown, never false).
+ * for real calls; the registered band the judge names translates raw
+ * values to boolean|null (null = unknown, never false).
+ *
+ * Threshold bounds are NOT defined here. The judge names a registered band
+ * (`judge-threshold-band.ts`) and every judgement records the one it was
+ * read under; per-call overrides are not part of the contract.
  */
-/** Fixed trial thresholds — the contract; per-call overrides are not part of it. */
-export const CANDIDATE_THRESHOLD_TRUE = 0.9 as const;
-export const CANDIDATE_THRESHOLD_FALSE = 0.1 as const;
 
 /**
  * Code-owned candidate identity (single source of truth for validation
@@ -858,8 +866,15 @@ export async function assessCandidates(
   ) {
     return { judgements: [], error: "JEV_DEV_MALFORMED:usage_invalid" };
   }
-  const translate = (p: number): boolean | null =>
-    p >= CANDIDATE_THRESHOLD_TRUE ? true : p <= CANDIDATE_THRESHOLD_FALSE ? false : null;
+  // The judge NAMES the registered band it applied; the bounds are resolved
+  // here from the code registry. Absent means the trial band. An unknown
+  // name is a typed rejection, never a silent fallback.
+  const reportedBand = (response as { thresholdRevision?: unknown }).thresholdRevision;
+  const band = reportedBand === undefined ? JUDGE_TRIAL_THRESHOLD_BAND : judgeThresholdBandByRevision(reportedBand);
+  if (band === undefined) {
+    return { judgements: [], error: "JEV_DEV_PROTOCOL:unknown_threshold_revision" };
+  }
+  const translate = (p: number): boolean | null => translateNoul(p, band);
   const sourceDigest = candidateSourceDigest(dispatch.source);
   const judgements: CandidateJudgement[] = dispatch.candidates.map((c, i) => {
     // Context-bound assessment identity: meaning/scope/opposition are
@@ -902,6 +917,7 @@ export async function assessCandidates(
       conflict: translate(f!.noul),
       rawSupport: s!.noul,
       rawConflict: f!.noul,
+      thresholdRevision: band.revision,
     };
   });
   // Optional supplier identity hashes: forwarded only when the response
@@ -1092,21 +1108,28 @@ export function acceptCandidate(
       };
     }
   }
-  // Normalized flags must be consistent with their raw probabilities
-  // under the fixed trial thresholds — a fabricated true against a low
-  // raw score never accepts.
-  const rawSupportOk =
-    (judgement.support === true && judgement.rawSupport >= CANDIDATE_THRESHOLD_TRUE) ||
-    (judgement.support === false && judgement.rawSupport <= CANDIDATE_THRESHOLD_FALSE) ||
-    (judgement.support === null &&
-      judgement.rawSupport > CANDIDATE_THRESHOLD_FALSE &&
-      judgement.rawSupport < CANDIDATE_THRESHOLD_TRUE);
-  const rawConflictOk =
-    (judgement.conflict === true && judgement.rawConflict >= CANDIDATE_THRESHOLD_TRUE) ||
-    (judgement.conflict === false && judgement.rawConflict <= CANDIDATE_THRESHOLD_FALSE) ||
-    (judgement.conflict === null &&
-      judgement.rawConflict > CANDIDATE_THRESHOLD_FALSE &&
-      judgement.rawConflict < CANDIDATE_THRESHOLD_TRUE);
+  // Normalized flags must be consistent with their raw probabilities under
+  // the band the judgement records — a fabricated true against a low raw
+  // score never accepts. A record without a band (written before bands were
+  // recorded) re-checks under the trial band; an unknown band never accepts.
+  const judgementBand =
+    judgement.thresholdRevision === undefined
+      ? JUDGE_TRIAL_THRESHOLD_BAND
+      : judgeThresholdBandByRevision(judgement.thresholdRevision);
+  if (judgementBand === undefined) {
+    return {
+      fieldId: validation.fieldId,
+      status: "unresolved",
+      reason: "judgement_threshold_unknown",
+      judgement,
+    };
+  }
+  const consistentWithBand = (flag: boolean | null, raw: number): boolean =>
+    (flag === true && raw >= judgementBand.trueBound) ||
+    (flag === false && raw <= judgementBand.falseBound) ||
+    (flag === null && raw > judgementBand.falseBound && raw < judgementBand.trueBound);
+  const rawSupportOk = consistentWithBand(judgement.support, judgement.rawSupport);
+  const rawConflictOk = consistentWithBand(judgement.conflict, judgement.rawConflict);
   if (!rawSupportOk || !rawConflictOk) {
     return {
       fieldId: validation.fieldId,

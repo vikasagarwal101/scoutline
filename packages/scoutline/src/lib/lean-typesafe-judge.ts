@@ -29,7 +29,11 @@
  *     response strings are discarded.
  *   - Cleanup never awaits stream cancellation; cancel/releaseLock/late
  *     promise rejections are each contained. Disposal is UNCONFIRMED.
- *   - Trial `.9/.1` bands are module-private experimental policy.
+ *   - Threshold bands are code-owned and shared with the candidate path
+ *     (`judge-threshold-band.ts`): the selected descriptor names one
+ *     registered band per pinned profile. A profile without a calibrated
+ *     band is read under the trial `.9/.1` band, which is not calibrated
+ *     for any model.
  *
  * ponytail: the bounded transport duplicates the reviewed dev adapter
  * deliberately (with the await-cancel stall fixed here). Extract on a THIRD
@@ -39,6 +43,12 @@
 import { createHash } from "node:crypto";
 import { ValidationError } from "./errors.js";
 import { judgeDescriptor, type JudgeDescriptor, type JudgeRoute } from "./judge-config.js";
+import {
+  JUDGE_TRIAL_THRESHOLD_BAND,
+  isRegisteredThresholdBand,
+  translateNoul,
+  type JudgeThresholdBand,
+} from "./judge-threshold-band.js";
 import { composedStopRootOf } from "./lean-composed-stop.js";
 import {
   buildCandidateJudgeRequest,
@@ -82,13 +92,10 @@ export const TYPESAFE_SYSTEMONE_ENDPOINT = "https://api.typesafe.ai/v1/systemone
 /** Versioned official model. `jev-latest`/`jev-preview` are mutable aliases. */
 export const TYPESAFE_PINNED_MODEL = "jev-1.13.0";
 
-/** Trial policy bands — NOT a public knob, NOT supplier-calibrated. */
-const TYPESAFE_TRIAL_TRUE_BOUND = 0.9;
-const TYPESAFE_TRIAL_FALSE_BOUND = 0.1;
-
-/** Policy revisions recorded in attempt metadata. */
+/** Policy revisions recorded in attempt metadata. The threshold revision
+ *  names the trial band; a selected descriptor's band overrides it. */
 export const TYPESAFE_QUESTION_REVISION = "native-noul-attribution-v1" as const;
-export const TYPESAFE_THRESHOLD_REVISION = "trial-v1-p9-p1" as const;
+export const TYPESAFE_THRESHOLD_REVISION = JUDGE_TRIAL_THRESHOLD_BAND.revision;
 export const TYPESAFE_UNCERTAINTY_REVISION = "per-source-null-v1" as const;
 
 /** Engine-consumed audit seam (same symbol the dev adapter attaches). */
@@ -1232,8 +1239,23 @@ export function createSelectedNativeJudge(route: JudgeRoute, deps: TypesafeJudge
   return Object.freeze({ ...createNativeJudge({ ...deps, retrySettings: deps.retrySettings === undefined ? undefined : { ...deps.retrySettings } }, descriptor), descriptor });
 }
 
+/**
+ * Build the judge for an explicit descriptor (proof of concept, #307).
+ * The descriptor's band must be exactly a registered band, so this cannot
+ * introduce numbers the registry does not define. Commands reach a
+ * descriptor through `createSelectedNativeJudge` instead.
+ */
+export function createNativeJudgeForDescriptor(deps: TypesafeJudgeDeps, descriptor: JudgeDescriptor): TypesafeJudgeProfile {
+  return createNativeJudge(deps, descriptor);
+}
+
 function createNativeJudge(deps: TypesafeJudgeDeps, policy?: JudgeDescriptor): TypesafeJudgeProfile {
   validateDeps(deps, true);
+  // The band is code-owned: a descriptor may only NAME a registered band.
+  if (policy !== undefined && !isRegisteredThresholdBand(policy.threshold)) {
+    throw new ValidationError("Selected judge requires a registered threshold band.");
+  }
+  const band: JudgeThresholdBand = policy?.threshold ?? JUDGE_TRIAL_THRESHOLD_BAND;
   const judge: TypesafeClassificationJudge = async (input, options) => {
     const evidenceIds = input.documents.map((doc) => doc.evidenceId);
     const legacyBody = buildTypesafeNoulRequest(input);
@@ -1256,8 +1278,7 @@ function createNativeJudge(deps: TypesafeJudgeDeps, policy?: JudgeDescriptor): T
     }
     const validated = result.validated!;
     const answers = validated.answers;
-    const translate = (p: number): boolean | null =>
-      p >= TYPESAFE_TRIAL_TRUE_BOUND ? true : p <= TYPESAFE_TRIAL_FALSE_BOUND ? false : null;
+    const translate = (p: number): boolean | null => translateNoul(p, band);
     const documents = evidenceIds.map((evidenceId, i) => ({
       evidenceId,
       relevant: translate((answers[`q${i}r`] as { noul: number }).noul),
@@ -1274,7 +1295,7 @@ function createNativeJudge(deps: TypesafeJudgeDeps, policy?: JudgeDescriptor): T
         attemptSha256: result.attemptEvents.at(-1)?.attemptSha256 ?? "",
         requestedModel: policy?.requestedModel ?? TYPESAFE_PINNED_MODEL,
         resolvedModel: validated.model,
-        thresholdRevision: TYPESAFE_THRESHOLD_REVISION,
+        thresholdRevision: band.revision,
         questionRevision: TYPESAFE_QUESTION_REVISION,
         uncertaintyRevision: TYPESAFE_UNCERTAINTY_REVISION,
         status: result.attemptEvents.at(-1)?.status ?? 200,
@@ -1325,7 +1346,7 @@ function createNativeJudge(deps: TypesafeJudgeDeps, policy?: JudgeDescriptor): T
         contextSha256,
         policySha256,
       },
-      { attempts: result.attempts },
+      { attempts: result.attempts, thresholdRevision: band.revision },
     ) as LeanCandidateJudgeResponse;
   };
 

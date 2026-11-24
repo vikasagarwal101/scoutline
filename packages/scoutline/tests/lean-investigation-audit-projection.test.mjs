@@ -5,6 +5,7 @@ import { createTypesafeJudge } from "../dist/lib/lean-typesafe-judge.js";
 
 for (const malformed of [null, undefined]) {
   test(`${String(malformed)} normalized response returns an inspectable unresolved result`, async () => {
+    let judgeCalls = 0;
     const result = await runLeanInvestigation(
       {
         schemaVersion: 1,
@@ -17,13 +18,17 @@ for (const malformed of [null, undefined]) {
         now: () => 0,
         search: async () => [{ url: "https://fixture.invalid/guide" }],
         read: async () => "Supports CSV",
-        judge: async () => malformed,
+        judge: async () => {
+          judgeCalls += 1;
+          return malformed;
+        },
       },
     );
     assert.equal(result.status, "partial");
     assert.equal(result.requirements.csv.status, "unresolved");
     assert.equal(result.evidence[0].content, "Supports CSV");
-    assert.equal(result.usage.judgeCalls, 1);
+    assert.equal(judgeCalls, 1);
+    assert.equal(result.usage.judgeCalls, judgeCalls);
     assert.equal(Object.hasOwn(result.data, "csv"), false);
     assert.ok(result.requirements.csv.attemptedRecords.some((record) =>
       record.trusted === false && record.reason === "invalid_response",

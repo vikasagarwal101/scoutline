@@ -19,7 +19,7 @@
  * CLEAR that variable, so credentials alone never trigger live tests.
  */
 import { spawn } from "node:child_process";
-import { readdirSync, mkdtempSync } from "node:fs";
+import { readdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -78,9 +78,9 @@ function childEnvFor(mode) {
   env.SCOUTLINE_CONFIG_DIR = mkdtempSync(path.join(tmpdir(), "scoutline-test-"));
 
   if (mode === "offline") {
-    // The caller and engine MJS tests need the same isolated artifact
-    // default as CI had for their standalone invocation.
-    env.SCOUTLINE_ARTIFACTS_DIR ??= path.join(env.SCOUTLINE_CONFIG_DIR, "artifacts");
+    // Keep offline artifacts in the runner-owned temporary config tree,
+    // even when the caller has an artifact store override.
+    env.SCOUTLINE_ARTIFACTS_DIR = path.join(env.SCOUTLINE_CONFIG_DIR, "artifacts");
   }
 
   if (mode === "offline" || mode === "smoke") {
@@ -100,24 +100,28 @@ function childEnvFor(mode) {
   return env;
 }
 
-function runNodeTests(files, mode) {
-  return new Promise((resolve, reject) => {
-    if (files.length === 0) {
-      console.error(`[run-tests] mode=${mode}: no test files matched`);
-      resolve(0);
-      return;
-    }
-    const args = mode === "offline"
-      ? ["--experimental-vm-modules", "--test", ...files]
-      : ["--test", ...files];
-    const proc = spawn(process.execPath, args, {
-      cwd: path.resolve(__dirname, ".."),
-      env: childEnvFor(mode),
-      stdio: "inherit",
+async function runNodeTests(files, mode) {
+  if (files.length === 0) {
+    console.error(`[run-tests] mode=${mode}: no test files matched`);
+    return 0;
+  }
+  const args = mode === "offline"
+    ? ["--experimental-vm-modules", "--test", ...files]
+    : ["--test", ...files];
+  const env = childEnvFor(mode);
+  try {
+    return await new Promise((resolve, reject) => {
+      const proc = spawn(process.execPath, args, {
+        cwd: path.resolve(__dirname, ".."),
+        env,
+        stdio: "inherit",
+      });
+      proc.on("error", reject);
+      proc.on("close", (code) => resolve(code ?? 1));
     });
-    proc.on("error", reject);
-    proc.on("close", (code) => resolve(code ?? 1));
-  });
+  } finally {
+    rmSync(env.SCOUTLINE_CONFIG_DIR, { recursive: true, force: true, maxRetries: 3 });
+  }
 }
 
 function preflightLiveRelease() {

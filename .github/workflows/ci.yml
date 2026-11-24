@@ -30,6 +30,7 @@ jobs:
       - run: npm run build
       # Run the package's offline gate once, under the fake-home census.
       - name: Offline tests and artifact-store census
+        timeout-minutes: 10
         run: node scripts/store-census.mjs
 
   typecheck:

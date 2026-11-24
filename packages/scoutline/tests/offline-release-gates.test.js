@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -10,10 +10,17 @@ function runnerFixture(t) {
   t.after(() => rmSync(root, { recursive: true, force: true }));
   mkdirSync(join(root, "scripts"));
   mkdirSync(join(root, "tests"));
+  const callerArtifacts = join(root, "caller-artifacts");
+  mkdirSync(callerArtifacts);
+  writeFileSync(join(callerArtifacts, "original.json"), "{}");
   for (const script of ["run-tests.mjs", "store-census.mjs"]) {
     copyFileSync(new URL(`../scripts/${script}`, import.meta.url), join(root, "scripts", script));
   }
   return {
+    assertStoresClean() {
+      assert.deepEqual(readdirSync(callerArtifacts), ["original.json"]);
+      assert.equal(readdirSync(root).some((name) => name.startsWith("scoutline-test-")), false);
+    },
     writeTest(name, contents) {
       writeFileSync(join(root, "tests", name), contents);
     },
@@ -26,6 +33,7 @@ function runnerFixture(t) {
           TMP: root,
           HOME: root,
           SCOUTLINE_CONFIG_DIR: join(root, "ambient-config"),
+          SCOUTLINE_ARTIFACTS_DIR: callerArtifacts,
           SCOUTLINE_LIVE_TESTS: "1",
           ZAI_LIVE_TESTS: "1",
         },
@@ -45,6 +53,7 @@ test("offline gate runs JS and MJS with isolated configuration and live opt-ins 
   `);
   fixture.writeTest("offline-mjs.test.mjs", `
     import assert from "node:assert/strict";
+    import { mkdirSync, writeFileSync } from "node:fs";
     import { basename, join } from "node:path";
     import test from "node:test";
     import { SourceTextModule } from "node:vm";
@@ -54,6 +63,8 @@ test("offline gate runs JS and MJS with isolated configuration and live opt-ins 
       assert.match(basename(process.env.SCOUTLINE_CONFIG_DIR), /^scoutline-test-/);
       assert.equal(process.env.SCOUTLINE_ARTIFACTS_DIR, join(process.env.SCOUTLINE_CONFIG_DIR, "artifacts"));
       assert.equal(typeof SourceTextModule, "function");
+      mkdirSync(process.env.SCOUTLINE_ARTIFACTS_DIR, { recursive: true });
+      writeFileSync(join(process.env.SCOUTLINE_ARTIFACTS_DIR, "offline.json"), "{}");
     });
   `);
 
@@ -66,6 +77,25 @@ test("offline gate runs JS and MJS with isolated configuration and live opt-ins 
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(result.stdout, /offline JS witness/);
   assert.match(result.stdout, /offline MJS witness/);
+  fixture.assertStoresClean();
+});
+
+test("offline gate cleans its temporary store after a failing test", (t) => {
+  const fixture = runnerFixture(t);
+  fixture.writeTest("failing.test.mjs", `
+    import { mkdirSync, writeFileSync } from "node:fs";
+    import { join } from "node:path";
+    const dir = process.env.SCOUTLINE_ARTIFACTS_DIR;
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "failed-test.json"), "{}");
+    throw new Error("synthetic test failure");
+  `);
+
+  const result = fixture.run("scripts/run-tests.mjs", "offline");
+  assert.ifError(result.error);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout + result.stderr, /synthetic test failure/);
+  fixture.assertStoresClean();
 });
 
 test("store census fails on a store written by the selected MJS test", {
@@ -90,4 +120,5 @@ test("store census fails on a store written by the selected MJS test", {
   assert.match(result.stdout, /MJS store write witness/);
   assert.match(result.stderr, /\[store-census\] FAIL/);
   assert.match(result.stderr, /\.scoutline\/mjs-witness\.json/);
+  fixture.assertStoresClean();
 });

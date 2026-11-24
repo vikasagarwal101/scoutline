@@ -3,7 +3,7 @@
  * Scoutline test runner.
  *
  * Modes:
- *   offline         — every top-level test except live and smoke files.
+ *   offline         — top-level .test.js and .test.mjs files except live and smoke.
  *   smoke           — only the executable smoke suite (cli-smoke.test.js).
  *   live            — both opt-in live files; unconfigured Providers may skip.
  *   live-release    — only provider-live.test.js; both credentials required,
@@ -19,7 +19,7 @@
  * CLEAR that variable, so credentials alone never trigger live tests.
  */
 import { spawn } from "node:child_process";
-import { readdirSync, mkdtempSync } from "node:fs";
+import { readdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -32,7 +32,7 @@ const SMOKE_FILE = "cli-smoke.test.js";
 
 function listTopLevelTests() {
   return readdirSync(TESTS_DIR)
-    .filter((name) => name.endsWith(".test.js"))
+    .filter((name) => /\.test\.m?js$/.test(name))
     .sort();
 }
 
@@ -77,6 +77,12 @@ function childEnvFor(mode) {
   // Uses a unique temp dir per run so concurrent test invocations don't collide.
   env.SCOUTLINE_CONFIG_DIR = mkdtempSync(path.join(tmpdir(), "scoutline-test-"));
 
+  if (mode === "offline") {
+    // Keep offline artifacts in the runner-owned temporary config tree,
+    // even when the caller has an artifact store override.
+    env.SCOUTLINE_ARTIFACTS_DIR = path.join(env.SCOUTLINE_CONFIG_DIR, "artifacts");
+  }
+
   if (mode === "offline" || mode === "smoke") {
     // Belt-and-suspenders: clear BOTH live opt-in variables even if
     // credentials exist. This guarantees that a stray `SCOUTLINE_LIVE_TESTS=1`
@@ -94,22 +100,33 @@ function childEnvFor(mode) {
   return env;
 }
 
-function runNodeTests(files, mode) {
-  return new Promise((resolve, reject) => {
-    if (files.length === 0) {
-      console.error(`[run-tests] mode=${mode}: no test files matched`);
-      resolve(0);
-      return;
-    }
-    const args = ["--test", ...files];
-    const proc = spawn(process.execPath, args, {
-      cwd: path.resolve(__dirname, ".."),
-      env: childEnvFor(mode),
-      stdio: "inherit",
+async function runNodeTests(files, mode) {
+  if (files.length === 0) {
+    console.error(`[run-tests] mode=${mode}: no test files matched`);
+    return 0;
+  }
+  const args = mode === "offline"
+    ? ["--experimental-vm-modules", "--test", ...files]
+    : ["--test", ...files];
+  const env = childEnvFor(mode);
+  try {
+    return await new Promise((resolve, reject) => {
+      const proc = spawn(process.execPath, args, {
+        cwd: path.resolve(__dirname, ".."),
+        env,
+        stdio: "inherit",
+      });
+      proc.on("error", reject);
+      proc.on("close", (code) => resolve(code ?? 1));
     });
-    proc.on("error", reject);
-    proc.on("close", (code) => resolve(code ?? 1));
-  });
+  } finally {
+    try {
+      rmSync(env.SCOUTLINE_CONFIG_DIR, { recursive: true, force: true, maxRetries: 3 });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[run-tests] temporary config cleanup failed: ${message}`);
+    }
+  }
 }
 
 function preflightLiveRelease() {

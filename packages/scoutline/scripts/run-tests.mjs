@@ -120,7 +120,12 @@ async function runNodeTests(files, mode) {
       proc.on("close", (code) => resolve(code ?? 1));
     });
   } finally {
-    rmSync(env.SCOUTLINE_CONFIG_DIR, { recursive: true, force: true, maxRetries: 3 });
+    try {
+      rmSync(env.SCOUTLINE_CONFIG_DIR, { recursive: true, force: true, maxRetries: 3 });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[run-tests] temporary config cleanup failed: ${message}`);
+    }
   }
 }
 

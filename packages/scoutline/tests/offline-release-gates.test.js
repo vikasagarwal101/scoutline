@@ -98,6 +98,34 @@ test("offline gate cleans its temporary store after a failing test", (t) => {
   fixture.assertStoresClean();
 });
 
+test("a cleanup failure warns and preserves a successful offline test result", (t) => {
+  const fixture = runnerFixture(t);
+  fixture.writeTest("passing.test.mjs", `
+    import test from "node:test";
+    test("offline result survives cleanup failure", () => {});
+  `);
+  fixture.writeTest("deny-cleanup.mjs", `
+    import fs from "node:fs";
+    import { syncBuiltinESMExports } from "node:module";
+    import { basename } from "node:path";
+
+    const remove = fs.rmSync;
+    fs.rmSync = (target, options) => {
+      if (basename(target).startsWith("scoutline-test-")) {
+        throw Object.assign(new Error("synthetic cleanup denial"), { code: "EACCES" });
+      }
+      return remove(target, options);
+    };
+    syncBuiltinESMExports();
+  `);
+
+  const result = fixture.run("--import", "./tests/deny-cleanup.mjs", "scripts/run-tests.mjs", "offline");
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /offline result survives cleanup failure/);
+  assert.match(result.stderr, /\[run-tests\] temporary config cleanup failed: synthetic cleanup denial/);
+});
+
 test("store census fails on a store written by the selected MJS test", {
   skip: process.platform === "win32",
 }, (t) => {

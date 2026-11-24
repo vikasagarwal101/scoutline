@@ -129,7 +129,7 @@ test("prepared tick awaits a rejecting async check and leaves no publication", a
     release.resolve();
     await settled;
   }
-  assert.deepEqual(await settled, { error: refused });
+  assert.strictEqual((await settled).error, refused);
   await assert.rejects(fs.access(path.join(dir, MONITOR, "current.json")), { code: "ENOENT" });
   const ticks = await fs.readdir(path.join(dir, MONITOR, "ticks")).catch((error) => {
     if (error.code !== "ENOENT") throw error;

@@ -223,19 +223,51 @@ for (const [label, doc] of BAD_DOCS) {
   });
 }
 
-test("mode conflicts reject before any input read", async () => {
+test("workflow conflicts reject before reading stdin", async () => {
   const runtime = makeWorkflowRuntime([]);
-  for (const argv of [
-    ["investigate", "--workflow", "/dev/null", "--requirements", "/dev/null"],
-    ["investigate", "--workflow", "/dev/null", "--caller-request", "/dev/null"],
-    ["investigate", "--workflow", "/dev/null", "--verify"],
-    ["investigate", "--workflow", "/dev/null", "a positional question"],
+  const { adapter, stderr } = makeAdapter();
+  let reads = 0;
+  const deps = hermeticMainDeps({
+    invocation: { ...adapter, readStdin: async () => { reads += 1; return "{}"; } },
+    env: { ...ENV },
+  });
+  deps.requirementsRuntime = runtime.factory;
+  for (const [flags, diagnostic] of [
+    [["--requirements", "-"], /mutually exclusive/],
+    [["--caller-request", "-"], /--workflow and --caller-request.*mutually exclusive/],
+    [["--verify"], /cannot combine with --workflow/],
+    [["a positional question"], /does not accept a positional question/],
   ]) {
-    const { code, stderr } = await runMain(argv, { runtime: runtime.factory });
-    assert.notEqual(code, 0, argv.join(" "));
-    assert.match(stderr, /VALIDATION_ERROR/);
+    stderr.length = 0;
+    const code = await main(["investigate", "--workflow", "-", ...flags], deps);
+    assert.equal(code, 1);
+    assert.match(stderr.join(""), /VALIDATION_ERROR/);
+    assert.match(stderr.join(""), diagnostic);
+    assert.equal(reads, 0);
   }
   assert.equal(runtime.calls.runtime, 0);
+});
+
+test("workflow accepts stdin only as the source immediately after the flag", async () => {
+  const { adapter, stdout, stderr } = makeAdapter();
+  const document = JSON.stringify(extractionDocument());
+  let reads = 0;
+  const deps = hermeticMainDeps({
+    env: {},
+    invocation: { ...adapter, readStdin: async () => { reads += 1; return document; } },
+  });
+  for (const flags of [["--workflow", "--no-cache", "-"], ["-", "--workflow"]]) {
+    stderr.length = 0;
+    assert.equal(await main(["investigate", ...flags], deps), 1);
+    assert.match(stderr.join(""), /does not accept a positional question/);
+    assert.equal(reads, 0);
+  }
+  for (const flags of [["--workflow", "-", "--no-cache"], ["--workflow=-"]]) {
+    stdout.length = 0;
+    assert.equal(await main(["investigate", ...flags], deps), 1);
+    assert.equal(JSON.parse(stdout.join("")).kind, "manifest-extraction");
+  }
+  assert.equal(reads, 2);
 });
 
 test("monitor without a stateRoot and extraction with a caller judge reject with no runtime", async () => {
@@ -427,7 +459,9 @@ async function headRevision() {
   return stdout.trim();
 }
 
-test("audit kind: literal claim over the pinned local checkout accepts", async () => {
+test("audit kind: literal claim over the pinned local checkout accepts", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "scoutline-local-audit-save-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
   const revision = await headRevision();
   const runtime = makeWorkflowRuntime([]);
   await withWorkflowFile(
@@ -449,15 +483,74 @@ test("audit kind: literal claim over the pinned local checkout accepts", async (
       },
     },
     async (file) => {
-      const { code, parsed, stderr } = await runMain(["investigate", "--workflow", file], { runtime: runtime.factory });
+      const { code, parsed, stderr } = await runMain(["investigate", "--workflow", file, "--save", join(dir, "audit.json")], {
+        runtime: runtime.factory,
+        env: { ...ENV, SCOUTLINE_ARTIFACTS_DIR: dir },
+      });
       assert.equal(code, 0, stderr);
       assert.equal(parsed.kind, "implementation-audit");
       assert.equal(parsed.report.claims[0].status, "supported");
       assert.equal(parsed.report.revision, revision);
       assert.ok(parsed.report.coverageNotes.some((note) => note.includes("exact pinned local Git commit")));
       assert.equal(runtime.calls.runtime, 0, "audit never constructs a provider runtime");
+      const log = JSON.parse(await readFile(join(dir, "index.json"), "utf8"));
+      assert.deepEqual(log.entries[0].provider, { mode: "single", effective: "local" });
     },
   );
+});
+
+test("an interrupt at audit settlement saves earned claims with local provenance", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "scoutline-audit-interrupt-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const target = join(dir, "audit.json");
+  const artifacts = join(dir, "artifacts");
+  const request = {
+    repository: "scoutline",
+    localRepositoryPath: REPO_ROOT,
+    revision: await headRevision(),
+    claims: [{
+      id: "package", text: "Package name", proofClass: "literal",
+      checks: [{ path: "packages/scoutline/package.json", allOf: ["scoutline"] }],
+    }],
+  };
+  const { adapter, stdout, stderr } = makeAdapter({
+    stdin: JSON.stringify({ schemaVersion: 1, kind: "audit", request }),
+  });
+  const deps = hermeticMainDeps({
+    invocation: adapter,
+    env: { ...ENV, SCOUTLINE_ARTIFACTS_DIR: artifacts },
+  });
+  let interrupt;
+  let settled = false;
+  deps.requirementsUserInterrupt = (cancel) => { interrupt = cancel; return () => {}; };
+  // The real engine removes its external abort listener after assembling
+  // the report, before the workflow can project the earned claims.
+  const remove = AbortSignal.prototype.removeEventListener;
+  const observe = t.mock.method(AbortSignal.prototype, "removeEventListener", function (type, listener, options) {
+    remove.call(this, type, listener, options);
+    if (type === "abort" && listener?.name === "onExternalAbort" && !settled) {
+      settled = true;
+      interrupt();
+    }
+  });
+  try {
+    const code = await main(["investigate", "--workflow", "-", "--save", target], deps);
+    assert.equal(settled, true);
+    assert.equal(code, 130, stderr.join(""));
+    const payload = JSON.parse(stdout.join(""));
+    assert.equal(payload.cancelled, true);
+    assert.equal(payload.stopReason, "cancelled");
+    assert.equal(payload.report.claims[0].status, "supported");
+    assert.deepEqual(JSON.parse(await readFile(target, "utf8")).result, payload);
+    const log = JSON.parse(await readFile(join(artifacts, "index.json"), "utf8"));
+    assert.equal(log.entries.length, 1);
+    assert.deepEqual(log.entries[0].provider, { mode: "single", effective: "local" });
+  } finally {
+    observe.mock.restore();
+  }
+  const history = await runMain(["history", "list"], { env: { SCOUTLINE_ARTIFACTS_DIR: artifacts } });
+  assert.equal(history.code, 0, history.stderr);
+  assert.equal(history.parsed.entries[0].provider.effective, "local");
 });
 
 test("audit kind: absent path leaves only its own claim unresolved; nonexistent commits refuse", async () => {
@@ -780,7 +873,7 @@ test("domain preflight rejects before the runtime factory", async () => {
 });
 
 test("invalid and local-only workflows do not refresh provider quotas", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "scoutline-workflow-local-only-"));
+  const directory = await mkdtemp(join(tmpdir(), "scoutline workflow local only "));
   try {
     const log = join(directory, "traffic.log");
     const preload = join(directory, "observe-traffic.mjs");
@@ -799,10 +892,9 @@ test("invalid and local-only workflows do not refresh provider quotas", async ()
       SCOUTLINE_CONFIG_DIR: join(directory, "config"),
       SCOUTLINE_TEST_TRAFFIC: log,
       JINA_API_KEY: "synthetic-jina-quota-key",
-      NODE_OPTIONS: "--import=" + preload,
     };
     const bin = join(REPO_ROOT, "packages/scoutline/bin/scoutline.js");
-    const run = (file) => execFileP(process.execPath, [bin, "investigate", "--workflow", file], { env });
+    const run = (file) => execFileP(process.execPath, ["--import", preload, bin, "investigate", "--workflow", file], { env });
     await withWorkflowFile("{invalid", async (file) => {
       await assert.rejects(run(file), (error) => error.code === 1 && /VALIDATION_ERROR/.test(error.stderr));
     });
@@ -938,7 +1030,7 @@ test("compiled workflow quota cadence requires successful provider acquisition",
     };
     const code = await execFileP(process.execPath, [
       "--import", preload, join(REPO_ROOT, "packages/scoutline/bin/scoutline.js"),
-      "investigate", "--workflow", envelope,
+      "investigate", "--workflow", envelope, "--save", join(directory, name + ".saved.json"),
     ], { env }).then(() => 0, (error) => error.code);
     assert.equal(code, exit, name);
     const calls = (await readFile(log, "utf8")).trim().split("\n").filter(Boolean);
@@ -949,6 +1041,8 @@ test("compiled workflow quota cadence requires successful provider acquisition",
   const provider = await run("with-acquisition", "cache", comparison);
   assert.ok(provider.includes("search") && provider.includes("read") && provider.includes("judge"));
   assert.equal(provider.filter((call) => call === "quota").length, 1);
+  const providerLog = JSON.parse(await readFile(join(directory, "cache", "artifacts", "index.json"), "utf8"));
+  assert.equal(providerLog.entries[0].provider.effective, "tavily");
   const cached = await run("cache-only", "cache", comparison);
   assert.ok(cached.includes("judge"));
   assert.ok(cached.every((call) => call === "judge"));
@@ -1160,6 +1254,7 @@ test("interrupt during the awaited quota-snapshot composition settles typed 130,
   let interrupt;
   let unregisterCount = 0;
   let releaseSnapshot;
+  let handedOffSnapshot = false;
   // Late REJECTION is the stronger drain witness: the race-lost snapshot
   // work must be OBSERVED by raceWithInterrupt (void work.catch) so its
   // eventual rejection never escapes as an unhandled rejection.
@@ -1177,6 +1272,7 @@ test("interrupt during the awaited quota-snapshot composition settles typed 130,
   // snapshot read. The read itself marks the ENTRY — resolved the moment
   // the await is entered, no timer guessing.
   deps.readRequirementsQuotaSnapshot = () => {
+    handedOffSnapshot = true;
     markEntered();
     return snapshotGate;
   };
@@ -1210,12 +1306,15 @@ test("interrupt during the awaited quota-snapshot composition settles typed 130,
     // Drain in finally: a regression that fails an assertion above must
     // not hang or leak the gated snapshot — release it and let the
     // observed-late-settlement path complete.
-    releaseSnapshot();
+    if (handedOffSnapshot) releaseSnapshot();
     await new Promise((resolve) => setImmediate(() => setImmediate(resolve)));
   }
 });
 
-test("mid-run interrupt with a completing engine settles earned partial data at 130", async () => {
+test("mid-run extraction interrupt saves earned partial data and cancellation at 130", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "scoutline-extraction-interrupt-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const saved = join(dir, "saved.json");
   let interrupt;
   const seen = [];
   const world = makeWorkflowRuntime([]);
@@ -1233,14 +1332,17 @@ test("mid-run interrupt with a completing engine settles earned partial data at 
     }),
   };
   const { adapter, stdout, stderr } = makeAdapter({ stdin: JSON.stringify(extractionDocument()) });
-  const deps = hermeticMainDeps({ invocation: adapter, env: { ...ENV } });
+  const deps = hermeticMainDeps({ invocation: adapter, env: { ...ENV, SCOUTLINE_ARTIFACTS_DIR: join(dir, "artifacts") } });
   deps.requirementsRuntime = runtime.factory;
   deps.requirementsUserInterrupt = (cancel) => { interrupt = cancel; return () => {}; };
-  const code = await main(["investigate", "--workflow", "-"], deps);
+  const code = await main(["investigate", "--workflow", "-", "--save", saved], deps);
   assert.equal(code, 130, stderr.join(""));
   assert.deepEqual(seen, [true], "the dispatch observed the aborted owned signal");
   const body = JSON.parse(stdout.join(""));
   assert.equal(body.kind, "manifest-extraction");
+  assert.equal(body.cancelled, true);
+  assert.equal(body.stopReason, "cancelled");
+  assert.deepEqual(JSON.parse(await readFile(saved, "utf8")).result, body);
   assert.ok(body.evidence.length >= 1, "earned evidence is preserved");
   assert.ok(body.measurement !== undefined, "earned measurement is preserved");
   // Earned audit rows as exposed by the projection: the dispatched judge

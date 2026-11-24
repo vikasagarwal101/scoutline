@@ -453,8 +453,10 @@ workflow from a bounded JSON document. Envelope is exactly
 `comparison`, `monitor`, `extraction`, `audit`, `resolution`. Unknown
 keys/kinds reject before any runtime construction; mutually exclusive
 with the positional question, requirements/caller modes and plain-mode
-controls. Output is one kind-tagged envelope with `resultSha256`
-binding the delivered redacted bytes. Exit 0 complete / 1 honest
+controls. Output is one kind-tagged envelope. Verify `resultSha256`
+over the UTF-8 bytes of `JSON.stringify` of the delivered redacted
+object with its own `resultSha256` field removed. A comparison's
+`engine` object has its own digest computed the same way. Exit 0 complete / 1 honest
 partial / 2 monitor late commit / 130 interrupted. `monitor` requires
 an explicit caller-owned `stateRoot`; `extraction` accepts only the
 `Version:`/`License:` release-manifest grammar and never a

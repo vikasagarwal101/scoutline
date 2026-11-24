@@ -110,9 +110,11 @@ Kinds (each maps to one reviewed engine-backed consumer):
                declared scope and alternatives.
                request: { schemaVersion, scope, alternatives, limits? }
 
-Output: one JSON document per kind (kind-tagged, schemaVersion 1) whose
-resultSha256 binds the exact delivered (redacted) envelope; evidence
-display digests are computed against the delivered bytes.
+Output: one JSON document per kind (kind-tagged, schemaVersion 1).
+resultSha256 hashes the UTF-8 bytes of JSON.stringify of the delivered
+redacted object with its own resultSha256 field omitted. Comparison's
+engine object has its own digest by the same rule. Evidence display
+digests are computed against the delivered content.
 
 Exit codes: 0 complete; 1 partial (honest — absent judges, refused or
 incomplete coverage never fake success); 2 monitor late-commit rejection;
@@ -398,7 +400,7 @@ export async function handleInvestigateWorkflow(
   args: { readonly source: { kind: "file"; path: string } | { kind: "stdin" } },
   deps: InvestigateRequirementsDeps,
   host: WorkflowHost,
-  options: { readonly basis: readonly string[] } = { basis: [] },
+  options: { readonly basis: readonly string[]; readonly onLocalAudit?: () => void } = { basis: [] },
 ): Promise<CommandResult> {
   // Owned interruption from the first line: the pending input read,
   // envelope validation, runtime composition and delivery all sit inside
@@ -608,6 +610,7 @@ export async function handleInvestigateWorkflow(
           materialClass: outcome.materialClass,
           claimedUrl: outcome.claimedUrl,
           claimedUrlVerification: outcome.claimedUrlVerification,
+          ...(outcome.cancelled ? { cancelled: true, stopReason: outcome.stopReason } : {}),
           result: outcome.result,
           parse: outcome.parse,
           evidence: deliverEvidenceRows([outcome.record], basis),
@@ -646,11 +649,12 @@ export async function handleInvestigateWorkflow(
       const { snapshot, unreadAtDeadline } = await raceWithInterrupt(
         readLocalGitSnapshot(localRepositoryPath, claimSet, owned.controller.signal), owned,
       );
+      owned.settle();
       const audited = await runImplementationAudit(claimSet, snapshot, {
         allowEmptySnapshot: true,
         signal: owned.controller.signal,
       });
-      owned.settle();
+      const interrupted = owned.interrupted();
       const coverageNotes = [
         ...audited.coverageNotes,
         "Retained text was read from regular blobs in the exact pinned local Git commit. This does not verify remote origin.",
@@ -661,7 +665,13 @@ export async function handleInvestigateWorkflow(
         );
       }
       const report = { ...audited, coverageNotes };
-      return projectWorkflowResult("implementation-audit", { report }, basis, report.status === "complete" ? 0 : 1);
+      options.onLocalAudit?.();
+      return projectWorkflowResult(
+        "implementation-audit",
+        { report, ...(interrupted ? { cancelled: true, stopReason: "cancelled" } : {}) },
+        basis,
+        interrupted ? 130 : report.status === "complete" ? 0 : 1,
+      );
     }
 
     requireWorkflowKeys(request, ["schemaVersion", "scope", "alternatives", "limits"]);

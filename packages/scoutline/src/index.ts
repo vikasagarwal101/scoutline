@@ -5043,7 +5043,9 @@ async function handleInvestigate(
         "Pass exactly one investigation mode.",
       );
     }
-    const dashStdin = flags.workflow === true && positional.length === 1 && positional[0] === "-";
+    const workflowArg = args.indexOf("--workflow");
+    const dashStdin = flags.workflow === true && args[workflowArg + 1] === "-" &&
+      positional.length === 1 && positional[0] === "-";
     if (positional.length > 0 && !dashStdin) {
       throw new ValidationError(
         "investigate --workflow does not accept a positional question; the workflow document's request is authoritative.",
@@ -5108,6 +5110,7 @@ async function handleInvestigate(
         : {}),
       effective: deps.provider ?? "zai",
     };
+    let localAudit = false;
     const workflowSave = createSaveArtifactHook(deps, {
       command: "investigate",
       outputMode,
@@ -5116,7 +5119,7 @@ async function handleInvestigate(
         ...(flags["no-cache"] !== undefined ? { "no-cache": true } : {}),
         workflow: true,
       },
-      provider: workflowRouting as Parameters<typeof createSaveArtifactHook>[1]["provider"],
+      get provider() { return localAudit ? { mode: "local" as const } : workflowRouting; },
     });
     let usedProviderAcquisition = false;
     const workflowDeps: InvestigateRequirementsDeps = {
@@ -5163,6 +5166,7 @@ async function handleInvestigate(
       () =>
         handleInvestigateWorkflow({ source }, workflowDeps, workflowHost, {
           basis: workflowSecrets,
+          onLocalAudit: () => { localAudit = true; },
         }),
       outputMode,
       undefined,
@@ -6996,6 +7000,12 @@ export async function main(
     };
     try {
       const parsed = parseArgs(commandArgs), f = parsed.flags;
+      if (f.workflow !== undefined) {
+        throw new ValidationError(
+          "--workflow and --caller-request/--caller-request-json are mutually exclusive.",
+          "Pass exactly one investigation mode.",
+        );
+      }
       if (f["caller-request"] !== undefined && f["caller-request-json"] !== undefined) throw new ValidationError("Caller request sources are mutually exclusive.");
       const stdin = f["caller-request"] === true && parsed.positional.length === 1 && parsed.positional[0] === "-";
       if (parsed.positional.length && !stdin) throw new ValidationError("Caller request does not accept a positional question.");

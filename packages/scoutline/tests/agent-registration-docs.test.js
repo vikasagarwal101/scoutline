@@ -139,7 +139,7 @@ const changelog = fs.readFile(new URL("../../../CHANGELOG.md", import.meta.url),
 // subsection gained the official-route verification-scope sentence
 // (fake-HTTP fixtures only, not live-attested). No other body copy changed.
 // Current-prefix merge preserves provider/docs additions and settled caller response/paging rules.
-const SKILL_BODY_SHA256 = "f823bdfad5fc50e6abdba34f0793cb85d6f005eebacb20ce724768253567d868";
+const SKILL_BODY_SHA256 = "87e61ec9b6b537fc550437a62e51b8787dd618d98f05f17a793c77b5419302e9";
 
 // AC-10 budget: codex/qwen load name+description before any body
 // byte; the old enumeration (~1500 chars) blows the disclosure

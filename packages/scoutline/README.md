@@ -664,14 +664,21 @@ and one-basis redaction as requirements mode:
   material alternative. The default runtime has no resolution extractor,
   so it can return partial evidence without a selected value.
 
-Every kind returns one kind-tagged JSON document whose `resultSha256`
-binds the exact delivered (redacted) envelope; evidence display digests
-are computed against the delivered bytes. Exit 0 complete / 1 partial
+Every kind returns a kind-tagged JSON document. Verify `resultSha256`
+by parsing the delivered object, removing its top-level `resultSha256`,
+and hashing the UTF-8 bytes of `JSON.stringify` of the rest. Use the
+result object inside a saved JSON artifact. A comparison's `engine`
+object has its own digest, verified the same way. Evidence display
+digests bind the delivered content. Exit 0 complete / 1 partial
 (absent judges, refused or incomplete coverage never fake success) /
 2 monitor late-commit rejection / 130 interrupted. An audit reports when
 its local Git read deadline leaves part of its coverage incomplete.
 Completed workflows that dispatched provider acquisition can trigger the
 ordinary due quota refresh, outside the workflow's attempt ledger.
+Interrupted manifest extraction and audit can return earned results at
+exit 130. When the returned data reports cancellation, it includes
+`cancelled: true` and `stopReason: "cancelled"`. Saved local audits use
+`local` in the artifact history provider field.
 
 ```bash
 scoutline investigate --workflow workflow.json
@@ -700,7 +707,11 @@ repository root and full commit ID from your local checkout.
 {"schemaVersion":1,"kind":"extraction","request":{"manifestText":"Version: 2.4.0\nLicense: MIT\n","admission":{"materialClass":"synthetic","claimedUrl":"https://example.org/releases/2.4.0","title":"Release manifest"}}}
 ```
 
-**Audit** (example for the Scoutline checkout at the reviewed base)
+**Audit**
+
+Run `git rev-parse HEAD` from your local repository root and substitute
+that full commit ID for `revision`. The example uses a historical Scoutline
+commit. To run it verbatim, that commit must be present in the local checkout.
 
 ```json
 {"schemaVersion":1,"kind":"audit","request":{"repository":"scoutline","revision":"e850b5fdc5d556bdf1ef893d524515534fafa094","localRepositoryPath":".","claims":[{"id":"package-name","text":"The package manifest names Scoutline","proofClass":"literal","checks":[{"path":"packages/scoutline/package.json","allOf":["scoutline"]}]}]}}

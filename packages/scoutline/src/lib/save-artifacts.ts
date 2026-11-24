@@ -86,7 +86,7 @@ export function createSaveArtifactHook(
   meta: {
     readonly command: string;
     readonly args: Readonly<Record<string, unknown>>;
-    readonly provider: ProviderRouting;
+    readonly provider: ProviderRouting | { readonly mode: "local" };
     readonly outputMode: OutputMode;
   },
 ): SaveHook | undefined {
@@ -118,29 +118,36 @@ export function createSaveArtifactHook(
       // drift apart.
       const extension = request.format === "markdown" ? "md" : "json";
       const masterPath = path.join(dir, `${requestId}.${extension}`);
-      const provider: ProviderRouting =
-        meta.provider.mode === "fanout"
-          ? meta.provider
-          : {
-              ...meta.provider,
-              // The executor's actual server wins over the pre-run
-              // resolution when runtime fallback switched providers (D5).
-              effective: capture.servedProvider ?? meta.provider.effective,
-              // Issue #108: distinguish "the effective provider served
-              // live" from "the effective provider's on-disk cache served
-              // (possibly while the provider was unreachable)". Capture
-              // unset (non-capable command, pre-run failure) records
-              // "live" — the pre-#108 entry's implicit assumption.
-              servedFrom: capture.servedFrom ?? "live",
-              // Issue #108: unpinned runs previously logged no
-              // `requested`, so a cache-served defaulted run was
-              // indistinguishable from a pinned live one. Record the
-              // defaulted request (pre-run effective) alongside the
-              // capture-derived effective.
-              ...(meta.provider.requested === undefined
-                ? { requested: meta.provider.effective }
-                : {}),
-            };
+      const routing = meta.provider;
+      // The log already supports local sources through a single routing
+      // label without a live/cache attribution (the history note convention).
+      let provider: ProviderRouting;
+      if (routing.mode === "local") {
+        provider = { mode: "single", effective: "local" };
+      } else if (routing.mode === "fanout") {
+        provider = routing;
+      } else {
+        provider = {
+          ...routing,
+          // The executor's actual server wins over the pre-run
+          // resolution when runtime fallback switched providers (D5).
+          effective: capture.servedProvider ?? routing.effective,
+          // Issue #108: distinguish "the effective provider served
+          // live" from "the effective provider's on-disk cache served
+          // (possibly while the provider was unreachable)". Capture
+          // unset (non-capable command, pre-run failure) records
+          // "live" — the pre-#108 entry's implicit assumption.
+          servedFrom: capture.servedFrom ?? "live",
+          // Issue #108: unpinned runs previously logged no
+          // `requested`, so a cache-served defaulted run was
+          // indistinguishable from a pinned live one. Record the
+          // defaulted request (pre-run effective) alongside the
+          // capture-derived effective.
+          ...(routing.requested === undefined
+            ? { requested: routing.effective }
+            : {}),
+        };
+      }
       const entry: SaveLogEntry = {
         kind: "save",
         requestId,

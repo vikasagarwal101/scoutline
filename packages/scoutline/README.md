@@ -666,19 +666,20 @@ and one-basis redaction as requirements mode:
 
 Every kind returns a kind-tagged JSON document. Verify `resultSha256`
 by parsing the delivered object, removing its top-level `resultSha256`,
-and hashing the UTF-8 bytes of `JSON.stringify` of the rest. Use the
-result object inside a saved JSON artifact. A comparison's `engine`
-object has its own digest, verified the same way. Evidence display
+and hashing the UTF-8 bytes of `JSON.stringify` of the rest. In a saved
+JSON artifact, this object is the `result` field. A comparison's
+`engine` object has its own digest, verified the same way. Evidence display
 digests bind the delivered content. Exit 0 complete / 1 partial
 (absent judges, refused or incomplete coverage never fake success) /
 2 monitor late-commit rejection / 130 interrupted. An audit reports when
 its local Git read deadline leaves part of its coverage incomplete.
 Completed workflows that dispatched provider acquisition can trigger the
 ordinary due quota refresh, outside the workflow's attempt ledger.
-Interrupted manifest extraction and audit can return earned results at
-exit 130. When the returned data reports cancellation, it includes
-`cancelled: true` and `stopReason: "cancelled"`. Saved local audits use
-`local` in the artifact history provider field.
+When an interrupted manifest extraction or audit returns earned results
+at exit 130, its output includes `cancelled: true` and
+`stopReason: "cancelled"`. A cancelled monitor tick reports its
+`monitorId` and `cancelled: true`. Artifact history records saved local
+audits with `provider.effective` set to `local`.
 
 ```bash
 scoutline investigate --workflow workflow.json

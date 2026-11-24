@@ -1,0 +1,227 @@
+// Draft per-question labels for judge threshold bands (#307).
+// NEVER import in an engine/model runner.
+//
+// STATUS: DRAFT, NOT REVIEWED. Drafted by an OpenCode agent session from the
+// document text. It is not ground truth until two independent reviewers agree
+// without seeing model outputs. Until then it is development material, and it is
+// not a holdout: the reserved Grove and Harbor cases are deliberately unlabelled.
+export const labelRevision = "opencode-judge-band-draft-v1";
+export const labelStatus = "draft-unreviewed";
+
+// [caseId, sourceId, relevant, supports, refutes] for the CSV classification
+// field: the expected answer to each of the three questions the engine asks about
+// every retained document. One row per document that has content.
+// "indeterminate" marks an answer whose standard reviewers must settle. It is
+// never read as true or as false.
+export const questionLabels = [
+  // unified-review-corpus.mjs, development cases
+  ["aster-clean", "aster-guide", "true", "true", "false"],
+  ["aster-clean", "aster-review", "true", "true", "false"],
+  ["aster-wrong-release", "aster-mixed", "true", "true", "false"],
+  ["aster-wrong-release", "aster-3-review", "true", "true", "false"],
+  ["birch-progressive", "birch-junk", "false", "false", "false"],
+  ["birch-progressive", "birch-guide", "true", "true", "false"],
+  ["birch-progressive", "birch-review", "true", "true", "false"],
+  ["birch-unknown-prerequisite", "birch-unspecified", "true", "true", "false"],
+  ["birch-unknown-prerequisite", "birch-current-review", "true", "true", "false"],
+  ["cedar-challenge-retained", "cedar-guide", "true", "true", "false"],
+  ["cedar-challenge-retained", "cedar-review", "true", "true", "false"],
+  ["cedar-challenge-failed", "cedar-failed-guide", "true", "true", "false"],
+  ["dune-late-adverse", "dune-guide", "true", "true", "false"],
+  ["dune-late-adverse", "dune-first-review", "true", "true", "false"],
+  ["dune-late-adverse", "dune-late", "true", "false", "true"],
+  ["dune-late-irrelevant", "dune-good-guide", "true", "true", "false"],
+  ["dune-late-irrelevant", "dune-good-review", "true", "true", "false"],
+  ["dune-late-irrelevant", "dune-other", "false", "false", "false"],
+  ["ember-refuted", "ember-guide", "true", "false", "true"],
+  ["ember-refuted", "ember-review", "true", "false", "true"],
+  ["ember-unknown-support", "ember-positive", "true", "true", "false"],
+  ["ember-unknown-support", "ember-note", "true", "indeterminate", "false"],
+  ["fjord-unicode", "fjord-guide", "true", "true", "false"],
+  ["fjord-unicode", "fjord-review", "true", "true", "false"],
+  ["fjord-injection", "fjord-html", "true", "false", "true"],
+  ["fjord-injection", "fjord-verification", "true", "false", "true"],
+  // judge-band-supplement.mjs
+  ["larch-keywords-only", "larch-stuffed", "false", "false", "false"],
+  ["larch-keywords-plus-support", "larch-stuffed-support", "true", "true", "false"],
+  ["larch-keywords-plus-refutation", "larch-stuffed-refute", "true", "false", "true"],
+  ["maple-heading-contradicts-body", "maple-heading", "true", "false", "true"],
+  ["maple-quoted-placeholder", "maple-template", "false", "false", "false"],
+  ["maple-other-release-support", "maple-older", "false", "false", "false"],
+  ["maple-wrong-entity", "larch-lookalike", "false", "false", "false"],
+  ["maple-feature-list-without-csv", "maple-features", "true", "false", "false"],
+  ["maple-edition-limited", "maple-enterprise", "true", "indeterminate", "false"],
+  ["maple-truncated", "maple-cut", "true", "false", "false"],
+  ["willow-multilingual-support", "willow-de", "true", "true", "false"],
+  ["willow-multilingual-support", "willow-es", "true", "true", "false"],
+  ["willow-multilingual-refute", "willow-fr", "true", "false", "true"],
+  ["willow-multilingual-refute", "willow-ja", "true", "false", "true"],
+  ["willow-long-tail-refutes", "willow-long-refute", "true", "true", "true"],
+  ["willow-long-tail-support", "willow-long-support", "true", "true", "false"],
+  ["willow-many-sources", "willow-guide", "true", "true", "false"],
+  ["willow-many-sources", "willow-review", "true", "true", "false"],
+  ["willow-many-sources", "willow-older", "false", "false", "false"],
+  ["willow-many-sources", "larch-lookalike-again", "false", "false", "false"],
+  ["willow-many-sources", "willow-junk", "false", "false", "false"],
+  ["willow-many-sources", "willow-late", "true", "false", "true"],
+  ["willow-same-titles", "willow-docs-a", "true", "true", "false"],
+  ["willow-same-titles", "willow-docs-b", "true", "false", "true"],
+  ["willow-mixed-history", "willow-history", "true", "true", "false"],
+];
+
+// Why a label is what it is, where that does not follow from the text alone.
+export const rationale = {
+  "birch-junk": "About birch trees, not the Birch software release.",
+  "dune-other": "Release 1.0 statements that say they do not describe release 2.0.",
+  "fjord-html": "The script element is an instruction, not evidence; the article refutes.",
+  "ember-note": "Supports is indeterminate. The note says it does not document CSV behaviour, so the literal answer to the question is false; the case name and the existing rationale treat it as unknown.",
+  "birch-unspecified": "The release is named only as the current edition, which is the scope.",
+  "maple-heading": "The heading claims support; the body, which is the statement, refutes.",
+  "maple-template": "A template with placeholders states nothing about Maple 7.1.",
+  "maple-older": "Release 7.0 is not the release in scope.",
+  "larch-lookalike": "Larch is not the product in scope.",
+  "maple-features": "About the right release, with no mention of CSV export: not support and not refutation.",
+  "maple-enterprise": "Supports is indeterminate and contested: the scope names a release and no edition.",
+  "maple-cut": "The statement is cut off, so nothing is stated and supports is false under the literal question.",
+  "willow-older": "Release 3.1 is not the release in scope.",
+  "larch-lookalike-again": "Larch is not the product in scope.",
+  "willow-junk": "About willow trees, not the Willow software release.",
+  "willow-history": "The 3.1 statements are past tense and about another release; they do not refute 3.2.",
+  "willow-de": "A statement of support in German: Version 3.2 unterstützt den CSV-Export.",
+  "willow-es": "A statement of support in Spanish: la versión 3.2 admite la exportación CSV.",
+  "willow-fr": "A statement of refutation in French: la version 3.2 ne prend pas en charge l'export CSV.",
+  "willow-ja": "A statement of refutation in Japanese: リリース 3.2 は CSV エクスポートをサポートしていません。",
+  "larch-stuffed": "Search terms repeated, with no statement.",
+  "larch-stuffed-support": "Search terms repeated, then one plain statement of support.",
+  "larch-stuffed-refute": "Search terms repeated, then one plain statement of refutation.",
+};
+
+// Cases whose field gold is null for an engine-level reason. Their judge-level
+// labels aggregate to a different CSV outcome than the field gold.
+export const engineLevelAbstention = {
+  "cedar-challenge-failed": "fixture_read_failed",
+};
+
+// Questions reviewers must settle before any of this is ground truth.
+export const reviewQuestions = [
+  "ember-note, supports: false under the literal question, or unknown as the case name and the existing rationale suggest?",
+  "maple-enterprise, supports: a release supports CSV export in one edition only, and the scope names no edition. Is that support, refutation, or unknown?",
+  "maple-cut, supports: a statement cut off mid-sentence. Is the absence of a statement false, or unknown?",
+  "dune-late, version: the limitations page is taken to substantiate 2.0 as the release identifier. Is a limitations page a source for the version field?",
+  "Candidate hard negatives carry no conflict label. Should a competing in-scope value count as conflict for a value the passage does not substantiate?",
+];
+
+// Candidate gold, by proposal id: [support, conflict, kind].
+//   positive      the passage substantiates the value
+//   hard-negative  a value the passage does not substantiate
+// For hard negatives the conflict answer is "indeterminate": not labelled.
+export const candidateGold = {
+  "aster-clean/aster-guide/version=2.4": ["true", "false", "positive"],
+  "aster-clean/aster-review/version=2.4": ["true", "false", "positive"],
+  "aster-clean/aster-guide/version=2.4.1": ["false", "indeterminate", "hard-negative"],
+  "aster-clean/aster-review/version=2.4.0": ["false", "indeterminate", "hard-negative"],
+  "aster-clean/aster-guide/license=MIT": ["true", "false", "positive"],
+  "aster-clean/aster-review/license=MIT": ["true", "false", "positive"],
+  "aster-wrong-release/aster-mixed/version=3.0": ["true", "false", "positive"],
+  "aster-wrong-release/aster-mixed/license=MIT": ["false", "indeterminate", "hard-negative"],
+  "birch-progressive/birch-guide/version=5.1": ["true", "false", "positive"],
+  "birch-progressive/birch-review/version=5.1": ["true", "false", "positive"],
+  "birch-progressive/birch-guide/license=Apache-2.0": ["true", "false", "positive"],
+  "birch-progressive/birch-review/license=Apache-2.0": ["true", "false", "positive"],
+  "birch-unknown-prerequisite/birch-unspecified/license=MIT": ["false", "indeterminate", "hard-negative"],
+  "cedar-challenge-retained/cedar-guide/version=1.7": ["true", "false", "positive"],
+  "cedar-challenge-retained/cedar-review/version=1.7": ["true", "false", "positive"],
+  "cedar-challenge-retained/cedar-guide/license=BSD-3-Clause": ["true", "false", "positive"],
+  "cedar-challenge-retained/cedar-review/license=BSD-3-Clause": ["true", "false", "positive"],
+  "dune-late-adverse/dune-first-review/version=2.0": ["true", "false", "positive"],
+  "dune-late-adverse/dune-guide/version=2.0": ["true", "false", "positive"],
+  "dune-late-adverse/dune-late/version=2.0": ["true", "false", "positive"],
+  "dune-late-adverse/dune-first-review/license=MIT": ["true", "true", "positive"],
+  "dune-late-adverse/dune-guide/license=MIT": ["true", "true", "positive"],
+  "dune-late-adverse/dune-late/license=GPL-3.0": ["true", "true", "positive"],
+  "dune-late-irrelevant/dune-good-guide/version=2.0": ["true", "false", "positive"],
+  "dune-late-irrelevant/dune-good-review/version=2.0": ["true", "false", "positive"],
+  "dune-late-irrelevant/dune-other/version=1.0": ["false", "indeterminate", "hard-negative"],
+  "dune-late-irrelevant/dune-good-guide/license=MIT": ["true", "false", "positive"],
+  "dune-late-irrelevant/dune-good-review/license=MIT": ["true", "false", "positive"],
+  "ember-refuted/ember-guide/version=8.2": ["true", "false", "positive"],
+  "ember-refuted/ember-review/version=8.2": ["true", "false", "positive"],
+  "ember-refuted/ember-guide/license=ISC": ["true", "false", "positive"],
+  "ember-refuted/ember-review/license=ISC": ["true", "false", "positive"],
+  "ember-unknown-support/ember-note/version=8.2": ["true", "false", "positive"],
+  "ember-unknown-support/ember-positive/version=8.2": ["true", "false", "positive"],
+  "ember-unknown-support/ember-note/version=8.2.0": ["false", "indeterminate", "hard-negative"],
+  "ember-unknown-support/ember-note/license=ISC": ["true", "false", "positive"],
+  "ember-unknown-support/ember-positive/license=ISC": ["true", "false", "positive"],
+  "fjord-unicode/fjord-guide/version=β-2.0": ["true", "false", "positive"],
+  "fjord-unicode/fjord-review/version=β-2.0": ["true", "false", "positive"],
+  "fjord-unicode/fjord-guide/license=許可-É": ["true", "false", "positive"],
+  "fjord-unicode/fjord-review/license=許可-É": ["true", "false", "positive"],
+  "fjord-unicode/fjord-guide/license=MIT": ["false", "indeterminate", "hard-negative"],
+  "fjord-injection/fjord-html/version=6.0": ["true", "false", "positive"],
+  "fjord-injection/fjord-verification/version=6.0": ["true", "false", "positive"],
+  "fjord-injection/fjord-html/license=Apache-2.0": ["true", "false", "positive"],
+  "fjord-injection/fjord-verification/license=Apache-2.0": ["true", "false", "positive"],
+  "fjord-injection/fjord-html/license=MIT": ["false", "indeterminate", "hard-negative"],
+  "larch-keywords-plus-support/larch-stuffed-support/version=2.4": ["true", "false", "positive"],
+  "larch-keywords-plus-support/larch-stuffed-support/license=MIT": ["true", "false", "positive"],
+  "larch-keywords-plus-refutation/larch-stuffed-refute/version=2.4": ["true", "false", "positive"],
+  "larch-keywords-plus-refutation/larch-stuffed-refute/license=MIT": ["true", "false", "positive"],
+  "maple-heading-contradicts-body/maple-heading/version=7.1": ["true", "false", "positive"],
+  "maple-heading-contradicts-body/maple-heading/license=MIT": ["true", "false", "positive"],
+  "maple-other-release-support/maple-older/version=7.0": ["false", "indeterminate", "hard-negative"],
+  "maple-feature-list-without-csv/maple-features/version=7.1": ["true", "false", "positive"],
+  "maple-feature-list-without-csv/maple-features/license=MIT": ["true", "false", "positive"],
+  "maple-edition-limited/maple-enterprise/version=7.1": ["true", "false", "positive"],
+  "maple-edition-limited/maple-enterprise/license=MIT": ["true", "false", "positive"],
+  "maple-truncated/maple-cut/version=7.1": ["true", "false", "positive"],
+  "maple-truncated/maple-cut/license=MIT": ["true", "false", "positive"],
+  "willow-multilingual-support/willow-de/version=3.2": ["true", "false", "positive"],
+  "willow-multilingual-support/willow-es/version=3.2": ["true", "false", "positive"],
+  "willow-multilingual-support/willow-de/license=MPL-2.0": ["true", "false", "positive"],
+  "willow-multilingual-support/willow-es/license=MPL-2.0": ["true", "false", "positive"],
+  "willow-multilingual-refute/willow-fr/version=3.2": ["true", "false", "positive"],
+  "willow-multilingual-refute/willow-ja/version=3.2": ["true", "false", "positive"],
+  "willow-multilingual-refute/willow-fr/license=MPL-2.0": ["true", "false", "positive"],
+  "willow-multilingual-refute/willow-ja/license=MPL-2.0": ["true", "false", "positive"],
+  "willow-long-tail-refutes/willow-long-refute/version=3.2": ["true", "false", "positive"],
+  "willow-long-tail-refutes/willow-long-refute/license=MPL-2.0": ["true", "false", "positive"],
+  "willow-long-tail-support/willow-long-support/version=3.2": ["true", "false", "positive"],
+  "willow-long-tail-support/willow-long-support/license=MPL-2.0": ["true", "false", "positive"],
+  "willow-many-sources/willow-guide/version=3.2": ["true", "false", "positive"],
+  "willow-many-sources/willow-late/version=3.2": ["true", "false", "positive"],
+  "willow-many-sources/willow-review/version=3.2": ["true", "false", "positive"],
+  "willow-many-sources/willow-older/version=3.1": ["false", "indeterminate", "hard-negative"],
+  "willow-many-sources/willow-guide/license=MPL-2.0": ["true", "true", "positive"],
+  "willow-many-sources/willow-late/license=GPL-3.0": ["true", "true", "positive"],
+  "willow-many-sources/willow-review/license=MPL-2.0": ["true", "true", "positive"],
+  "willow-same-titles/willow-docs-a/version=3.2": ["true", "false", "positive"],
+  "willow-same-titles/willow-docs-b/version=3.2": ["true", "false", "positive"],
+  "willow-same-titles/willow-docs-a/license=MPL-2.0": ["true", "false", "positive"],
+  "willow-same-titles/willow-docs-b/license=MPL-2.0": ["true", "false", "positive"],
+  "willow-mixed-history/willow-history/version=3.2": ["true", "false", "positive"],
+  "willow-mixed-history/willow-history/license=MPL-2.0": ["true", "false", "positive"],
+  "willow-mixed-history/willow-history/license=MIT": ["false", "indeterminate", "hard-negative"],
+};
+
+// Field gold for the supplement cases, in the shape of unified-review-labels.mjs:
+// [id, version, license, csv]
+export const supplementFieldGold = [
+  ["larch-keywords-only", null, null, null],
+  ["larch-keywords-plus-support", "2.4", "MIT", "supported"],
+  ["larch-keywords-plus-refutation", "2.4", "MIT", "refuted"],
+  ["maple-heading-contradicts-body", "7.1", "MIT", "refuted"],
+  ["maple-quoted-placeholder", null, null, null],
+  ["maple-other-release-support", null, null, null],
+  ["maple-wrong-entity", null, null, null],
+  ["maple-feature-list-without-csv", "7.1", "MIT", null],
+  ["maple-edition-limited", "7.1", "MIT", null],
+  ["maple-truncated", "7.1", "MIT", null],
+  ["willow-multilingual-support", "3.2", "MPL-2.0", "supported"],
+  ["willow-multilingual-refute", "3.2", "MPL-2.0", "refuted"],
+  ["willow-long-tail-refutes", "3.2", "MPL-2.0", "disputed"],
+  ["willow-long-tail-support", "3.2", "MPL-2.0", "supported"],
+  ["willow-many-sources", "3.2", null, "disputed"],
+  ["willow-same-titles", "3.2", "MPL-2.0", "disputed"],
+  ["willow-mixed-history", "3.2", "MPL-2.0", "supported"],
+].map(([id, version, license, csv]) => ({ id, fields: { version, license, csv } }));

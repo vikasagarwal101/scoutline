@@ -23,6 +23,7 @@ import * as path from "node:path";
 const root = new URL("..", import.meta.url).pathname;
 const {
   prepareFactMonitorTick,
+  runPreparedFactMonitorTick,
   commitFactMonitorTick,
   runFactMonitorTick,
   loadFactMonitorState,
@@ -98,6 +99,90 @@ const definition = () => ({
 
 const T = (n) => new Date(`2026-11-0${n}T09:00:00.000Z`);
 const MONITOR = "csv-monitor";
+
+test("prepared tick awaits a rejecting async check and leaves no publication", async (t) => {
+  const dir = await mkTmp(t);
+  const now = T(1);
+  const prepared = await prepareFactMonitorTick(dir, MONITOR, definition(), { now });
+  const entered = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  const refused = new Error("publication check rejected");
+  const task = runPreparedFactMonitorTick(
+    dir, prepared,
+    { search: async () => [], read: async () => "", judge: null, now: () => now.getTime() },
+    { now },
+    () => {
+      entered.resolve();
+      const check = release.promise.then(() => { throw refused; });
+      void check.catch(() => {});
+      return check;
+    },
+  );
+  const settled = task.then(
+    () => ({ committed: true }),
+    (error) => ({ error }),
+  );
+  try {
+    await awaitBarrier(entered.promise, [task], "pre-publication check");
+    await assert.rejects(fs.access(path.join(dir, MONITOR, "current.json")), { code: "ENOENT" });
+  } finally {
+    release.resolve();
+    await settled;
+  }
+  assert.strictEqual((await settled).error, refused);
+  await assert.rejects(fs.access(path.join(dir, MONITOR, "current.json")), { code: "ENOENT" });
+  const ticks = await fs.readdir(path.join(dir, MONITOR, "ticks")).catch((error) => {
+    if (error.code !== "ENOENT") throw error;
+    return [];
+  });
+  assert.deepEqual(ticks, []);
+});
+
+test("prepared tick cancels while the pre-publication check is still pending", async (t) => {
+  const dir = await mkTmp(t);
+  const now = T(1);
+  const prepared = await prepareFactMonitorTick(dir, MONITOR, definition(), { now });
+  const engineAbort = new AbortController();
+  const optionsAbort = new AbortController();
+  const entered = Promise.withResolvers();
+  const check = Promise.withResolvers();
+  let checkSignal;
+  const task = runPreparedFactMonitorTick(
+    dir, prepared,
+    {
+      search: async () => [], read: async () => "", judge: null, now: () => now.getTime(),
+      externalSignal: engineAbort.signal,
+    },
+    { now, signal: optionsAbort.signal },
+    (_outcome, signal) => {
+      checkSignal = signal;
+      entered.resolve();
+      return check.promise;
+    },
+  );
+  const settled = task.then(
+    () => ({ committed: true }),
+    (error) => ({ error }),
+  );
+  let watchdog;
+  try {
+    await awaitBarrier(entered.promise, [task], "pre-publication check entered");
+    engineAbort.abort();
+    const timedOut = new Promise((resolve) => {
+      watchdog = setTimeout(() => resolve({ pending: true }), 1500);
+    });
+    const outcome = await Promise.race([settled, timedOut]);
+    assert.ok(outcome.error instanceof FactMonitorCancelledError, "cancellation must settle before the check");
+    assert.equal(checkSignal?.aborted, true);
+    assert.equal(optionsAbort.signal.aborted, false);
+    await assert.rejects(fs.access(path.join(dir, MONITOR, "current.json")), { code: "ENOENT" });
+  } finally {
+    clearTimeout(watchdog);
+    check.reject(new Error("late check rejection"));
+    await settled;
+  }
+  await assert.rejects(fs.access(path.join(dir, MONITOR, "current.json")), { code: "ENOENT" });
+});
 
 // --- synthetic engine outcomes (deterministic state-machine seam) --------
 

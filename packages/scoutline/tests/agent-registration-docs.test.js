@@ -139,7 +139,7 @@ const changelog = fs.readFile(new URL("../../../CHANGELOG.md", import.meta.url),
 // subsection gained the official-route verification-scope sentence
 // (fake-HTTP fixtures only, not live-attested). No other body copy changed.
 // Current-prefix merge preserves provider/docs additions and settled caller response/paging rules.
-const SKILL_BODY_SHA256 = "d974c1c9c7db9ba88c5f081a0f2febd95e8c7515d6dde4c46fe3d876c7b0aa4e";
+const SKILL_BODY_SHA256 = "87e61ec9b6b537fc550437a62e51b8787dd618d98f05f17a793c77b5419302e9";
 
 // AC-10 budget: codex/qwen load name+description before any body
 // byte; the old enumeration (~1500 chars) blows the disclosure
@@ -203,7 +203,7 @@ describe("SKILL.md frontmatter (PRD AC-10)", () => {
   });
 
   it("pins the approved skill body after the frontmatter fence", async () => {
-    // Reviewed dual-route documentation intentionally updates the canonical body.
+    // Workflow documentation intentionally updates the canonical body.
     const text = await skill;
     const fence = text.match(/^---\n([\s\S]*?)\n---\n/);
     const body = text.slice(fence[0].length);

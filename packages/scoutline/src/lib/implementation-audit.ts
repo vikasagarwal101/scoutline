@@ -446,7 +446,7 @@ export interface PinnedSnapshot {
  * refused (ambiguous provenance). Digest consistency for claim-relevant
  * files is enforced when the read seam materializes its own copy; files
  * the claims never name are neither hashed nor read (bounded). */
-export function compilePinnedSnapshot(input: unknown): PinnedSnapshot {
+export function compilePinnedSnapshot(input: unknown, allowEmpty = false): PinnedSnapshot {
   if (!isPlainObject(input)) {
     throw new ValidationError("Pinned snapshot must be a JSON object.");
   }
@@ -470,8 +470,8 @@ export function compilePinnedSnapshot(input: unknown): PinnedSnapshot {
     throw new ValidationError("Snapshot files must be a non-empty array.");
   }
   const fileCount = filesInput.length;
-  if (fileCount === 0) throw new ValidationError("Snapshot files must be a non-empty array.");
-  if (!Number.isSafeInteger(fileCount) || fileCount < 1 || fileCount > AUDIT_CEILINGS.maxSnapshotEntries) {
+  if (fileCount === 0 && !allowEmpty) throw new ValidationError("Snapshot files must be a non-empty array.");
+  if (!Number.isSafeInteger(fileCount) || fileCount < 0 || fileCount > AUDIT_CEILINGS.maxSnapshotEntries) {
     throw new ValidationError(
       `Snapshot exceeds the entry ceiling of ${AUDIT_CEILINGS.maxSnapshotEntries} files; refusing before any walk, copy or hash.`,
     );
@@ -638,6 +638,7 @@ function relevantPaths(claims: CompiledAuditClaimSet): Set<string> {
 export function createSnapshotReadDeps(
   claims: CompiledAuditClaimSet,
   snapshot: PinnedSnapshot,
+  allowEmpty = false,
 ): {
   deps: LeanDeps;
   observe: (path: string) => MaterializedFile | null;
@@ -657,7 +658,7 @@ export function createSnapshotReadDeps(
   // grammar, duplicate paths, digest shape) and CLONED into owned state —
   // there is exactly one admission policy and no way around it. No new
   // API: this reuses compilePinnedSnapshot unchanged.
-  snapshot = compilePinnedSnapshot(snapshot);
+  snapshot = compilePinnedSnapshot(snapshot, allowEmpty);
   // SeAM ADMISSION (review fix3): the exported seam enforces exact
   // repository+revision agreement between the claim set and the snapshot
   // ON ITS OWN — direct callers get the same guarantee the runner has —
@@ -762,7 +763,21 @@ export function createSnapshotReadDeps(
   const refusals: AuditRefusal[] = [];
   const abstentions: { fieldId: string; reason: string }[] = [];
 
+  const declared = new Map<string, string | null>();
+  const fieldSources = Object.fromEntries(claims.claims
+    .filter((claim) => claim.checks.length > 0)
+    .map((claim) => [claim.id, claim.checks.map((check) => {
+      const url = snapshotFileUrl(pinnedRepository, pinnedRevision, check.path);
+      const file = byPath.get(check.path);
+      declared.set(url, file?.revision === pinnedRevision ? file.sha256 : null);
+      return url;
+    })]));
   const deps: LeanDeps = {
+    ...(declared.size === 0 ? {} : { closedEvidence: {
+      sources: Array.from(declared, ([url, sha256]) => ({ url, sha256 })),
+      fieldSources,
+      scopeEnumAssessments: true,
+    } }),
     search: async (query: string) => {
       searches += 1;
       // Closed-scope enumeration, not discovery: the snapshot's
@@ -1139,13 +1154,17 @@ function unresolvedLiteralReason(
 export async function runImplementationAudit(
   claimSetInput: unknown,
   snapshotInput: unknown,
+  options: { readonly signal?: AbortSignal; readonly allowEmptySnapshot?: boolean } = {},
 ): Promise<AuditReport> {
   const claims = compileAuditClaimSet(claimSetInput);
-  const snapshot = compilePinnedSnapshot(snapshotInput);
+  const snapshot = compilePinnedSnapshot(snapshotInput, options.allowEmptySnapshot === true);
   // Pin agreement is enforced INSIDE the exported seam (single authority,
   // direct callers included); it fires here before any acquisition.
-  const { deps, journal, observe } = createSnapshotReadDeps(claims, snapshot);
-  const result = await runLeanInvestigation(buildEngineContract(claims), deps);
+  const { deps, journal, observe } = createSnapshotReadDeps(claims, snapshot, options.allowEmptySnapshot === true);
+  const result = await runLeanInvestigation(buildEngineContract(claims), {
+    ...deps,
+    ...(options.signal !== undefined ? { externalSignal: options.signal } : {}),
+  });
 
   const claimResults = claims.claims.map((claim): AuditClaimResult => {
     const row = result.requirements[claim.id];
@@ -1227,9 +1246,9 @@ export async function runImplementationAudit(
       ...result.coverageNotes,
       "Accepted findings are literal-presence predicates at the pinned revision; they do not establish active code, public reachability or runtime behavior (comments and string data can match literals).",
       "Acquisition is closed-scope: queries resolve against the claim-relevant file index of the pinned snapshot (scoped to the claim owning each query), not remote discovery; contrary coverage is bounded to that scope.",
-      "SHARED GATE (open, documented for convergence): closed-source coverage — what it means for a FINITE declared source universe to be completely assessed — is not yet an explicit engine contract. This consumer approximates it (claim-scoped enumeration; acceptance withheld wherever complete scoped assessment cannot be established). Extraction and audit need one shared explicit closed-source coverage gate in the engine before this approximation is replaced.",
+      "Closed-source coverage runs through the engine's closed-evidence capability (v3 public integration): each claim binds to the exact declared sources its checks name, and coverage closes only while every one is retained byte-exact. The earlier claim-scoped-enumeration approximation is retired; acceptance is still withheld wherever a declared source was refused or is absent.",
       "Observation rows (basis.observed) come from the seam's own verified materialization of files the engine never retained; they preserve literal facts with locators and never support acceptance.",
-      "Revision identity is fixture-declared: digests verify byte consistency, not commit membership. Claim-relevant bytes were digest-verified and frozen by the consumer before the run.",
+      "Snapshot digests verify byte consistency, not commit membership. Claim-relevant bytes were digest-verified and frozen before the run.",
       "Absence findings are bounded to each claim's declared files at the pinned revision, not whole-repository absence proofs.",
     ]),
   });

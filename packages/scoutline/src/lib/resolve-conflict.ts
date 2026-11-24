@@ -44,6 +44,7 @@
  *    read/search dispatch.
  */
 import {
+  compileLeanContract,
   runLeanInvestigation,
   LEAN_LIMIT_CEILINGS,
   type LeanContract,
@@ -375,16 +376,19 @@ function sameChannel(a: string, b: string): boolean {
   return new URL(a).hostname.toLowerCase() === new URL(b).hostname.toLowerCase();
 }
 
+type ResolutionDeps = LeanDeps & Partial<Pick<LeanUnifiedDeps, "extract" | "candidateJudge" | "extractorRevision">>;
+
 /**
  * Resolve a conflicting-evidence set under the caller's requested scope.
- * `deps` are the caller's engine dependencies (acquisition + semantics);
- * this module attaches only the lead seed derived from the inventory,
+ * `runtime` accepts engine dependencies or an async factory. The factory
+ * runs after input and contract admission. This module attaches the lead
+ * seed derived from the inventory,
  * wraps read/search with the existing URL admission screen, and never
  * installs its own judge.
  */
 export async function resolveConflict(
   input: unknown,
-  deps: LeanDeps & Partial<Pick<LeanUnifiedDeps, "extract" | "candidateJudge" | "extractorRevision">>,
+  runtime: ResolutionDeps | (() => Promise<ResolutionDeps>),
 ): Promise<ResolveConflictOutcome> {
   const { scope, alternatives, limits } = validatedInput(input);
   const notes: string[] = [];
@@ -473,6 +477,9 @@ export async function resolveConflict(
     requirements,
   };
   if (limits !== undefined) contract.limits = limits;
+  // The workflow composes its runtime only after input and contract admission.
+  if (typeof runtime === "function") compileLeanContract(contract);
+  const deps = typeof runtime === "function" ? await runtime() : runtime;
 
   // --- acquisition boundary: admission + conservative canonical identity --
   // An unverified mirror claim must never suppress another alternative:

@@ -60,6 +60,10 @@ export interface CommandInvocationAdapter {
   setExitCode(value: number): void;
 }
 
+interface DeliveredData {
+  readonly value: unknown;
+}
+
 /**
  * Input handed to the optional save hook (save-artifacts T4). The seam
  * passes the successful CommandResult, the SAME resolved secrets the
@@ -69,6 +73,8 @@ export interface CommandInvocationAdapter {
  */
 export interface SaveHookContext {
   readonly result: CommandResult;
+  /** Invocation-finalized data, after the success-boundary redaction. */
+  readonly deliveredData?: DeliveredData;
   readonly resolvedSecrets: string[];
   readonly now: () => number;
   readonly notice: (message: string) => void;
@@ -112,10 +118,11 @@ function selectOutput(
   outputMode: OutputMode,
   now: () => number,
   secrets: string[],
+  deliveredData?: DeliveredData,
 ): string {
   if (outputMode === "json" || outputMode === "pretty") {
     const data = result.kind === "text" ? result.text : result.data;
-    const redactedData = redactSecrets(data, secrets);
+    const redactedData = deliveredData === undefined ? redactSecrets(data, secrets) : deliveredData.value;
     return formatSuccessOutput(redactedData, outputMode, now);
   }
 
@@ -130,7 +137,7 @@ function selectOutput(
     }
   }
 
-  const redactedData = redactSecrets(result.data, secrets);
+  const redactedData = deliveredData === undefined ? redactSecrets(result.data, secrets) : deliveredData.value;
   return formatSuccessOutput(redactedData, outputMode, now);
 }
 
@@ -157,6 +164,7 @@ export async function invokeCommand(
   secrets?: string[],
   save?: SaveHook,
   journal?: SaveHook,
+  finalizeData?: (redacted: unknown) => unknown,
 ): Promise<number> {
   const notices: string[] = [];
 
@@ -176,8 +184,16 @@ export async function invokeCommand(
   };
 
   let result: CommandResult;
+  let deliveredData: DeliveredData | undefined;
   try {
     result = await adapter.runQuietly(() => behavior(context));
+    // Only trusted command code can finalize generated metadata. Both
+    // outward consumers receive the same value after the ordinary scrub.
+    if (result.kind === "data" && finalizeData !== undefined) {
+      deliveredData = { value: finalizeData(redactSecrets(result.data, resolvedSecrets)) };
+    }
+    const hookContext = { result, resolvedSecrets, now, notice: context.notice,
+      ...(deliveredData === undefined ? {} : { deliveredData }) };
     // save-artifacts T4: the hook runs INSIDE the try, after the behavior
     // produced its result and before any stdout write. A failure rides the
     // existing catch below (notices flushed, one error envelope, stdout
@@ -190,7 +206,7 @@ export async function invokeCommand(
       let saveThrew = false;
       let saveError: unknown;
       try {
-        await save({ result, resolvedSecrets, now, notice: context.notice });
+        await save(hookContext);
       } catch (error) {
         saveThrew = true;
         saveError = error;
@@ -205,7 +221,7 @@ export async function invokeCommand(
       //   would only mask it, so it degrades to a stderr notice instead.
       if (journal !== undefined) {
         try {
-          await journal({ result, resolvedSecrets, now, notice: context.notice });
+          await journal(hookContext);
         } catch (journalError) {
           if (!saveThrew) {
             throw journalError;
@@ -217,7 +233,7 @@ export async function invokeCommand(
         throw saveError;
       }
     } else if (journal !== undefined) {
-      await journal({ result, resolvedSecrets, now, notice: context.notice });
+      await journal(hookContext);
     }
   } catch (error) {
     for (const notice of notices) {
@@ -238,7 +254,7 @@ export async function invokeCommand(
     adapter.writeStderr(notice);
   }
 
-  adapter.writeStdout(selectOutput(result, outputMode, now, resolvedSecrets));
+  adapter.writeStdout(selectOutput(result, outputMode, now, resolvedSecrets, deliveredData));
 
   return result.exitCode ?? 0;
 }

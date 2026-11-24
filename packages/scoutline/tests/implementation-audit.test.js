@@ -243,6 +243,35 @@ describe("implementation audit: declared-but-unwired", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Closed-evidence opt-in (v3 public integration): the read seam declares
+// the claim-relevant universe to the engine, so coverage closure binds the
+// EXACT declared sources (identity + digest) instead of trusting the
+// scoped search to have enumerated completely.
+// ---------------------------------------------------------------------------
+
+describe("implementation audit: closed-evidence declaration", () => {
+  it("declares the engine closed-evidence basis and keeps the refused path open", async () => {
+    const report = await runImplementationAudit(standardClaims(), FULLY_WIRED);
+    assert.ok(
+      report.coverageNotes.some((n) => n.includes("closed-evidence-set")),
+      "the engine's closed-set coverage note must surface in the audit report",
+    );
+    // The positive case still closes with the declared binding...
+    assert.equal(literalClaim(report).status, "supported");
+    // ...and the refused path (different commit) stays honestly open.
+    const snapshot = snap([
+      ["src/registry.ts", PIN, REGISTRY],
+      ["src/dispatcher.ts", OTHER_COMMIT, DISPATCHER_WIRED],
+      ["src/inspect-handler.ts", PIN, HANDLER],
+    ]);
+    const refused = await runImplementationAudit(standardClaims(), snapshot);
+    const st = literalClaim(refused);
+    assert.equal(st.status, "unresolved");
+    assert.equal(st.unresolvedReason, "revision_mismatch:src/dispatcher.ts");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Acceptance case 3 — mismatched revision / runtime proof
 // ---------------------------------------------------------------------------
 
@@ -1354,6 +1383,15 @@ describe("implementation audit: preflight validation", () => {
   });
 });
 
+it("a caller option cannot claim Git provenance for a fixture snapshot", async () => {
+  const report = await runImplementationAudit(standardClaims(), FULLY_WIRED, {
+    localGit: true,
+    allowEmptySnapshot: true,
+  });
+  assert.equal(literalClaim(report).status, "supported");
+  assert.equal(report.coverageNotes.some((note) => note.includes("exact pinned local Git commit")), false);
+});
+
 const ValidationErrorLike = (error) =>
   error != null && typeof error === "object" && error.name === "ValidationError";
 
@@ -1737,5 +1775,49 @@ describe("implementation audit: literal guard ordering (Greptile r4659860497)", 
         }),
       (error) => ValidationErrorLike(error) && /duplicate clause/.test(error.message),
     );
+  });
+});
+
+
+describe("implementation audit: bounded assessment context", () => {
+  it("preserves a fitting claim alongside a claim whose own JSON context overflows", async () => {
+    const small = { id: "small-fits", text: "A small basis", proofClass: "literal",
+      checks: [{ path: "src/small.ts", allOf: ["small marker"] }] };
+    const bigPaths = ["src/a.ts", "src/b.ts", "src/c.ts"];
+    const big = { id: "big-context", text: "An escaped basis", proofClass: "literal",
+      checks: bigPaths.map((path) => ({ path, allOf: ["x"] })) };
+    const content = "x" + "\u0000".repeat(16 * 1024 - 1);
+    const input = { schemaVersion: 1, repository: REPO, revision: PIN, claims: [small, big] };
+    const snapshot = snap([["src/small.ts", PIN, "small marker"], ...bigPaths.map((path) => [path, PIN, content])]);
+    assert.equal(Buffer.byteLength(content, "utf8"), 16 * 1024);
+    assert.ok(3 * Buffer.byteLength(JSON.stringify(content), "utf8") > 256 * 1024);
+    const report = await runImplementationAudit(input, snapshot);
+    assert.equal(report.status, "partial");
+    assert.equal(report.claims[0].status, "supported");
+    assert.equal(report.claims[1].status, "unresolved");
+    assert.equal(report.claims[1].engine.reason, "assessment_context_overflow");
+    assert.equal(report.usage.readAttempts, 4);
+    assert.equal(report.usage.readsRetained, 4);
+    assert.equal(report.evidence.length, 4);
+    const smallId = report.evidence.find((record) => record.path === "src/small.ts").evidenceId;
+    const judgments = report.acquisitionLog.filter((row) => row.kind === "judge" && row.detail.startsWith("small-fits "));
+    assert.ok(judgments.length > 0);
+    assert.ok(judgments.every((row) => row.detail === `small-fits over [${smallId}]`));
+  });
+
+  it("uses one acquisition budget across three claims that share six files", async () => {
+    const paths = Array.from({ length: 6 }, (_, i) => `src/file-${i}.ts`);
+    const checks = paths.map((path) => ({ path, allOf: ["marker"] }));
+    const claims = Array.from({ length: 3 }, (_, i) => ({
+      id: `claim-${i}`, text: `Claim ${i}`, proofClass: "literal", checks,
+    }));
+    const snapshot = snap(paths.map((path) => [path, PIN, "marker"]));
+    const report = await runImplementationAudit({ schemaVersion: 1, repository: REPO, revision: PIN, claims }, snapshot);
+    assert.equal(report.status, "complete");
+    assert.deepEqual(report.claims.map((claim) => claim.status), ["supported", "supported", "supported"]);
+    assert.equal(report.usage.readAttempts, 6);
+    assert.equal(report.usage.readsRetained, 6);
+    assert.ok(report.usage.searches <= 7);
+    assert.equal(report.evidence.length, 6);
   });
 });

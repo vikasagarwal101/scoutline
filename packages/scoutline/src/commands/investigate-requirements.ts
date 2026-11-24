@@ -106,7 +106,7 @@ export const EXPERIMENTAL_MAX_PHYSICAL_ATTEMPTS = 48;
 
 /** Resolve this run's ceiling: the experimental value, or a strictly
  *  lower integer. Present-but-invalid is a typed preflight failure. */
-function physicalAttemptCeiling(env: NodeJS.ProcessEnv | undefined): number {
+export function physicalAttemptCeiling(env: NodeJS.ProcessEnv | undefined): number {
   const raw = env?.SCOUTLINE_REQUIREMENTS_MAX_PHYSICAL;
   if (raw === undefined) return EXPERIMENTAL_MAX_PHYSICAL_ATTEMPTS;
   const reject = (why: string): never => {
@@ -505,6 +505,8 @@ export interface InvestigateRequirementsDeps {
    * record the real serving supplier instead of a guess.
    */
   readonly onResolvedProvider?: (provider: string) => void;
+  /** Reports that the run dispatched provider acquisition over the transport. */
+  readonly onProviderAcquisition?: () => void;
 }
 
 /** Incremental bounded file read: reads 64 KiB chunks until EOF,
@@ -662,7 +664,7 @@ function sha256Hex(value: string): string {
  * returned `release` is idempotent and runs on every exit path; the
  * controller's signal is the one handed to the engine.
  */
-interface OwnedInterruption {
+export interface OwnedInterruption {
   readonly controller: AbortController;
   readonly interrupted: () => boolean;
   readonly release: () => void;
@@ -670,7 +672,7 @@ interface OwnedInterruption {
   readonly settle: () => void;
 }
 
-function beginOwnedInterruption(deps: InvestigateRequirementsDeps): OwnedInterruption {
+export function beginOwnedInterruption(deps: InvestigateRequirementsDeps): OwnedInterruption {
   const controller = new AbortController();
   let interrupted = false;
   let released = false;
@@ -707,7 +709,7 @@ function beginOwnedInterruption(deps: InvestigateRequirementsDeps): OwnedInterru
  * eventual settlement is OBSERVED so a late rejection never escapes as
  * an unhandled rejection. Cleanup runs whichever path wins.
  */
-async function raceWithInterrupt<T>(work: Promise<T>, owned: OwnedInterruption): Promise<T> {
+export async function raceWithInterrupt<T>(work: Promise<T>, owned: OwnedInterruption): Promise<T> {
   // NAMED listener, removed in a guaranteed finally on success,
   // rejection and abort alike (root 3): an anonymous callback left a
   // listener installed on the owned signal after a normal read.
@@ -826,18 +828,33 @@ function ownJudgeSettings(settings: JudgeSettings | undefined): JudgeSettings | 
   return Object.freeze(owned);
 }
 
-async function runWithRuntime(
-  input: unknown,
+/** Composed lean runtime (v3 public integration): everything the shared
+ *  requirements seam builds — the unified engine deps under the one
+ *  pre-dispatch physical admission, the merged runtime secret list, the
+ *  physical/attempt accounting and the observation seam — WITHOUT
+ *  running an engine pass. The requirements handler and the v3 workflow
+ *  consumers (monitor, resolution) compose THE SAME object; behavior of
+ *  the existing requirements/caller/comparison paths is unchanged. */
+export interface ComposedLeanRuntime {
+  readonly unified: LeanUnifiedDeps;
+  readonly secrets: readonly string[];
+  readonly physical: PhysicalTotals;
+  readonly provenance: readonly LeanReadProvenance[];
+  readonly observation: () => CallerPhysicalSnapshot;
+  readonly judgeDescriptor?: JudgeDescriptor;
+  readonly readProvenance: () => readonly (LeanReadProvenance & { servedAt: number })[];
+  /** Wrap an execute-stage rejection: a recorded measurement error
+   *  outranks the collaborator error (the existing runWithRuntime rule). */
+  readonly rethrowMeasurement: (error: unknown) => unknown;
+  /** Post-execute integrity re-check (the existing safeSum final pass). */
+  readonly finalCheck: () => void;
+}
+
+export async function composeLeanRuntime(
   deps: InvestigateRequirementsDeps,
   host: RuntimeContextHost,
   owned: OwnedInterruption,
-  execute: (input: unknown, deps: LeanUnifiedDeps, observation: () => CallerPhysicalSnapshot, judgeDescriptor?: JudgeDescriptor, readProvenance?: () => readonly (LeanReadProvenance & { servedAt: number })[]) => Promise<LeanResult> = runLeanInvestigation,
-): Promise<{
-  result: LeanResult;
-  secrets: string[];
-  physical: PhysicalTotals;
-  provenance: readonly LeanReadProvenance[];
-}> {
+): Promise<ComposedLeanRuntime> {
   const physical: PhysicalTotals = {
     acquisitionAttempts: 0,
     perAttempt: [],
@@ -982,6 +999,7 @@ async function runWithRuntime(
       safeSum(ledger.attempts,physical.judgeDispatches,physical.producerDispatches);
       physical.acquisitionAttempts = ledger.attempts;
       physical.perAttempt = ledger.perAttempt;
+      if (ledger.attempts > 0) deps.onProviderAcquisition?.();
       // Shared closure owns refusal accounting across every stage; bridge ledger overlaps it.
       acquisitionOptions.onPhysicalLedger?.(ledger);
     },
@@ -1126,20 +1144,51 @@ async function runWithRuntime(
     };
     validateCallerPhysical(snapshot); return JSON.parse(JSON.stringify(snapshot)) as CallerPhysicalSnapshot;
   };
+  return {
+    unified,
+    secrets: [...(composed.secrets ?? [])],
+    physical,
+    provenance,
+    observation,
+    ...(composed.judgeDescriptor !== undefined ? { judgeDescriptor: composed.judgeDescriptor } : {}),
+    readProvenance: () => callerProvenance.map(row => ({ ...row })),
+    rethrowMeasurement: (error: unknown) => measurementError ?? error,
+    finalCheck: () => {
+      if (measurementError) throw measurementError;
+      safeSum(physical.acquisitionAttempts, physical.judgeDispatches, physical.producerDispatches);
+    },
+  };
+}
+
+/** The requirements seam's own composition + execute + projection, now
+ *  expressed over {@link composeLeanRuntime} — behavior identical to the
+ *  pre-extraction single function (the v3 workflow consumers share the
+ *  extracted composition). */
+async function runWithRuntime(
+  input: unknown,
+  deps: InvestigateRequirementsDeps,
+  host: RuntimeContextHost,
+  owned: OwnedInterruption,
+  execute: (input: unknown, deps: LeanUnifiedDeps, observation: () => CallerPhysicalSnapshot, judgeDescriptor?: JudgeDescriptor, readProvenance?: () => readonly (LeanReadProvenance & { servedAt: number })[]) => Promise<LeanResult> = runLeanInvestigation,
+): Promise<{
+  result: LeanResult;
+  secrets: string[];
+  physical: PhysicalTotals;
+  provenance: readonly LeanReadProvenance[];
+}> {
+  const composed = await composeLeanRuntime(deps, host, owned);
   let result: LeanResult;
-  try { result = await execute(input, unified, observation, composed.judgeDescriptor, () => callerProvenance.map(row => ({ ...row }))); }
-  catch (error) { throw measurementError ?? error; }
-  if (measurementError) throw measurementError;
-  safeSum(physical.acquisitionAttempts,physical.judgeDispatches,physical.producerDispatches);
-  const secretList = [...(composed.secrets ?? [])];
-  return { result, secrets: secretList, physical, provenance };
+  try { result = await execute(input, composed.unified, composed.observation, composed.judgeDescriptor, composed.readProvenance); }
+  catch (error) { throw composed.rethrowMeasurement(error) as Error; }
+  composed.finalCheck();
+  return { result, secrets: [...composed.secrets], physical: composed.physical, provenance: composed.provenance };
 }
 
 /** Wrap one semantic seam so each engine call's ACTUAL physical attempt
  *  count joins the delivered total (success carries the count on the
  *  audit symbol or `attempts`; typed rejections carry it as
  *  `attempts`). */
-function countingSeam(
+export function countingSeam(
   fn: RequirementsJudgeFn | ((request: unknown, options?: unknown) => Promise<unknown>) | null | undefined,
   onCount: (count: number) => void,
   onMissingTelemetry: () => void,
@@ -1363,24 +1412,23 @@ function projectResult(
   );
   // Original normalized digests are computed BEFORE any redaction and
   // disclosed as the locator basis; the DISPLAYED content is the
-  // redacted derivative with its own digest (correction finding 2).
+  // redacted derivative. v3 projector correction: the display digest and
+  // length are computed against the ACTUAL delivered (final redacted)
+  // content — re-derived AFTER the whole-envelope redaction below — so
+  // redaction can never act twice and mutate already-redacted evidence
+  // after its display hash was recorded.
+  const originals = result.evidence.map((record) => record.content);
   const evidence = result.evidence.map((record) => {
     const contentSha256 = sha256Hex(record.content);
-    const redacted = redactSecrets(record.content, merged);
-    const displayRedacted = typeof redacted === "string" && redacted !== record.content;
-    const display = displayRedacted ? (redacted as string) : record.content;
     return {
       evidenceId: record.evidenceId,
       url: record.url,
       title: record.title,
-      content: display,
+      content: record.content,
       byteLength: record.byteLength,
       origins: record.origins,
       contentSha256,
       contentByteLength: Buffer.byteLength(record.content, "utf8"),
-      displayContentSha256: sha256Hex(display),
-      displayByteLength: Buffer.byteLength(display, "utf8"),
-      displayRedacted,
       locatorBasis: "original-normalized-content",
       locatorUnit: "utf16-code-units",
       locatorRange: "half-open",
@@ -1454,13 +1502,26 @@ function projectResult(
   // Whole-envelope redaction (correction finding 2): the delivered
   // data — titles, URLs, question, outcomes, metadata — passes the
   // same secret set as the content; the delivered resultSha256 is the
-  // hash of THIS redacted envelope.
-  const redactedEnvelope = redactSecrets(baseEnvelope, merged);
-  const resultSha256 = sha256Hex(JSON.stringify(redactedEnvelope));
+  // hash of THIS redacted envelope. The evidence display digest and
+  // length are (re)derived HERE, against the actual final content, so
+  // they always bind the delivered bytes even if a later boundary were
+  // ever composed over a different basis.
+  const redactedEnvelope = redactSecrets(baseEnvelope, merged) as typeof baseEnvelope;
+  const deliveredEvidence = redactedEnvelope.evidence.map((row, index) => {
+    const original = originals[index] ?? "";
+    return {
+      ...row,
+      displayContentSha256: sha256Hex(row.content),
+      displayByteLength: Buffer.byteLength(row.content, "utf8"),
+      displayRedacted: row.content !== original,
+    };
+  });
+  const delivered = { ...redactedEnvelope, evidence: deliveredEvidence };
+  const resultSha256 = sha256Hex(JSON.stringify(delivered));
   const exitCode = result.status === "complete" ? 0 : 1;
   return {
     kind: "data",
-    data: { ...(redactedEnvelope as typeof baseEnvelope), resultSha256 },
+    data: { ...delivered, resultSha256 },
     exitCode,
   };
 }

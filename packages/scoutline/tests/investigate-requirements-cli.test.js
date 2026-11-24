@@ -18,7 +18,7 @@
  */
 import test, { afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp as actualMkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp as actualMkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
@@ -46,7 +46,7 @@ const CONTRACT = {
   },
 };
 
-function fakeFetchWorld(log = []) {
+function fakeFetchWorld(log = [], usefulText = TEXT) {
   return async (url, init) => {
     log.push({ url: String(url) });
     const path = new URL(String(url)).pathname;
@@ -69,7 +69,7 @@ function fakeFetchWorld(log = []) {
     if (target.includes("noise")) {
       return new Response(JSON.stringify({ results: [{ url: target, title: "Industry weekly", raw_content: NOISE }] }), { status: 200 });
     }
-    return new Response(JSON.stringify({ results: [{ url: target, title: "ExampleApp 2.4.0 release notes", raw_content: TEXT }] }), { status: 200 });
+    return new Response(JSON.stringify({ results: [{ url: target, title: "ExampleApp 2.4.0 release notes", raw_content: usefulText }] }), { status: 200 });
   };
 }
 
@@ -151,7 +151,7 @@ function makeRequirementsRuntime({
   hooks = {},
 } = {}) {
   const httpLog = hooks.httpLog ?? [];
-  const fetch = fakeFetchWorld(httpLog);
+  const fetch = fakeFetchWorld(httpLog, hooks.usefulText);
   const transport = { fetch, env: ENV };
   const reserves = hooks.reserves ?? { count: 0 };
   const cap = hooks.cap;
@@ -295,6 +295,31 @@ test("requirements mode: three input routes produce the complete envelope", asyn
     assert.ok(Array.isArray(parsed.acquisition.readProvenance));
     assert.match(parsed.resultSha256, /^[0-9a-f]{64}$/);
   }
+});
+
+test("requirements stdout and save bind hashes after final redaction", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "scoutline-req-finalize-"));
+  const target = join(directory, "saved.json");
+  const original = TEXT + " Note: REDACTED.";
+  const hash = (value) => createHash("sha256").update(value, "utf8").digest("hex");
+  const { code, parsed, stderr } = await runMain(
+    ["investigate", "--requirements-json", JSON.stringify(CONTRACT), "--save", target],
+    {
+      env: { ...ENV, Z_AI_API_KEY: "REDACTED", SCOUTLINE_ARTIFACTS_DIR: join(directory, "artifacts") },
+      runtime: makeRequirementsRuntime({ hooks: { usefulText: original } }),
+    },
+  );
+  assert.equal(code, 0, stderr);
+  assert.deepEqual(JSON.parse(await readFile(target, "utf8")).result, parsed);
+  const { resultSha256, ...body } = parsed;
+  const evidence = body.evidence.find((row) => row.url === URL_USEFUL);
+  assert.notEqual(evidence.content, original);
+  assert.equal(evidence.contentSha256, hash(original));
+  assert.equal(evidence.locatorBasis, "original-normalized-content");
+  assert.equal(evidence.displayRedacted, true);
+  assert.equal(evidence.displayByteLength, Buffer.byteLength(evidence.content, "utf8"));
+  assert.equal(evidence.displayContentSha256, hash(evidence.content));
+  assert.equal(resultSha256, hash(JSON.stringify(body)));
 });
 
 test("requirements mode: no-judge run is deterministic-only partial, not a downgrade error", async () => {

@@ -604,20 +604,21 @@ export async function handleInvestigateWorkflow(
       } else {
         measurement = workflowMeasurement(composed, [outcome.record]);
       }
+      const interrupted = owned.interrupted() || outcome.cancelled;
       return projectWorkflowResult(
         "manifest-extraction",
         {
           materialClass: outcome.materialClass,
           claimedUrl: outcome.claimedUrl,
           claimedUrlVerification: outcome.claimedUrlVerification,
-          ...(outcome.cancelled ? { cancelled: true, stopReason: outcome.stopReason } : {}),
+          ...(interrupted ? { cancelled: true, stopReason: "cancelled" } : {}),
           result: outcome.result,
           parse: outcome.parse,
           evidence: deliverEvidenceRows([outcome.record], basis),
           measurement,
         },
         basis,
-        owned.interrupted() ? 130 : outcome.result.status === "complete" ? 0 : 1,
+        interrupted ? 130 : outcome.result.status === "complete" ? 0 : 1,
       );
     }
 

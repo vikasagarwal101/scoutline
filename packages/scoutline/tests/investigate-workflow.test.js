@@ -1311,46 +1311,56 @@ test("interrupt during the awaited quota-snapshot composition settles typed 130,
   }
 });
 
-test("mid-run extraction interrupt saves earned partial data and cancellation at 130", async (t) => {
-  const dir = await mkdtemp(join(tmpdir(), "scoutline-extraction-interrupt-"));
-  t.after(() => rm(dir, { recursive: true, force: true }));
-  const saved = join(dir, "saved.json");
-  let interrupt;
-  const seen = [];
-  const world = makeWorkflowRuntime([]);
-  const runtime = {
-    factory: () => ({
-      ...world.factory(),
-      engineDeps: {
-        ...world.factory().engineDeps,
-        candidateJudge: async (input, options) => {
-          interrupt();
-          seen.push(options?.signal?.aborted === true);
-          return world.factory().engineDeps.candidateJudge(input);
+for (const [interruptAt, expectedStatus] of [[1, "partial"], [2, "complete"]]) {
+  test(`extraction interrupt on judgment ${interruptAt} saves ${expectedStatus} data at 130`, async (t) => {
+    const dir = await mkdtemp(join(tmpdir(), "scoutline-extraction-interrupt-"));
+    t.after(() => rm(dir, { recursive: true, force: true }));
+    const saved = join(dir, "saved.json");
+    let interrupt;
+    const seen = [];
+    let dispatches = 0;
+    const world = makeWorkflowRuntime([]);
+    const runtime = {
+      factory: () => ({
+        ...world.factory(),
+        engineDeps: {
+          ...world.factory().engineDeps,
+          candidateJudge: async (input, options) => {
+            dispatches += 1;
+            if (dispatches === interruptAt) interrupt();
+            seen.push(options?.signal?.aborted === true);
+            return world.factory().engineDeps.candidateJudge(input);
+          },
         },
-      },
-    }),
-  };
-  const { adapter, stdout, stderr } = makeAdapter({ stdin: JSON.stringify(extractionDocument()) });
-  const deps = hermeticMainDeps({ invocation: adapter, env: { ...ENV, SCOUTLINE_ARTIFACTS_DIR: join(dir, "artifacts") } });
-  deps.requirementsRuntime = runtime.factory;
-  deps.requirementsUserInterrupt = (cancel) => { interrupt = cancel; return () => {}; };
-  const code = await main(["investigate", "--workflow", "-", "--save", saved], deps);
-  assert.equal(code, 130, stderr.join(""));
-  assert.deepEqual(seen, [true], "the dispatch observed the aborted owned signal");
-  const body = JSON.parse(stdout.join(""));
-  assert.equal(body.kind, "manifest-extraction");
-  assert.equal(body.cancelled, true);
-  assert.equal(body.stopReason, "cancelled");
-  assert.deepEqual(JSON.parse(await readFile(saved, "utf8")).result, body);
-  assert.ok(body.evidence.length >= 1, "earned evidence is preserved");
-  assert.ok(body.measurement !== undefined, "earned measurement is preserved");
-  // Earned audit rows as exposed by the projection: the dispatched judge
-  // is accounted in the composed physical observation.
-  assert.equal(body.measurement.physical.stages.judge, 1,
-    "the dispatched judge work is accounted");
-  assert.ok(Array.isArray(body.measurement.physical.attempts), "attempt audit rows are exposed");
-});
+      }),
+    };
+    const { adapter, stdout, stderr } = makeAdapter({ stdin: JSON.stringify(extractionDocument()) });
+    const deps = hermeticMainDeps({ invocation: adapter, env: { ...ENV, SCOUTLINE_ARTIFACTS_DIR: join(dir, "artifacts") } });
+    deps.requirementsRuntime = runtime.factory;
+    deps.requirementsUserInterrupt = (cancel) => { interrupt = cancel; return () => {}; };
+    const code = await main(["investigate", "--workflow", "-", "--save", saved], deps);
+    assert.equal(code, 130, stderr.join(""));
+    assert.equal(seen.length, interruptAt);
+    assert.deepEqual(seen, interruptAt === 1 ? [true] : [false, true],
+      "the selected dispatch observed the aborted owned signal");
+    const body = JSON.parse(stdout.join(""));
+    assert.equal(body.kind, "manifest-extraction");
+    assert.equal(body.cancelled, true);
+    assert.equal(body.stopReason, "cancelled");
+    assert.equal(body.result.status, expectedStatus);
+    if (expectedStatus === "complete") {
+      assert.deepEqual(body.result.data, { version: "2.4.0", license: "MIT" });
+    }
+    assert.deepEqual(JSON.parse(await readFile(saved, "utf8")).result, body);
+    assert.ok(body.evidence.length >= 1, "earned evidence is preserved");
+    assert.ok(body.measurement !== undefined, "earned measurement is preserved");
+    // Earned audit rows as exposed by the projection: the dispatched judge
+    // is accounted in the composed physical observation.
+    assert.equal(body.measurement.physical.stages.judge, interruptAt,
+      "the dispatched judge work is accounted");
+    assert.ok(Array.isArray(body.measurement.physical.attempts), "attempt audit rows are exposed");
+  });
+}
 
 test("genuine extraction validation failures keep VALIDATION_ERROR/400/exit 1", async () => {
   const bad = {

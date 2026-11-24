@@ -3,7 +3,7 @@
  * Scoutline test runner.
  *
  * Modes:
- *   offline         — every top-level test except live and smoke files.
+ *   offline         — top-level .test.js and .test.mjs files except live and smoke.
  *   smoke           — only the executable smoke suite (cli-smoke.test.js).
  *   live            — both opt-in live files; unconfigured Providers may skip.
  *   live-release    — only provider-live.test.js; both credentials required,
@@ -32,7 +32,7 @@ const SMOKE_FILE = "cli-smoke.test.js";
 
 function listTopLevelTests() {
   return readdirSync(TESTS_DIR)
-    .filter((name) => name.endsWith(".test.js"))
+    .filter((name) => /\.test\.m?js$/.test(name))
     .sort();
 }
 
@@ -77,6 +77,12 @@ function childEnvFor(mode) {
   // Uses a unique temp dir per run so concurrent test invocations don't collide.
   env.SCOUTLINE_CONFIG_DIR = mkdtempSync(path.join(tmpdir(), "scoutline-test-"));
 
+  if (mode === "offline") {
+    // The caller and engine MJS tests need the same isolated artifact
+    // default as CI had for their standalone invocation.
+    env.SCOUTLINE_ARTIFACTS_DIR ??= path.join(env.SCOUTLINE_CONFIG_DIR, "artifacts");
+  }
+
   if (mode === "offline" || mode === "smoke") {
     // Belt-and-suspenders: clear BOTH live opt-in variables even if
     // credentials exist. This guarantees that a stray `SCOUTLINE_LIVE_TESTS=1`
@@ -101,7 +107,9 @@ function runNodeTests(files, mode) {
       resolve(0);
       return;
     }
-    const args = ["--test", ...files];
+    const args = mode === "offline"
+      ? ["--experimental-vm-modules", "--test", ...files]
+      : ["--test", ...files];
     const proc = spawn(process.execPath, args, {
       cwd: path.resolve(__dirname, ".."),
       env: childEnvFor(mode),

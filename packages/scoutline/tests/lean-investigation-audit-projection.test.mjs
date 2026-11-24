@@ -4,41 +4,30 @@ import { runLeanInvestigation } from "../dist/lib/lean-investigation.js";
 import { createTypesafeJudge } from "../dist/lib/lean-typesafe-judge.js";
 
 for (const malformed of [null, undefined]) {
-  test(`${String(malformed)} normalized response remains inspectable without raw crash`, async () => {
-    let result;
-    let error;
-    try {
-      result = await runLeanInvestigation(
-        {
-          schemaVersion: 1,
-          question: "Assess",
-          requirements: {
-            csv: { question: "CSV?", required: true, schema: { enum: ["supported"] } },
-          },
+  test(`${String(malformed)} normalized response returns an inspectable unresolved result`, async () => {
+    const result = await runLeanInvestigation(
+      {
+        schemaVersion: 1,
+        question: "Assess",
+        requirements: {
+          csv: { question: "CSV?", required: true, schema: { enum: ["supported"] } },
         },
-        {
-          now: () => 0,
-          search: async () => [{ url: "https://fixture.invalid/guide" }],
-          read: async () => "Supports CSV",
-          judge: async () => malformed,
-        },
-      );
-    } catch (caught) {
-      error = caught;
-    }
-    if (error) {
-      assert.equal(
-        typeof error.code,
-        "string",
-        "raw TypeError is not an inspectable malformed outcome",
-      );
-      return;
-    }
+      },
+      {
+        now: () => 0,
+        search: async () => [{ url: "https://fixture.invalid/guide" }],
+        read: async () => "Supports CSV",
+        judge: async () => malformed,
+      },
+    );
+    assert.equal(result.status, "partial");
     assert.equal(result.requirements.csv.status, "unresolved");
     assert.equal(result.evidence[0].content, "Supports CSV");
     assert.equal(result.usage.judgeCalls, 1);
     assert.equal(Object.hasOwn(result.data, "csv"), false);
-    assert.ok(result.requirements.csv.attemptedRecords.some((record) => record.trusted === false));
+    assert.ok(result.requirements.csv.attemptedRecords.some((record) =>
+      record.trusted === false && record.reason === "invalid_response",
+    ));
   });
 }
 

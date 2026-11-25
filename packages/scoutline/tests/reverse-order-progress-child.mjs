@@ -71,11 +71,6 @@ deps.now = () => {
   return 0;
 };
 
-// Startup boundary: fd 3 reports that module loading and harness setup are
-// complete, so the parent's stall budget starts with the scheduler run. A
-// parent-requested slow startup blocks before the boundary.
-block(Number(slowStartupMs));
-writeSync(3, "ready\n");
 // Parent-requested synchronous scheduler stall: the scheduler's first clock
 // read blocks past the stall budget, like a no-eligible re-entry spinning
 // without yielding under a frozen clock. One bounded block, so a dead
@@ -89,6 +84,13 @@ if (stallMs !== "0") {
     return read();
   };
 }
+
+// Startup boundary: fd 3 reports that module loading and harness setup,
+// including the stall hook above, are complete, so the parent's stall
+// budget starts with the scheduler run. A parent-requested slow startup
+// blocks before the boundary.
+block(Number(slowStartupMs));
+writeSync(3, "ready\n");
 
 const result = await runLeanInvestigation(c.contract, deps);
 process.stdout.write(

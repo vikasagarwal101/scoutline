@@ -23,6 +23,7 @@ const DEFAULT_TIMEOUT_MS = 60_000;
 /** A regression must fail, never stall the gate. */
 const GUARD = { timeout: 10_000 };
 const NO_DISPATCH_OPTIONS = Symbol("no dispatch options");
+const T0 = 1000;
 const env = { TAVILY_API_KEY: "synthetic", TAVILY_TIMEOUT: "1000" };
 const url = "https://offline.test/source";
 const payload = { results: [{ url, title: "Title", content: "Harmless text", raw_content: "Harmless text" }] };
@@ -31,11 +32,12 @@ const flush = () => new Promise((resolve) => setImmediate(resolve));
 /** The settled outcome once pending has had a turn, else "pending". */
 const drained = (pending) => Promise.race([pending, flush().then(() => "pending")]);
 
-/** Fake clock (t0 = 1000) over a transport whose fetch answers promptly
- *  unless `fetch` says otherwise. `delays` records every delay handed to the
- *  timer; `count()` is [fetch dispatches, reservations, ledger rows]. */
+/** Fake clock (t0 = T0) over a transport whose fetch answers promptly unless
+ *  `fetch` says otherwise, and an instrumented cache. `delays` records every
+ *  delay handed to the timer; `count()` is [fetch dispatches, reservations,
+ *  ledger rows]; `cacheTouches()` is cache reads plus writes. */
 function fixture(t, fetch = async () => new Response(JSON.stringify(payload), { status: 200 })) {
-  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1000 });
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: T0 });
   const delays = [];
   const arm = globalThis.setTimeout;
   globalThis.setTimeout = (callback, ms, ...rest) => {
@@ -44,6 +46,8 @@ function fixture(t, fetch = async () => new Response(JSON.stringify(payload), { 
   };
   let calls = 0;
   let reservations = 0;
+  let reads = 0;
+  let writes = 0;
   const transport = { env, fetch(...args) { calls++; return fetch(...args); } };
   const descriptor = createTavilyDescriptor({ transport });
   const deps = createLeanAcquisitionDeps({
@@ -52,13 +56,22 @@ function fixture(t, fetch = async () => new Response(JSON.stringify(payload), { 
     searchDescriptor: descriptor,
     readerDescriptor: descriptor,
     env,
-    cache: { get: async () => null, set: async () => {} },
+    cache: {
+      get: async () => { reads++; return null; },
+      set: async () => { writes++; },
+    },
     sleep: async () => {},
     random: () => 0,
     retryPolicy: { maxRetries: 0, baseDelayMs: 0, maxDelayMs: 0, jitterMs: 0 },
     reservePhysicalAttempt() { reservations++; },
   });
-  return { deps, delays, count: () => [calls, reservations, deps.physicalLedger.perAttempt.length] };
+  return {
+    deps,
+    delays,
+    count: () => [calls, reservations, deps.physicalLedger.perAttempt.length],
+    cacheTouches: () => reads + writes,
+    cacheUsed: () => reads > 0 && writes > 0,
+  };
 }
 
 const invoke = (deps, method, options) =>
@@ -81,14 +94,16 @@ for (const method of ["search", "read"]) {
     const refused = typeof expected === "string";
     test(`direct ${method} timeout ${label} ${refused ? "is refused before any paid work" : `arms exactly a ${expected} ms deadline`}`,
       GUARD, async (t) => {
-        const { deps, delays, count } = fixture(t);
+        const { deps, delays, count, cacheTouches, cacheUsed } = fixture(t);
         const { error } = await settle(invoke(deps, method, timeoutMs === NO_DISPATCH_OPTIONS
           ? undefined : { signal: new AbortController().signal, timeoutMs }));
         if (refused) {
           assert.equal(error?.code, expected);
-          assert.deepEqual([count(), delays], [[0, 0, 0], []], "no reservation, dispatch, ledger row or timer");
+          assert.deepEqual([count(), delays, cacheTouches()], [[0, 0, 0], [], 0],
+            "no cache read or write, reservation, dispatch, ledger row or timer");
         } else {
           assert.equal(error, undefined);
+          assert.ok(cacheUsed(), "the same call reads and writes the cache when it is valid");
           assert.equal(Math.max(...delays), expected, "the largest delay handed to the timer is the deadline itself");
           assert.deepEqual(count(), [1, 1, 1]);
         }
@@ -99,16 +114,21 @@ for (const method of ["search", "read"]) {
     const controller = new AbortController();
     let entered;
     const ready = new Promise((resolve) => { entered = resolve; });
+    // The transport reports its entry and then never answers.
     const { deps } = fixture(t, () => { entered(); return new Promise(() => {}); });
-    const pending = settle(invoke(deps, method, { signal: controller.signal, timeoutMs: 5000 }));
-    await Promise.race([ready, pending]);
+    const deadline = 5000;
+    const pending = settle(invoke(deps, method, { signal: controller.signal, timeoutMs: deadline }));
+    assert.equal(await Promise.race([ready.then(() => "in flight"), pending]), "in flight",
+      "the request must be waiting on the transport before it is cancelled");
     controller.abort();
-    // Only the bridge's bounded abort and disposal grace (well under 1 s).
+    // Only the bridge's bounded abort and disposal grace: well under both the
+    // adapter's 1 s timeout and the operation deadline.
     t.mock.timers.tick(100);
     await flush();
     t.mock.timers.tick(100);
     const { error } = await drained(pending);
     assert.equal(error?.code, "TIMEOUT_ERROR");
     assert.equal(error?.durationMs, 0, "cancelled by the caller, not expired");
+    assert.ok(Date.now() < T0 + deadline, "settled without advancing to the operation deadline");
   });
 }

@@ -26,6 +26,8 @@
 
 ### Fixed
 
+- **Isolated quota probes (#324):** `scoutline quota --isolated` still created or rewrote the shared quota snapshot when a provider's snapshot was missing or stale, because the live probe's write-through used the store the dispatcher handed the handler. Under the flag the handler now gets no production store: the probe still runs and its row is returned unchanged, and only the write is skipped. Runs without the flag, including the env-only `SCOUTLINE_ISOLATED=1` mode, are unchanged.
+
 - **Isolated Brave searches (#322):** a successful Brave web search under `--isolated` wrote the shared quota snapshot from the response's rate-limit headers, because that passive harvest writes through its own store and bypassed the flag's shared-state skip. The harvest now stays off under the flag. Results, accounting and routing are unchanged, and a normal search or one under the env-only `SCOUTLINE_ISOLATED=1` mode still harvests.
 
 - **Requirements output:** Evidence display digests and the result hash now match the redacted data written to stdout and saved JSON.

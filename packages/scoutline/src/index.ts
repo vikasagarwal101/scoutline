@@ -7360,8 +7360,11 @@ export async function main(
     // PB-T5: thread the quota store for `quota`'s live-probe
     // write-through. Doctor ignores this field (it never live-probes
     // quota). Tests inject an in-memory double; production wires the
-    // singleton constructed in `main`.
-    quotaStore: dependencies.quotaStore ?? (quotaRefreshEnabled ? quotaStore : undefined),
+    // singleton constructed in `main`. ADR-0006 §5: an --isolated run
+    // wires none, so a live probe still returns its row and only the
+    // write is skipped (the same gate as `consume`); an injected store
+    // still wins.
+    quotaStore: dependencies.quotaStore ?? (quotaRefreshEnabled && !isolated ? quotaStore : undefined),
     // Cache Prune Ticket 5: thread the optional injected `pruneCaches`
     // through to `handleCache`. Production defaults to the on-disk
     // function from `src/lib/cache.js`; tests inject a double so the

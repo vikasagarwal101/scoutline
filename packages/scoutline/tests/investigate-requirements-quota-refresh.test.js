@@ -6,8 +6,9 @@
  * test cannot reach it. These rows spawn the built `bin/scoutline.js` with
  * a fake-transport preload, a throwaway HOME and isolated config, cache and
  * artifact dirs. The preload appends one label per mock request to a single
- * log in dispatch order, and `stdout` from inside the child at the first
- * result write, so the result-versus-quota order is the program's own.
+ * log in dispatch order, plus `stdout` at the first result write and `error`
+ * at the first error envelope, all from inside the child, so the order in
+ * the log is the program's own.
  *
  * Tavily serves the investigation; Jina is only configured. Both are
  * quota-capable, so a due refresh probes both AFTER the result and outside
@@ -46,11 +47,17 @@ await writeFile(preload, [
   'const log = (stage) => appendFileSync(process.env.SCOUTLINE_TEST_TRAFFIC, stage + "\\n");',
   'const url = "https://offline.test/release";',
   'const text = "ExampleApp release 2.4.0. CSV export is supported from the reports screen.";',
-  'const emit = process.stdout.write.bind(process.stdout);',
+  'const writeOut = process.stdout.write.bind(process.stdout);',
   'let emitted = false;',
   'process.stdout.write = (chunk, ...rest) => {',
   '  if (!emitted) { emitted = true; log("stdout"); }',
-  '  return emit(chunk, ...rest);',
+  '  return writeOut(chunk, ...rest);',
+  '};',
+  'const writeErr = process.stderr.write.bind(process.stderr);',
+  'let reported = false;',
+  'process.stderr.write = (chunk, ...rest) => {',
+  '  if (!reported && String(chunk).startsWith("{")) { reported = true; log("error"); }',
+  '  return writeErr(chunk, ...rest);',
   '};',
   'globalThis.fetch = async (raw, init) => {',
   '  const target = new URL(String(raw));',
@@ -82,8 +89,9 @@ const contract = join(SCRATCH, "requirements.json");
 await writeFile(contract, JSON.stringify(CONTRACT));
 
 let homes = 0;
-/** One compiled run over its own HOME, config, cache and artifacts. */
-async function run({ observedAt, judge = true, args = [], env: extraEnv = {} }) {
+/** One compiled run over its own HOME, config, cache and artifacts. `exit`
+ *  is the exit code the row expects; a killed or timed-out child has none. */
+async function run({ observedAt, judge = true, args = [], env: extraEnv = {}, exit = 0 }) {
   const home = join(SCRATCH, `home-${homes++}`);
   const traffic = join(home, "traffic.log");
   await mkdir(join(home, "config"), { recursive: true });
@@ -104,9 +112,10 @@ async function run({ observedAt, judge = true, args = [], env: extraEnv = {} }) 
     ...(judge ? { SCOUTLINE_JUDGE: "typesafe", TYPESAFE_API_KEY: "synthetic-judge", SCOUTLINE_JUDGE_TRANSMIT: "1" } : {}),
     ...extraEnv,
   };
-  const { stdout, stderr } = await execFileP(process.execPath, [
+  const { stdout, stderr, code = 0 } = await execFileP(process.execPath, [
     "--import", preload, BIN, "investigate", "--provider", "tavily", "--requirements", contract, ...args,
   ], { env, timeout: 30_000 }).catch((error) => error);
+  assert.equal(code, exit, "child exit code (null means killed or timed out)");
   const calls = (await readFile(traffic, "utf8")).split("\n").filter(Boolean);
   return { stdout, stderr, calls, quotaCalls: calls.filter((call) => call.startsWith("quota:")).sort() };
 }
@@ -122,9 +131,9 @@ function assertRefreshFollowsResult(calls, result) {
   assert.equal(result.usage.physicalHttpAttempts, attempts.length, "quota calls sit outside the reported attempt count");
 }
 
-for (const [status, judge] of [["complete", true], ["partial", false]]) {
+for (const [status, judge, exit] of [["complete", true, 0], ["partial", false, 1]]) {
   test(`compiled requirements run refreshes stale quotas after a ${status} result`, async () => {
-    const { stdout, calls } = await run({ observedAt: STALE(), judge });
+    const { stdout, calls } = await run({ observedAt: STALE(), judge, exit });
     const result = JSON.parse(stdout);
     assert.equal(result.status, status);
     assertRefreshFollowsResult(calls, result);
@@ -132,7 +141,7 @@ for (const [status, judge] of [["complete", true], ["partial", false]]) {
 }
 
 test("compiled requirements run refreshes stale quotas after its attempt allowance is exhausted", async () => {
-  const { stdout, calls } = await run({ observedAt: STALE(), env: { SCOUTLINE_REQUIREMENTS_MAX_PHYSICAL: "1" } });
+  const { stdout, calls } = await run({ observedAt: STALE(), env: { SCOUTLINE_REQUIREMENTS_MAX_PHYSICAL: "1" }, exit: 1 });
   const result = JSON.parse(stdout);
   assert.equal(result.status, "partial");
   assert.equal(result.usage.physicalHttpAttempts, 1);
@@ -141,14 +150,16 @@ test("compiled requirements run refreshes stale quotas after its attempt allowan
 });
 
 test("compiled requirements run leaves fresh quota snapshots alone", async () => {
-  const { stdout, quotaCalls } = await run({ observedAt: Date.now() });
+  const { stdout, calls, quotaCalls } = await run({ observedAt: Date.now() });
   assert.equal(JSON.parse(stdout).status, "complete");
+  assert.equal(calls.at(-1), "stdout", "the log is live and ends at the result");
   assert.deepEqual(quotaCalls, []);
 });
 
 test("compiled --isolated requirements run issues no quota calls", async () => {
-  const { stdout, quotaCalls } = await run({ observedAt: STALE(), args: ["--isolated"] });
+  const { stdout, calls, quotaCalls } = await run({ observedAt: STALE(), args: ["--isolated"] });
   assert.equal(JSON.parse(stdout).status, "complete");
+  assert.equal(calls.at(-1), "stdout", "the log is live and ends at the result");
   assert.deepEqual(quotaCalls, []);
 });
 
@@ -157,10 +168,13 @@ test("compiled requirements run still refreshes quotas when a late --save fails"
   // --save-force, then the write itself fails after the result exists.
   const target = join(SCRATCH, "occupied-export-target");
   await mkdir(target);
-  const { stdout, stderr, calls, quotaCalls } = await run({ observedAt: STALE(), args: ["--save", target, "--save-force"] });
-  assert.ok(calls.includes("read"), "acquisition ran before the save");
+  const { stdout, stderr, calls } = await run({ observedAt: STALE(), args: ["--save", target, "--save-force"], exit: 1 });
+  // No result reaches stdout here, so the reported save failure is the boundary.
+  const reported = calls.indexOf("error");
+  const before = calls.slice(0, reported);
+  assert.ok(before.includes("judge") && before.every((call) => INVESTIGATION_CALLS.includes(call)), "the investigation, judge included, ran before the save failed");
+  assert.deepEqual(calls.slice(reported + 1).sort(), QUOTA_CALLS, "the refresh ran, and only after the save failure was reported");
   assert.equal(stdout, "", "a failed save suppresses the result");
-  assert.deepEqual(quotaCalls, QUOTA_CALLS, "the refresh stays eligible");
   // The env-credential hint precedes the error envelope on stderr.
   const { code, error: message } = JSON.parse(stderr.trim().split("\n").at(-1));
   assert.equal(code, "FILE_ERROR");

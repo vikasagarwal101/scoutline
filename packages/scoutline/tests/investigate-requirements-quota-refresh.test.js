@@ -14,15 +14,16 @@
  * quota-capable, so a due refresh probes both AFTER the result and outside
  * the run's reported physical-attempt count.
  *
- * Every run seeds `state.json`, the shared quota snapshots, and reads it
- * back from disk before and after the child (`state`). An isolated run
- * must leave that file alone (ADR-0006 §5); the per-process cache and
- * artifact subtrees it does write live elsewhere.
+ * Every run seeds `state.json`, the shared quota snapshots, and inspects
+ * it before and after the child (`state`: bytes, inode and mtime), so a
+ * rewrite shows even when it changes no byte. An isolated run must leave
+ * that file alone (ADR-0006 §5); the per-process cache and artifact
+ * subtrees it does write live elsewhere.
  */
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -96,7 +97,7 @@ await writeFile(contract, JSON.stringify(CONTRACT));
 let homes = 0;
 /** One compiled run over its own HOME, config, cache and artifacts. `exit`
  *  is the exit code the row expects; a killed or timed-out child has none.
- *  `state` is the seeded `state.json` as read from disk before and after. */
+ *  `state` is the seeded `state.json` as inspected before and after. */
 async function run({ observedAt, judge = true, args = [], env: extraEnv = {}, exit = 0 }) {
   const home = join(SCRATCH, `home-${homes++}`);
   const traffic = join(home, "traffic.log");
@@ -107,7 +108,15 @@ async function run({ observedAt, judge = true, args = [], env: extraEnv = {}, ex
     version: 1,
     quota: { tavily: { observedAt, categories: [] }, jina: { observedAt, categories: [] } },
   }));
-  const stateBefore = await readFile(stateFile, "utf8");
+  // The file is as old as its snapshots, so a rewrite cannot land on the
+  // seeded mtime.
+  await utimes(stateFile, new Date(observedAt), new Date(observedAt));
+  /** The bytes, plus the inode and mtime a same-bytes rewrite still changes. */
+  const inspectState = async () => {
+    const { ino, mtimeMs } = await stat(stateFile);
+    return { bytes: await readFile(stateFile, "utf8"), stamp: `${ino}:${mtimeMs}` };
+  };
+  const stateBefore = await inspectState();
   const env = {
     PATH: process.env.PATH, HOME: home, TMPDIR: home,
     SCOUTLINE_CONFIG_DIR: join(home, "config"),
@@ -128,7 +137,7 @@ async function run({ observedAt, judge = true, args = [], env: extraEnv = {}, ex
   return {
     stdout, stderr, calls,
     quotaCalls: calls.filter((call) => call.startsWith("quota:")).sort(),
-    state: { before: stateBefore, after: await readFile(stateFile, "utf8") },
+    state: { before: stateBefore, after: await inspectState() },
   };
 }
 
@@ -143,11 +152,11 @@ function assertRefreshFollowsResult(calls, result) {
   assert.equal(result.usage.physicalHttpAttempts, attempts.length, "quota calls sit outside the reported attempt count");
 }
 
-/** Control for the isolated row's byte comparison: through the same two
+/** Control for the isolated row's comparison: through the same two
  *  reads, a run that does refresh shows every seeded snapshot advance. */
 function assertSnapshotsAdvanced({ before, after }) {
-  const seeded = JSON.parse(before).quota;
-  const refreshed = JSON.parse(after).quota;
+  const seeded = JSON.parse(before.bytes).quota;
+  const refreshed = JSON.parse(after.bytes).quota;
   for (const [provider, { observedAt }] of Object.entries(seeded)) {
     assert.ok(refreshed[provider].observedAt > observedAt, `${provider} snapshot advanced past its stale seed`);
   }
@@ -184,7 +193,7 @@ test("compiled --isolated requirements run issues no quota calls and preserves t
   assert.equal(JSON.parse(stdout).status, "complete");
   assert.equal(calls.at(-1), "stdout", "the log is live and ends at the result");
   assert.deepEqual(quotaCalls, []);
-  assert.equal(state.after, state.before, "the seeded state.json survives byte for byte");
+  assert.deepEqual(state.after, state.before, "the seeded state.json keeps its bytes, inode and mtime");
 });
 
 test("compiled requirements run still refreshes quotas when a late --save fails", async () => {

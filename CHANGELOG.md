@@ -36,6 +36,8 @@
 
 - **Workflow quotas:** The usual quota refresh can run after a workflow completes with provider acquisition.
 
+- **Requirements quotas (#295):** Documentation now discloses that once a requirements investigation returns a complete or partial result, the usual due quota refresh can contact configured quota-capable providers outside the attempt ledger. `--isolated`, preflight rejections and errors inside the investigation suppress it; a later `--save` failure does not. No behavior changed.
+
 - **Concurrent caller rounds:** start and continue return the round they committed, even if another caller commits a newer revision before the response is assembled.
 
 - **Direct TypeSafe judge retry (#299):** the opt-in transient retry treated an empty or whitespace-only `Retry-After` as an explicit zero and retried a 429/529 immediately. A blank value is now an absent hint, so the retry waits the ordinary backoff. Explicit `0`, positive seconds, HTTP-dates, retry limits and the default single-attempt profile are unchanged.

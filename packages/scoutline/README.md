@@ -625,6 +625,17 @@ may LOWER it (1..48, integer) and never raises it — any other value
 rejects before any HTTP. An injected producer that does not use the
 observer seam leaves its physical count explicitly unknown.
 
+That ceiling and the reported count cover the investigation only. Once
+the investigation returns a complete or partial result, the ordinary
+due quota refresh can follow outside the attempt ledger, contacting
+each configured quota-capable provider whose snapshot is stale or
+missing — including one the investigation did not use. That return is
+the boundary: a subsequent `--save` failure can still leave the
+refresh eligible. `--isolated` suppresses that refresh (see
+[Process Isolation](#process-isolation---isolated)), as does a run
+rejected in preflight or ended by an error or interrupt inside the
+investigation.
+
 ```bash
 scoutline investigate --requirements reqs.json
 cat reqs.json | scoutline investigate --requirements -

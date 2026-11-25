@@ -55,10 +55,12 @@ function settled(r, mode) {
   );
   assert.equal(r.code, 0, r.error);
   assert(r.ready, "a settled child must have crossed its startup boundary");
-  const { data } = JSON.parse(r.output);
+  const payload = JSON.parse(r.output);
+  const { data } = payload;
   assert(!("license" in data));
   assert(!("csv" in data));
-  if (mode === "revise") assert(!("version" in data));
+  if (mode !== "unchanged") assert(!("version" in data));
+  return payload;
 }
 
 for (const mode of ["unchanged", "revise"]) {
@@ -66,6 +68,24 @@ for (const mode of ["unchanged", "revise"]) {
     settled(await run(mode), mode);
   });
 }
+
+// The revision fires inside the no-eligible pass, so clock reads witness
+// the passes after it: exactly one more read is the identical-wait-set
+// pass that follows the re-entry. Any other count means the revision
+// landed earlier, while acquisition still had passes to run, that the
+// fixture drifted off the re-entry, or that these passes gained or lost
+// a clock read. With the repeated-wait-set check removed the child spins
+// and the stall watchdog fails this row.
+test("a repeated wait-set ends the no-eligible re-entry: prerequisite terminal with a dead proof", async () => {
+  const { readsAfterRevision } = settled(await run("terminal"), "terminal");
+  assert.equal(
+    readsAfterRevision,
+    1,
+    "clock reads after the revision must be exactly 1: the revision lands at the first loop entry " +
+      "after the final search and one identical-wait-set pass follows. Another count means the " +
+      "revision moved, the fixture left the re-entry, or these passes gained or lost a clock read.",
+  );
+});
 
 test("deliberately slow startup completes instead of reading as a scheduler stall", async () => {
   settled(await run("unchanged", 2 * STALL_MS), "unchanged");

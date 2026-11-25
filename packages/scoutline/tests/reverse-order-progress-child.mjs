@@ -47,21 +47,42 @@ deps.candidateJudge = async (input) => {
 
 // Mode "revise": the revision lands at the first post-terminalization
 // now() read after the final full-context guide license judgment. The
-// terminal version accept then fails its live proof (same-ID content
-// revision), license and csv stay required nonterminal waiters, and the
-// no-eligible re-entry path must terminate under the frozen clock
-// instead of spinning. Mode "unchanged": no mutation — version stays
-// accepted, license/csv are published only when eligible (they are not).
+// standing version accept then fails its live proof (same-ID content
+// revision) before version finalizes, so version, license and csv stay
+// required nonterminal waiters and the run ends at the acquisition
+// no-progress break, never reaching the no-eligible branch. Mode
+// "unchanged": no mutation — version stays accepted, license/csv are
+// published only when eligible (they are not).
+//
+// Mode "terminal": the revision lands at the first loop entry after the
+// final search's mid-loop finalization made version terminally
+// satisfied (the standing-terminal recipe). Its accept then fails the
+// live proof, so license is blocked (no unblocking proof) yet
+// actionable: its prerequisite is terminally satisfied and its judged
+// dependency binding no longer exists. With judge budget left and no
+// eligible field, the scheduler re-enters on that wait-set. The re-entry
+// pass changes nothing, so the next pass sees the identical wait-set.
 let nowN = 0;
 let mutated = false;
-const baseNow = deps.now;
+let armed = false;
+let readsSinceFinalSearch = 0;
+let readsAfterRevision = 0;
+const search = deps.search;
+deps.search = async (query) => {
+  const results = await search(query);
+  if (query === `${c.contract.requirements.version.question} contrary evidence refuted`)
+    armed = true;
+  return results;
+};
 deps.now = () => {
   nowN += 1;
+  if (mutated) readsAfterRevision += 1;
   if (
-    mode === "revise" &&
-    !mutated &&
-    lastGuideLicenseNow !== null &&
-    nowN > lastGuideLicenseNow + 1
+    (mode === "revise" &&
+      !mutated &&
+      lastGuideLicenseNow !== null &&
+      nowN > lastGuideLicenseNow + 1) ||
+    (mode === "terminal" && !mutated && armed && ++readsSinceFinalSearch === 2)
   ) {
     mutated = true;
     live.reviseSource(guideRef, (guideRef) => {
@@ -94,5 +115,6 @@ writeSync(3, "ready\n");
 
 const result = await runLeanInvestigation(c.contract, deps);
 process.stdout.write(
-  JSON.stringify({ data: result.data, status: result.status, nowReads: nowN }) + "\n",
+  JSON.stringify({ data: result.data, status: result.status, nowReads: nowN, readsAfterRevision }) +
+    "\n",
 );

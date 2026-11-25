@@ -138,8 +138,10 @@ const changelog = fs.readFile(new URL("../../../CHANGELOG.md", import.meta.url),
 // Rebaselined at the package-route-boundary correction: the requirements
 // subsection gained the official-route verification-scope sentence
 // (fake-HTTP fixtures only, not live-attested). No other body copy changed.
+// Rebaselined at #295: the requirements subsection gained the after-result
+// due-quota-refresh disclosure. No other body copy changed.
 // Current-prefix merge preserves provider/docs additions and settled caller response/paging rules.
-const SKILL_BODY_SHA256 = "87e61ec9b6b537fc550437a62e51b8787dd618d98f05f17a793c77b5419302e9";
+const SKILL_BODY_SHA256 = "37b0590ed49f5656e66eab5671006d3c3fe318669de261e167b9e8816e06c9bc";
 
 // AC-10 budget: codex/qwen load name+description before any body
 // byte; the old enumeration (~1500 chars) blows the disclosure

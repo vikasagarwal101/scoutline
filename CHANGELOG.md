@@ -36,6 +36,8 @@
 
 - **Workflow quotas:** The usual quota refresh can run after a workflow completes with provider acquisition.
 
+- **Requirements quotas (#295):** Documentation now discloses that after a requirements run delivers a complete or partial result, the usual due quota refresh can contact configured quota-capable providers outside the attempt ledger. `--isolated`, preflight rejections and investigation errors suppress it. No behavior changed.
+
 - **Concurrent caller rounds:** start and continue return the round they committed, even if another caller commits a newer revision before the response is assembled.
 
 - **Bounded investigation API redirects:** requirements/caller acquisition refuses redirects on its app-to-supplier API requests, preventing hidden follow-up hops inside one counted fetch. This does not enforce the remote Reader's content-URL DNS or redirect policy; normal Reader commands are unchanged.

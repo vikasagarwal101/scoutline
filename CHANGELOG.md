@@ -39,6 +39,7 @@
 - **Concurrent caller rounds:** start and continue return the round they committed, even if another caller commits a newer revision before the response is assembled.
 
 - **Bounded investigation API redirects:** requirements/caller acquisition refuses redirects on its app-to-supplier API requests, preventing hidden follow-up hops inside one counted fetch. This does not enforce the remote Reader's content-URL DNS or redirect policy; normal Reader commands are unchanged.
+- **Bounded investigation timeouts:** direct acquisition calls refuse a `NaN`, infinite or over-ceiling `timeoutMs` with `VALIDATION_ERROR` before any reservation or request, instead of starting a paid request under a timer Node coerces to 1 ms. Requirements and caller modes pass the engine's bounded remaining time and are unchanged.
 
 - **Caller attribution and late interruption:** evidence pages retain known Reader provider, final URL, cache-service state, serve time and supplied representation metadata across continuation/history. Missing legacy or unobserved attribution stays unknown. An interrupt during publication returns exit 130 and an inspectable reference while preserving the committed round's work outcome; the cancelled response is bounded and rehashed.
 

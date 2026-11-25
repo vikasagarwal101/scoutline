@@ -56,6 +56,7 @@ import {
 import { buildProviderCacheKey, type ResponseCache } from "./cache.js";
 import type { ConsumptionSink } from "./consumption.js";
 import { TimeoutError, ValidationError } from "./errors.js";
+import { TIMEOUT_MS_MAX } from "./timeout.js";
 
 /** Per-read serve provenance, recorded from the serve itself. */
 export interface LeanReadProvenance {
@@ -632,6 +633,18 @@ function wrapFetchForOperation(original: OriginalFetch, state: OperationState, n
 /**
  * Build engine `search`/`read` deps over the real execution seams with
  * per-operation transport copying and the truthful physical ledger.
+ *
+ * Direct-call deadline contract (#300): `timeoutMs` is the whole operation
+ * allowance and what remains of it is handed to a native timer. With no
+ * dispatch options the allowance defaults to 60 s; an untyped `null` or
+ * `undefined` `timeoutMs` falls back to that default the same way (the
+ * declared type requires a number). Any other value must be a finite number
+ * no greater than the native timer ceiling — Node coerces a NaN, infinite or
+ * larger delay to 1 ms with only a process warning — and is otherwise
+ * rejected with a `ValidationError` before any cache read, reservation or
+ * dispatch (never clamped to a deadline the caller did not ask for). A finite
+ * non-positive value is an allowance that has already expired: it fails with
+ * the usual typed `TimeoutError`, likewise before dispatch.
  */
 export function createLeanAcquisitionDeps(
   options: LeanAcquisitionBridgeOptions,
@@ -718,10 +731,16 @@ export function createLeanAcquisitionDeps(
     dispatch: LeanDispatchOptions | undefined,
   ): OperationState => {
     let entry: { index: number } | undefined;
+    const timeoutMs = dispatch?.timeoutMs ?? 60_000;
+    if (!Number.isFinite(timeoutMs) || timeoutMs > TIMEOUT_MS_MAX) {
+      throw new ValidationError(
+        `timeoutMs must be a finite number of milliseconds no greater than ${TIMEOUT_MS_MAX} (Node setTimeout limit).`,
+      );
+    }
     const state: OperationState = {
       cancellationUnconfirmed: false,
       runSignal: dispatch?.signal,
-      deadlineAt: Date.now() + (dispatch?.timeoutMs ?? 60_000),
+      deadlineAt: Date.now() + timeoutMs,
       cap,
       provider: providerId,
       reserve,

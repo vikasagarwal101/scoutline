@@ -460,7 +460,7 @@ function abortError(): Error {
   return error;
 }
 
-/** Parse `retry-after-ms`, then `retry-after` (seconds or HTTP-date). */
+/** Parse `retry-after-ms`, then `retry-after` (seconds or HTTP-date). Blank values are absent hints. */
 function parseRetryAfterMs(headerGet: (name: string) => string | null, now: () => number): number | null {
   const ms = headerGet("retry-after-ms");
   if (ms !== null) {
@@ -468,7 +468,7 @@ function parseRetryAfterMs(headerGet: (name: string) => string | null, now: () =
     if (Number.isFinite(value) && value >= 0) return value;
   }
   const raw = headerGet("retry-after");
-  if (raw === null) return null;
+  if (raw === null || raw.trim() === "") return null;
   const seconds = Number(raw);
   if (Number.isFinite(seconds)) return seconds >= 0 ? seconds * 1000 : null;
   const date = Date.parse(raw);

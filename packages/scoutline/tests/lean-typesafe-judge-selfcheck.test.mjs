@@ -150,13 +150,15 @@ test("429/529 then 200 with retry settings: two admissions, truthful attempts", 
 });
 
 test("default: no retry on 429 — terminal", async () => {
-  const { fetchLike, calls } = makeFetch([statusResponse(429, { "retry-after": "0" })]);
-  const profile = tsj.createTypesafeJudge({ apiKey: "k", fetchLike, reserveAttempt: () => {} });
-  await assert.rejects(
-    () => profile.judge({ ...INPUT, documents: [INPUT.documents[0]] }),
-    (e) => e.code === "TYPESAFE_RATE_LIMIT",
-  );
-  assert.equal(calls.length, 1, "default maxTransientRetries=0 → one attempt");
+  for (const retryAfter of ["0", "", "  "]) {
+    const { fetchLike, calls } = makeFetch([statusResponse(429, { "retry-after": retryAfter })]);
+    const profile = tsj.createTypesafeJudge({ apiKey: "k", fetchLike, reserveAttempt: () => {} });
+    await assert.rejects(
+      () => profile.judge({ ...INPUT, documents: [INPUT.documents[0]] }),
+      (e) => e.code === "TYPESAFE_RATE_LIMIT",
+    );
+    assert.equal(calls.length, 1, "default maxTransientRetries=0 → one attempt");
+  }
 });
 
 test("admission refusal: zero HTTP sent", async () => {
@@ -455,6 +457,32 @@ async function withManualTimers(action) {
     globalThis.clearTimeout = originalClear;
   }
 }
+
+test("blank retry seconds preserve ordinary backoff and numeric zero", async () => {
+  // #299: Number("") and Number("  ") are 0, so a blank Retry-After is an absent hint (ordinary backoff), never a zero delay.
+  const rows = [["", 50], ["  ", 50], [null, 50], ["0", 0], ["0.005", 5], [new Date(1000).toUTCString(), 1000]];
+  const actual = [];
+  for (const [seconds] of rows) {
+    actual.push(await withManualTimers(async ({ pending, scheduled, observe }) => {
+      let admissions = 0;
+      const { fetchLike, calls } = makeFetch([statusResponse(429, { "retry-after": seconds }), okResponse(noulAnswersFor(2))]);
+      const profile = tsj.createTypesafeJudge({
+        apiKey: "k", now: () => 0, timeoutMs: 10, maxAttempts: 2,
+        retrySettings: { maxTransientRetries: 1, baseDelayMs: 50, maxDelayMs: 50, maxRetryAfterMs: 1000 },
+        reserveAttempt: () => { admissions++; }, fetchLike,
+      });
+      observe(() => {
+        if (scheduled.length !== 3) return;
+        const [handle, fire] = [...pending.entries()].at(-1);
+        queueMicrotask(() => { pending.delete(handle); fire(); });
+      });
+      const { documents } = await profile.judge(INPUT, { timeoutMs: 1500 });
+      return [seconds, scheduled[2], calls.length, admissions, documents.length, pending.size];
+    }));
+  }
+  // [header, backoff timer, dispatches, admissions, judged documents, live timers]
+  assert.deepEqual(actual, rows.map(([seconds, backoffMs]) => [seconds, backoffMs, 2, 2, 2, 0]));
+});
 
 test("undefined retry fields use defaults and preserve defined zero", async () => {
   const fields = ["maxTransientRetries", "baseDelayMs", "maxDelayMs", "maxRetryAfterMs"];

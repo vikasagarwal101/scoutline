@@ -2,34 +2,77 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+
+const CHILD = fileURLToPath(new URL("./reverse-order-progress-child.mjs", import.meta.url));
+// Separate bounded budgets: startup (process boot, module loading, harness
+// setup) is unbounded in cost on a cold or loaded runner, so it gets a
+// generous deadline of its own. The stall budget starts only at the child's
+// ready boundary and covers the scheduler run.
+const STARTUP_MS = 30_000;
+const STALL_MS = 1_000;
+
+// Watchdog parent: kills the child when it misses its startup deadline or,
+// once the child reports ready, its stall deadline. `killed` names the phase.
+async function run(mode, slowStartupMs = 0, stallMs = 0) {
+  const child = spawn(process.execPath, [CHILD, mode, String(slowStartupMs), String(stallMs)], {
+    env: {}, // no ambient credentials or configuration; the fixture spawns nothing
+    stdio: ["ignore", "pipe", "pipe", "pipe"], // fd 3: startup boundary
+  });
+  let output = "",
+    error = "",
+    ready = false,
+    killed = "",
+    timer;
+  child.stdout.on("data", (x) => (output += x));
+  child.stderr.on("data", (x) => (error += x));
+  const exited = new Promise((resolve) =>
+    child.on("close", (code, signal) => resolve({ code, signal })),
+  );
+  const arm = (phase, ms) => {
+    if (killed) return; // the first timeout outcome stands
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      killed = phase;
+      child.kill("SIGKILL");
+    }, ms);
+  };
+  arm("startup", STARTUP_MS);
+  child.stdio[3].once("data", () => {
+    ready = true;
+    arm("stall", STALL_MS);
+  });
+  const exit = await exited;
+  clearTimeout(timer);
+  return { ...exit, output, error, ready, killed };
+}
+
+function settled(r, mode) {
+  assert(
+    !r.killed,
+    r.killed === "startup"
+      ? `child did not report readiness within ${STARTUP_MS}ms: ${r.error}`
+      : `no-eligible re-entry cannot continue synchronously without state or budget progress: ${r.error}`,
+  );
+  assert.equal(r.code, 0, r.error);
+  assert(r.ready, "a settled child must have crossed its startup boundary");
+  const { data } = JSON.parse(r.output);
+  assert(!("license" in data));
+  assert(!("csv" in data));
+  if (mode === "revise") assert(!("version" in data));
+}
+
 for (const mode of ["unchanged", "revise"]) {
   test(`no eligible field terminates boundedly under frozen clock: ${mode}`, async () => {
-    const child = spawn(
-      process.execPath,
-      [fileURLToPath(new URL("./reverse-order-progress-child.mjs", import.meta.url)), mode],
-      { env: { PATH: "/usr/bin:/bin" }, stdio: ["ignore", "pipe", "pipe"] },
-    );
-    let output = "",
-      error = "",
-      killed = false;
-    child.stdout.on("data", (x) => (output += x));
-    child.stderr.on("data", (x) => (error += x));
-    const timer = setTimeout(() => {
-      killed = true;
-      child.kill("SIGKILL");
-    }, 1000);
-    const exit = await new Promise((resolve) =>
-      child.on("close", (code, signal) => resolve({ code, signal })),
-    );
-    clearTimeout(timer);
-    assert(
-      !killed,
-      `no-eligible re-entry cannot continue synchronously without state or budget progress: ${error}`,
-    );
-    assert.equal(exit.code, 0, error);
-    const r = JSON.parse(output);
-    assert(!("license" in r.data));
-    assert(!("csv" in r.data));
-    if (mode === "revise") assert(!("version" in r.data));
+    settled(await run(mode), mode);
   });
 }
+
+test("deliberately slow startup completes instead of reading as a scheduler stall", async () => {
+  settled(await run("unchanged", 2 * STALL_MS), "unchanged");
+});
+
+test("deliberate synchronous scheduler stall after ready trips the watchdog", async () => {
+  const r = await run("unchanged", 0, 5 * STALL_MS);
+  assert.equal(r.killed, "stall", "a post-ready synchronous stall must be killed by the watchdog");
+  assert.equal(r.signal, "SIGKILL");
+});

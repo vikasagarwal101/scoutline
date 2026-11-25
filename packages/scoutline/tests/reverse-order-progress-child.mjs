@@ -7,11 +7,14 @@
 // guide with the same ID ... clock remains 0"). This is a NEW synthetic
 // guard with the same purpose and assertions, not a byte-identical
 // recovery: documented original-missing limitation.
+import { writeSync } from "node:fs";
 import { inputs } from "./unified-review-corpus.mjs";
 import { offlineDeps } from "./unified-review-offline-deps.mjs";
 import { runLeanInvestigation } from "../dist/lib/lean-investigation.js";
 
-const mode = process.argv[2];
+const [mode, slowStartupMs = "0", stallMs = "0"] = process.argv.slice(2);
+// Synchronous main-thread block: the event loop never turns while it runs.
+const block = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
 // Reverse-declaration-order chain: leaf declared first, prerequisite
 // (version) declared last.
@@ -67,6 +70,25 @@ deps.now = () => {
   }
   return 0;
 };
+
+// Startup boundary: fd 3 reports that module loading and harness setup are
+// complete, so the parent's stall budget starts with the scheduler run. A
+// parent-requested slow startup blocks before the boundary.
+block(Number(slowStartupMs));
+writeSync(3, "ready\n");
+// Parent-requested synchronous scheduler stall: the scheduler's first clock
+// read blocks past the stall budget, like a no-eligible re-entry spinning
+// without yielding under a frozen clock. One bounded block, so a dead
+// watchdog fails its pin instead of hanging the suite.
+if (stallMs !== "0") {
+  const read = deps.now;
+  let first = true;
+  deps.now = () => {
+    if (first) block(Number(stallMs));
+    first = false;
+    return read();
+  };
+}
 
 const result = await runLeanInvestigation(c.contract, deps);
 process.stdout.write(

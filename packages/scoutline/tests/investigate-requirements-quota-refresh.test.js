@@ -180,3 +180,14 @@ test("compiled requirements run still refreshes quotas when a late --save fails"
   assert.equal(code, "FILE_ERROR");
   assert.ok(message.includes(target), "the blocked destination is what failed the save");
 });
+
+test("compiled requirements run issues no quota calls after a preflight rejection", async () => {
+  // Both configured providers are due a refresh. The preload marks the
+  // error envelope even though no HTTP runs.
+  const { stdout, stderr, calls } = await run({ observedAt: STALE(), env: { SCOUTLINE_REQUIREMENTS_MAX_PHYSICAL: "0" }, exit: 1 });
+  const { code, error: message } = JSON.parse(stderr.trim().split("\n").at(-1));
+  assert.equal(code, "VALIDATION_ERROR");
+  assert.match(message, /^SCOUTLINE_REQUIREMENTS_MAX_PHYSICAL must be .*got "0" \(below the minimum of 1\)\.$/);
+  assert.equal(stdout, "", "a rejected preflight prints no result");
+  assert.deepEqual(calls, ["error"], "no mock request of any kind through child exit");
+});

@@ -141,7 +141,7 @@ const changelog = fs.readFile(new URL("../../../CHANGELOG.md", import.meta.url),
 // Rebaselined at #295: the requirements subsection gained the after-result
 // due-quota-refresh disclosure. No other body copy changed.
 // Current-prefix merge preserves provider/docs additions and settled caller response/paging rules.
-const SKILL_BODY_SHA256 = "37b0590ed49f5656e66eab5671006d3c3fe318669de261e167b9e8816e06c9bc";
+const SKILL_BODY_SHA256 = "f08b8313beb9a11afea150a44a30bcadecd43c771ff9b10451b3dc459ab2d818";
 
 // AC-10 budget: codex/qwen load name+description before any body
 // byte; the old enumeration (~1500 chars) blows the disclosure

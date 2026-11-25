@@ -36,7 +36,7 @@
 
 - **Workflow quotas:** The usual quota refresh can run after a workflow completes with provider acquisition.
 
-- **Requirements quotas (#295):** Documentation now discloses that after a requirements run delivers a complete or partial result, the usual due quota refresh can contact configured quota-capable providers outside the attempt ledger. `--isolated`, preflight rejections and investigation errors suppress it. No behavior changed.
+- **Requirements quotas (#295):** Documentation now discloses that once a requirements investigation returns a complete or partial result, the usual due quota refresh can contact configured quota-capable providers outside the attempt ledger. `--isolated`, preflight rejections and errors inside the investigation suppress it; a later `--save` failure does not. No behavior changed.
 
 - **Concurrent caller rounds:** start and continue return the round they committed, even if another caller commits a newer revision before the response is assembled.
 

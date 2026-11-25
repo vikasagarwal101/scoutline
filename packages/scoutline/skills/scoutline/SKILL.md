@@ -501,10 +501,12 @@ the subset fails closed, never a silent reroute). One finite physical
 ceiling is shared by acquisition, judge and an observing producer
 (`SCOUTLINE_REQUIREMENTS_MAX_PHYSICAL` may lower it to 1..48, never
 raise); an opaque injected producer reports an unknown count. That
-ceiling and count cover the investigation only: after a run delivers a
-complete or partial result, the ordinary due quota refresh can follow
-outside the attempt ledger, contacting each configured quota-capable
-provider whose snapshot is stale or missing, including an unused one.
+ceiling and count cover the investigation only: once the investigation
+returns a complete or partial result, the ordinary due quota refresh
+can follow outside the attempt ledger, contacting each configured
+quota-capable provider whose snapshot is stale or missing, including
+an unused one. That return is the boundary: a subsequent `--save`
+failure can still leave the refresh eligible.
 `--isolated` suppresses that refresh
 ([process isolation](https://github.com/vikasagarwal101/scoutline/blob/main/docs/configuration.md#process-isolation---isolated)),
 as does a run rejected in preflight or ended by an error or interrupt

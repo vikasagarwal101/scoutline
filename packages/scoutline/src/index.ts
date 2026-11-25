@@ -245,6 +245,7 @@ import {
 } from "./providers/selection.js";
 import { BUILT_IN_PROVIDER_DESCRIPTORS } from "./providers/registry.js";
 import { createZaiDescriptor } from "./providers/zai/adapter.js";
+import { createBraveDescriptor } from "./providers/brave/adapter.js";
 import { PROVIDER_IDS } from "./providers/types.js";
 import { SHARED_PROVIDER_FLAG_IDS, SHARED_PROVIDER_IDS } from "./providers/catalog.js";
 import type {
@@ -6826,7 +6827,7 @@ export async function main(
   // at first vision dispatch. Tests injecting providerDescriptors keep
   // full control (their descriptor carries their own seams).
   const providerDescriptors = dependencies.providerDescriptors ?? BUILT_IN_PROVIDER_DESCRIPTORS;
-  const productionZaiLedgerDescriptors = dependencies.providerDescriptors
+  let productionZaiLedgerDescriptors = dependencies.providerDescriptors
     ? providerDescriptors
     : providerDescriptors.map((descriptor) =>
         descriptor.id === "zai"
@@ -6884,6 +6885,18 @@ export async function main(
   const { outputFormat, forcePretty, forceRaw, provider, noFallback, isolated, rest } = extracted;
   if (isolated) {
     env = { ...env, SCOUTLINE_ISOLATED: "1" };
+    // ADR-0006 §5: Brave's default harvest writes the shared quota
+    // snapshot from its own store, outside the shared-state skip below
+    // (the `consume` and refresh gates). Keyed on the flag, not on the env
+    // stamp above: the env-only partial mode still harvests. Production
+    // mode only, like the zai rebuild — an injected list keeps its seams.
+    if (dependencies.providerDescriptors === undefined) {
+      productionZaiLedgerDescriptors = productionZaiLedgerDescriptors.map((descriptor) =>
+        descriptor.id === "brave"
+          ? createBraveDescriptor({ onRateLimitHarvest: () => {} })
+          : descriptor,
+      );
+    }
   }
 
   // Under `--isolated`, build response caches scoped to `<root>/cache/isolated/<pid>`

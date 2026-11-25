@@ -26,6 +26,8 @@
 
 ### Fixed
 
+- **Isolated Brave searches (#322):** a successful Brave web search under `--isolated` wrote the shared quota snapshot from the response's rate-limit headers, because that passive harvest writes through its own store and bypassed the flag's shared-state skip. The harvest now stays off under the flag. Results, accounting and routing are unchanged, and a normal search or one under the env-only `SCOUTLINE_ISOLATED=1` mode still harvests.
+
 - **Requirements output:** Evidence display digests and the result hash now match the redacted data written to stdout and saved JSON.
 
 - **Local Git audits:** Reports identify paths left unchecked at the read deadline. Commit provenance is reported only for files read from the verified local commit. Saved audits are labelled local in artifact history.

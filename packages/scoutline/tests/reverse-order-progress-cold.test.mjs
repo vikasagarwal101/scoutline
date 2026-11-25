@@ -71,9 +71,10 @@ for (const mode of ["unchanged", "revise"]) {
 
 // The revision fires inside the no-eligible pass, so clock reads witness
 // the passes after it: exactly one more read is the identical-wait-set
-// pass that follows the re-entry. Zero means the fixture drifted off the
-// re-entry; with the repeated-wait-set check removed the child spins and
-// the stall watchdog fails this row.
+// pass that follows the re-entry. Any other count means the revision
+// landed earlier, while acquisition still had passes to run, or that the
+// fixture drifted off the re-entry. With the repeated-wait-set check
+// removed the child spins and the stall watchdog fails this row.
 test("a repeated wait-set ends the no-eligible re-entry: prerequisite terminal with a dead proof", async () => {
   const { readsAfterRevision } = settled(await run("terminal"), "terminal");
   assert.equal(

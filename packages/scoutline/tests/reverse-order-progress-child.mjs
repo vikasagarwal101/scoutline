@@ -34,9 +34,9 @@ const { deps, calls, live } = offlineDeps(c, { captureLiveTargets: true });
 const judge = deps.candidateJudge;
 let guideRef = null;
 let lastGuideLicenseNow = null;
-deps.candidateJudge = async (input) => {
+deps.candidateJudge = async (input, options) => {
   if (input.source.evidenceId === "e1") guideRef = live.retained.get(input.source.evidenceId);
-  const r = await judge(input);
+  const r = await judge(input, options);
   if (input.candidates.some((x) => x.fieldId === "license")) {
     for (const k of Object.keys(r.answers)) r.answers[k] = { type: "noul", noul: 0.5 };
     if (input.source.evidenceId === "e1" && input.opposingContext.length === 1)
@@ -54,22 +54,23 @@ deps.candidateJudge = async (input) => {
 // "unchanged": no mutation — version stays accepted, license/csv are
 // published only when eligible (they are not).
 //
-// Mode "terminal": the revision lands at the first loop entry after the
-// final search's mid-loop finalization made version terminally
-// satisfied (the standing-terminal recipe). Its accept then fails the
-// live proof, so license is blocked (no unblocking proof) yet
-// actionable: its prerequisite is terminally satisfied and its judged
-// dependency binding no longer exists. With judge budget left and no
-// eligible field, the scheduler re-enters on that wait-set. The re-entry
-// pass changes nothing, so the next pass sees the identical wait-set.
+// Mode "terminal": version's contrary query is the plan's last search.
+// The revision lands at the first loop entry after that search's
+// mid-loop finalization made version terminally satisfied (the
+// standing-terminal recipe). Its accept then fails the live proof, so
+// license is blocked (no unblocking proof) yet actionable: its
+// prerequisite is terminally satisfied and its judged dependency
+// binding no longer exists. With judge budget left and no eligible
+// field, the scheduler re-enters on that wait-set. The re-entry pass
+// changes nothing, so the next pass sees the identical wait-set.
 let nowN = 0;
 let mutated = false;
 let armed = false;
 let readsSinceFinalSearch = 0;
 let readsAfterRevision = 0;
 const search = deps.search;
-deps.search = async (query) => {
-  const results = await search(query);
+deps.search = async (query, options) => {
+  const results = await search(query, options);
   if (query === `${c.contract.requirements.version.question} contrary evidence refuted`)
     armed = true;
   return results;
